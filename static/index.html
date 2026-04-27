@@ -54,6 +54,20 @@
         <p class="dropzone-hint">MP4, MOV, AVI · processed locally, never uploaded anywhere</p>
       </div>
     </div>
+
+    <div class="folder-input">
+      <details>
+        <summary>… or use a folder of images instead (for 60k+ frames)</summary>
+        <p class="muted small">
+          Paste the absolute path to a folder of JPGs/PNGs on this machine.
+          The app reads them directly — no upload, no copy.
+        </p>
+        <div class="folder-row">
+          <input type="text" id="folder-path" placeholder="C:\path\to\images  or  /home/user/timelapse" />
+          <button class="btn btn-secondary" id="btn-folder-use">Use folder</button>
+        </div>
+      </details>
+    </div>
     <div class="upload-status hidden" id="upload-status">
       <div class="status-info">
         <strong id="upload-name"></strong>

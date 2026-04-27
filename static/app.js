@@ -4,6 +4,7 @@
 
 const state = {
   fileId: null,
+  uploadKind: null,   // 'video' or 'folder'
   scanData: null,
   goal: null,
   brightChart: null,
@@ -85,6 +86,10 @@ $('btn-replace').addEventListener('click', () => {
   dz.classList.remove('hidden');
   resetWorkflow();
 });
+$('btn-folder-use').addEventListener('click', () => {
+  const path = $('folder-path').value.trim();
+  handleFolderPath(path);
+});
 
 async function handleFile(file) {
   const form = new FormData();
@@ -93,11 +98,44 @@ async function handleFile(file) {
   try {
     const r = await fetch('/api/upload', { method: 'POST', body: form }).then(r => r.json());
     state.fileId = r.id;
+    state.uploadKind = 'video';
     showUploadInfo(r);
     await runScan(r.id);
   } catch (err) {
     toast('Upload failed: ' + err.message, 'error');
   }
+}
+
+async function handleFolderPath(path) {
+  if (!path) { toast('Please paste a folder path', 'error'); return; }
+  toast(`Registering folder ${path}…`);
+  try {
+    const r = await fetch('/api/folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    if (!r.ok) {
+      const err = await r.json();
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const data = await r.json();
+    state.fileId = data.id;
+    state.uploadKind = 'folder';
+    showFolderInfo(data);
+    await runScan(data.id);
+  } catch (err) {
+    toast('Folder registration failed: ' + err.message, 'error');
+  }
+}
+
+function showFolderInfo(r) {
+  $('upload-name').textContent = `${r.name}/  (folder)`;
+  $('upload-meta').textContent = `${r.frames} images`;
+  $('upload-status').classList.remove('hidden');
+  dz.classList.add('hidden');
+  setStep(2);
+  enableCard(2);
 }
 
 function showUploadInfo(r) {
@@ -244,11 +282,14 @@ async function startJob({ test }) {
   if (!state.goal)   { toast('Pick a goal first', 'error'); return; }
 
   const body = {
-    file_id: state.fileId,
+    kind: state.uploadKind || 'video',
+    input_ref: state.fileId,
     mode: state.goal,
-    min_brightness: parseInt(minBSlider.value),
-    conf: parseInt(confSlider.value) / 100,
     test,
+    settings: {
+      min_brightness: parseInt(minBSlider.value),
+      conf: parseInt(confSlider.value) / 100,
+    },
   };
   if (!test) body.output_name = $('output-name').value.trim() || 'cleaned.mp4';
 

@@ -38,9 +38,12 @@ from tqdm import tqdm
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--input", required=True)
+    p.add_argument("--input", help="Input video file")
+    p.add_argument("--input-folder", help="Input folder of images (alternative to --input)")
     p.add_argument("--output", required=True)
     p.add_argument("--workdir", default="./_work")
+    p.add_argument("--output-fps", type=int, default=30,
+                   help="Output video framerate when input is a folder of images.")
 
     # Brightness filter
     p.add_argument("--min-brightness", type=float, default=100.0,
@@ -100,6 +103,9 @@ def probe_video(path):
     return float(num) / float(den), float(info.get("duration", 0))
 
 
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+
+
 def extract_frames(video_path, frames_dir, test=False):
     frames_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n[1/6] Extracting frames from {video_path.name}...")
@@ -111,6 +117,17 @@ def extract_frames(video_path, frames_dir, test=False):
     frames = sorted(frames_dir.glob("f_*.jpg"))
     print(f"      Got {len(frames)} frames")
     return frames
+
+
+def collect_images_from_folder(folder, test=False):
+    folder = Path(folder)
+    print(f"\n[1/6] Scanning images in {folder}...")
+    images = sorted(p for p in folder.iterdir()
+                    if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+    if test:
+        images = images[:300]
+    print(f"      Got {len(images)} images")
+    return images
 
 
 def filter_dark(frames, threshold):
@@ -345,13 +362,20 @@ def median_fill_rolling(frames, mask_dir, clean_dir, window, skip_people):
 
 def stitch(clean_dir, output, fps, crf):
     print(f"\n[6/6] Encoding final video at {fps}fps...")
-    files = sorted(clean_dir.glob("f_*.jpg"))
+    files = sorted(p for p in clean_dir.iterdir()
+                   if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+                   and not p.name.startswith("_"))
     renumbered = clean_dir / "_renumbered"
     renumbered.mkdir(exist_ok=True)
     for i, f in enumerate(files, 1):
         target = renumbered / f"r_{i:06d}.jpg"
         if not target.exists():
-            shutil.copy(f, target)
+            if f.suffix.lower() in (".jpg", ".jpeg"):
+                shutil.copy(f, target)
+            else:
+                img = cv2.imread(str(f))
+                if img is not None:
+                    cv2.imwrite(str(target), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
 
     run([
         "ffmpeg", "-y",
@@ -367,24 +391,43 @@ def stitch(clean_dir, output, fps, crf):
 
 def main():
     args = parse_args()
-    in_path = Path(args.input).resolve()
+    if not args.input and not args.input_folder:
+        sys.exit("Provide --input <video> or --input-folder <directory>.")
+    if args.input and args.input_folder:
+        sys.exit("Use either --input or --input-folder, not both.")
+
     out_path = Path(args.output).resolve()
     work = Path(args.workdir).resolve()
-    if not in_path.exists():
-        sys.exit(f"Input not found: {in_path}")
-
-    frames_dir = work / "frames"
     mask_dir = work / "masks"
     plates_dir = work / "plates"
     clean_dir = work / "clean"
 
-    fps_in, _ = probe_video(in_path)
-    fps_out = args.fps if args.fps > 0 else int(round(fps_in))
-    print(f"Input fps: {fps_in:.2f}  Output fps: {fps_out}  Mode: {args.mode}")
+    if args.input_folder:
+        in_folder = Path(args.input_folder).resolve()
+        if not in_folder.is_dir():
+            sys.exit(f"Folder not found: {in_folder}")
+        fps_out = args.output_fps if args.output_fps > 0 else 30
+        print(f"Input folder: {in_folder}")
+        print(f"Output fps: {fps_out}  Mode: {args.mode}")
+        frames = collect_images_from_folder(in_folder, test=args.test)
+    else:
+        in_path = Path(args.input).resolve()
+        if not in_path.exists():
+            sys.exit(f"Input not found: {in_path}")
+        frames_dir = work / "frames"
+        fps_in, _ = probe_video(in_path)
+        fps_out = args.fps if args.fps > 0 else int(round(fps_in))
+        print(f"Input video: {in_path.name}")
+        print(f"Input fps: {fps_in:.2f}  Output fps: {fps_out}  Mode: {args.mode}")
+        frames = extract_frames(in_path, frames_dir, test=args.test)
 
-    frames = extract_frames(in_path, frames_dir, test=args.test)
+    if not frames:
+        sys.exit("No frames to process.")
+
     keep = filter_dark(frames, args.min_brightness)
     kept_frames = [f for f, k in zip(frames, keep) if k]
+    if not kept_frames:
+        sys.exit("All frames were dropped by the brightness filter — try lowering --min-brightness.")
 
     if not args.skip_people:
         detect_people(kept_frames, mask_dir, args)
