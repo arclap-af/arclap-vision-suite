@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Arclap Timelapse Cleaner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">A</div>
+    <div>
+      <h1>Arclap Timelapse Cleaner</h1>
+      <p class="subtitle">Privacy-safe timelapse processor — runs locally on your GPU</p>
+    </div>
+  </div>
+  <div class="header-right">
+    <span id="gpu-badge" class="badge badge-muted">Detecting…</span>
+  </div>
+</header>
+
+<main class="container">
+
+  <!-- Stepper -->
+  <nav class="stepper" id="stepper">
+    <div class="step active" data-step="1"><span class="step-dot">1</span><span class="step-label">Upload</span></div>
+    <div class="step" data-step="2"><span class="step-dot">2</span><span class="step-label">Brightness</span></div>
+    <div class="step" data-step="3"><span class="step-dot">3</span><span class="step-label">Goal</span></div>
+    <div class="step" data-step="4"><span class="step-dot">4</span><span class="step-label">Preview</span></div>
+    <div class="step" data-step="5"><span class="step-dot">5</span><span class="step-label">Run</span></div>
+  </nav>
+
+  <!-- Step 1: Upload -->
+  <section class="card" id="card-1">
+    <div class="card-header">
+      <h2>Drop your video</h2>
+      <p>The app will scan brightness automatically and recommend a sensible threshold.</p>
+    </div>
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="file-input" accept="video/*" hidden />
+      <div class="dropzone-content">
+        <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="17 8 12 3 7 8"></polyline>
+          <line x1="12" y1="3" x2="12" y2="15"></line>
+        </svg>
+        <p class="dropzone-title">Drop a video here or <span class="link">browse</span></p>
+        <p class="dropzone-hint">MP4, MOV, AVI · processed locally, never uploaded anywhere</p>
+      </div>
+    </div>
+    <div class="upload-status hidden" id="upload-status">
+      <div class="status-info">
+        <strong id="upload-name"></strong>
+        <span id="upload-meta" class="muted"></span>
+      </div>
+      <button class="btn btn-ghost" id="btn-replace">Replace</button>
+    </div>
+  </section>
+
+  <!-- Step 2: Brightness scan -->
+  <section class="card disabled" id="card-2">
+    <div class="card-header">
+      <h2>Brightness check</h2>
+      <p>Drop dark, dusk, or night frames before processing — they slow down everything else and rarely look good in a timelapse.</p>
+    </div>
+    <div class="scan-grid">
+      <div class="scan-stats" id="scan-stats">
+        <p class="muted">Upload a video to scan brightness…</p>
+      </div>
+      <div class="scan-chart">
+        <canvas id="brightness-chart"></canvas>
+      </div>
+    </div>
+    <div class="slider-row">
+      <label for="min-brightness">Min brightness threshold</label>
+      <div class="slider-with-value">
+        <input type="range" id="min-brightness" min="0" max="200" step="1" value="130" />
+        <span id="min-brightness-value" class="slider-value">130</span>
+      </div>
+    </div>
+    <p class="muted small" id="kept-summary"></p>
+  </section>
+
+  <!-- Step 3: Goal -->
+  <section class="card disabled" id="card-3">
+    <div class="card-header">
+      <h2>What do you want to do?</h2>
+      <p>Pick the kind of cleanup. Settings are auto-tuned per goal.</p>
+    </div>
+    <div class="goals">
+      <label class="goal-card" data-mode="blur">
+        <input type="radio" name="goal" value="blur" />
+        <div class="goal-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="12" cy="8" r="4"/>
+            <path d="M4 21a8 8 0 0 1 16 0"/>
+          </svg>
+        </div>
+        <div class="goal-body">
+          <h3>Blur faces only</h3>
+          <p>Privacy-safe; people stay visible as silhouettes.</p>
+          <span class="goal-meta">Fast · ~5 min for 95 s</span>
+        </div>
+      </label>
+      <label class="goal-card" data-mode="remove">
+        <input type="radio" name="goal" value="remove" />
+        <div class="goal-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M3 12h18"/><path d="M3 6h18"/><path d="M3 18h18"/>
+          </svg>
+        </div>
+        <div class="goal-body">
+          <h3>Remove people completely</h3>
+          <p>Inpaints from neighboring frames. Best for stationary cameras.</p>
+          <span class="goal-meta">Slow · ~30–40 min for 95 s</span>
+        </div>
+      </label>
+      <label class="goal-card" data-mode="darkonly">
+        <input type="radio" name="goal" value="darkonly" />
+        <div class="goal-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+            <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+        </div>
+        <div class="goal-body">
+          <h3>Just drop dark frames</h3>
+          <p>No AI; just trims night/dusk and re-encodes.</p>
+          <span class="goal-meta">Very fast · &lt;1 min</span>
+        </div>
+      </label>
+    </div>
+    <div class="slider-row" id="conf-row" style="margin-top:18px">
+      <label for="conf">Person detection sensitivity</label>
+      <div class="slider-with-value">
+        <input type="range" id="conf" min="5" max="50" step="1" value="10" />
+        <span id="conf-value" class="slider-value">0.10</span>
+      </div>
+      <p class="muted small">Lower = catches more faint or partial people.</p>
+    </div>
+  </section>
+
+  <!-- Step 4: Preview -->
+  <section class="card disabled" id="card-4">
+    <div class="card-header">
+      <h2>Test on 10 seconds</h2>
+      <p>Cheap preview — make sure the settings look right before committing.</p>
+    </div>
+    <div class="actions">
+      <button class="btn btn-secondary btn-lg" id="btn-preview">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+        Run 10-second preview
+      </button>
+      <button class="btn btn-ghost hidden" id="btn-stop-preview">Stop</button>
+    </div>
+    <div class="preview-grid hidden" id="preview-grid">
+      <div>
+        <h4>Output preview</h4>
+        <video id="preview-video" controls></video>
+      </div>
+      <div>
+        <h4>Before / After samples</h4>
+        <img id="preview-compare" alt="comparison" />
+      </div>
+    </div>
+  </section>
+
+  <!-- Step 5: Run -->
+  <section class="card disabled" id="card-5">
+    <div class="card-header">
+      <h2>Run on the full video</h2>
+      <p>The output is saved into the <code>_outputs</code> folder.</p>
+    </div>
+    <div class="run-row">
+      <label class="text-row">
+        <span>Output filename</span>
+        <input type="text" id="output-name" value="cleaned.mp4" />
+      </label>
+      <button class="btn btn-primary btn-lg" id="btn-run">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+        Run full video
+      </button>
+      <button class="btn btn-ghost hidden" id="btn-stop-run">Stop</button>
+    </div>
+    <div class="result hidden" id="result-block">
+      <h4>Result</h4>
+      <video id="result-video" controls></video>
+      <a id="download-link" class="btn btn-secondary" download>Download</a>
+    </div>
+  </section>
+
+  <!-- Live log (always visible once a job is running) -->
+  <section class="log-panel hidden" id="log-panel">
+    <header>
+      <h3>Live log</h3>
+      <button class="btn btn-ghost btn-small" id="btn-clear-log">Clear</button>
+    </header>
+    <pre id="log-output"></pre>
+  </section>
+
+</main>
+
+<!-- Toast container -->
+<div class="toasts" id="toasts"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

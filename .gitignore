@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenv
+venv/
+.venv/
+env/
+.env
+
+# YOLO model weights (downloaded automatically on first run)
+*.pt
+*.pth
+*.onnx
+
+# User content (videos, images)
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+
+# Runtime artifacts
+_uploads/
+_outputs/
+_work/
+_preview*.mp4
+_compare*.jpg
+
+# IDE / OS junk
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Claude Code local config
+.claude/

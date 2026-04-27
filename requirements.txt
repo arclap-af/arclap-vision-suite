@@ -1,0 +1,21 @@
+# Pipeline / ML
+ultralytics==8.4.41
+opencv-python>=4.10
+numpy>=2.0
+tqdm>=4.66
+
+# FastAPI web app (preferred UI: app.py)
+fastapi>=0.115
+uvicorn>=0.30
+python-multipart>=0.0.20
+pydantic>=2.7
+
+# Gradio web app (alternative UI: gui.py)
+gradio>=5.0
+matplotlib>=3.9
+
+# NOTE: PyTorch must be installed separately so the right CUDA build is selected.
+# See README.md.  For NVIDIA GPUs (CUDA 12.4):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# For CPU-only:
+#   pip install torch torchvision
