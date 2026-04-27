@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import uuid
+import webbrowser
 from pathlib import Path
 
 import cv2
@@ -356,7 +357,23 @@ def index():
     return FileResponse(STATIC / "index.html")
 
 
+def open_browser_when_ready():
+    """Try to open the browser once the server is reachable."""
+    import http.client
+    for _ in range(40):  # up to ~10 s
+        try:
+            c = http.client.HTTPConnection("127.0.0.1", 8000, timeout=0.5)
+            c.request("GET", "/")
+            c.getresponse().read()
+            c.close()
+            webbrowser.open("http://127.0.0.1:8000")
+            return
+        except Exception:
+            time.sleep(0.25)
+
+
 if __name__ == "__main__":
     print(f"Arclap Timelapse Cleaner — {GPU_NAME} ({'GPU' if GPU_AVAILABLE else 'CPU'})")
-    print("Open http://127.0.0.1:8000 in your browser.")
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+    print("Starting at http://127.0.0.1:8000 (browser will open automatically).")
+    threading.Thread(target=open_browser_when_ready, daemon=True).start()
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
