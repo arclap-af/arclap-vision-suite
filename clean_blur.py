@@ -61,6 +61,13 @@ def parse_args():
                    help="Gaussian sigma. 0 = auto from kernel.")
     p.add_argument("--feather", type=int, default=15,
                    help="Soft edge feather radius (pixels) so blur blends in.")
+    p.add_argument("--include-vehicles", action="store_true",
+                   help="Also blur vehicles (cars, motorcycles, buses, trucks). "
+                        "Useful for sites where license plates or company logos "
+                        "must be redacted.")
+    p.add_argument("--vehicle-conf", type=float, default=0.30,
+                   help="Confidence threshold for vehicle detection. "
+                        "Higher than person-conf because vehicle detections are usually solid.")
 
     # Output
     p.add_argument("--fps", type=int, default=0)
@@ -161,13 +168,19 @@ def filter_dark(frames, threshold):
 
 
 def blur_heads(frames, blurred_dir, args):
-    """Detect people, estimate head region, apply Gaussian blur to heads only."""
+    """Detect people (and optionally vehicles), apply Gaussian blur to head/whole-vehicle regions."""
     from ultralytics import YOLO
     blurred_dir.mkdir(parents=True, exist_ok=True)
     model = YOLO(args.model)
-    print(f"\n[3/4] Detecting people and blurring heads ({args.model}, conf={args.conf})...")
 
     PERSON = 0
+    VEHICLES = [2, 3, 5, 7]  # car, motorcycle, bus, truck (COCO class IDs)
+    classes = [PERSON] + (VEHICLES if args.include_vehicles else [])
+
+    extras = " + vehicles (cars/motorcycles/buses/trucks)" if args.include_vehicles else ""
+    print(f"\n[3/4] Detecting people{extras} and blurring ({args.model}, "
+          f"person-conf={args.conf})...")
+
     # Make sure blur kernel is odd
     k = args.blur_strength
     if k % 2 == 0:
@@ -178,9 +191,10 @@ def blur_heads(frames, blurred_dir, args):
 
     for i in tqdm(range(0, len(frames), args.batch), desc="YOLO+Blur"):
         batch = frames[i:i+args.batch]
+        # We need a low conf to also catch faint people; vehicles are filtered separately below.
         results = model.predict(
             [str(p) for p in batch],
-            classes=[PERSON], conf=args.conf,
+            classes=classes, conf=args.conf,
             device=None if args.device == "auto" else args.device,
             verbose=False,
         )
@@ -195,43 +209,49 @@ def blur_heads(frames, blurred_dir, args):
                 cv2.imwrite(str(blurred_dir / path.name), out, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 continue
 
-            # Build a single soft mask covering all detected head regions
+            # Build a single soft mask covering all redaction regions
             head_mask = np.zeros((h, w), dtype=np.float32)
             xyxy = result.boxes.xyxy.cpu().numpy()  # (N, 4)
+            cls = result.boxes.cls.cpu().numpy().astype(int)
+            conf = result.boxes.conf.cpu().numpy()
 
-            for box in xyxy:
+            for box, c, p in zip(xyxy, cls, conf):
                 x1, y1, x2, y2 = box
                 box_w = x2 - x1
                 box_h = y2 - y1
 
-                # Head region: top head_ratio of bounding box
-                head_h = box_h * args.head_ratio
-                # For head we typically want a square-ish region centered on head_w
-                # Many people have heads narrower than their shoulders — use 60% of box width
-                head_w = box_w * 0.65
-                head_cx = (x1 + x2) / 2
-                head_cy = y1 + head_h / 2
-
-                # Apply padding
-                pad_h = head_h * args.head_padding
-                pad_w = head_w * args.head_padding
-
-                hx1 = int(max(0, head_cx - head_w/2 - pad_w))
-                hy1 = int(max(0, head_cy - head_h/2 - pad_h))
-                hx2 = int(min(w, head_cx + head_w/2 + pad_w))
-                hy2 = int(min(h, head_cy + head_h/2 + pad_h))
-
-                if hx2 <= hx1 or hy2 <= hy1:
-                    continue
-
-                # Use elliptical mask (not rectangular) for natural look
-                cv2.ellipse(
-                    head_mask,
-                    center=(int((hx1+hx2)/2), int((hy1+hy2)/2)),
-                    axes=(int((hx2-hx1)/2), int((hy2-hy1)/2)),
-                    angle=0, startAngle=0, endAngle=360,
-                    color=1.0, thickness=-1,
-                )
+                if c == PERSON:
+                    # Head region: top head_ratio of bounding box
+                    head_h = box_h * args.head_ratio
+                    head_w = box_w * 0.65
+                    head_cx = (x1 + x2) / 2
+                    head_cy = y1 + head_h / 2
+                    pad_h = head_h * args.head_padding
+                    pad_w = head_w * args.head_padding
+                    hx1 = int(max(0, head_cx - head_w/2 - pad_w))
+                    hy1 = int(max(0, head_cy - head_h/2 - pad_h))
+                    hx2 = int(min(w, head_cx + head_w/2 + pad_w))
+                    hy2 = int(min(h, head_cy + head_h/2 + pad_h))
+                    if hx2 > hx1 and hy2 > hy1:
+                        cv2.ellipse(
+                            head_mask,
+                            center=(int((hx1+hx2)/2), int((hy1+hy2)/2)),
+                            axes=(int((hx2-hx1)/2), int((hy2-hy1)/2)),
+                            angle=0, startAngle=0, endAngle=360,
+                            color=1.0, thickness=-1,
+                        )
+                else:
+                    # Vehicle: filter by stricter confidence and blur the whole box
+                    # (license plates / company decals can be anywhere on the vehicle).
+                    if p < args.vehicle_conf:
+                        continue
+                    vx1 = int(max(0, x1))
+                    vy1 = int(max(0, y1))
+                    vx2 = int(min(w, x2))
+                    vy2 = int(min(h, y2))
+                    if vx2 > vx1 and vy2 > vy1:
+                        cv2.rectangle(head_mask, (vx1, vy1), (vx2, vy2),
+                                      color=1.0, thickness=-1)
 
             if not head_mask.any():
                 n_no_people += 1

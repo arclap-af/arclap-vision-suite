@@ -152,6 +152,34 @@
           <span class="goal-meta">Very fast · &lt;1 min</span>
         </div>
       </label>
+      <label class="goal-card" data-mode="stabilize">
+        <input type="radio" name="goal" value="stabilize" />
+        <div class="goal-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M21 12a9 9 0 1 1-9-9"/>
+            <path d="M21 3v6h-6"/>
+          </svg>
+        </div>
+        <div class="goal-body">
+          <h3>Stabilize camera shake</h3>
+          <p>Removes drift and jitter via two-pass ffmpeg vidstab.</p>
+          <span class="goal-meta">Medium · ~2× video duration</span>
+        </div>
+      </label>
+      <label class="goal-card" data-mode="color_normalize">
+        <input type="radio" name="goal" value="color_normalize" />
+        <div class="goal-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M12 3v18"/><path d="M3 12h18"/>
+          </svg>
+        </div>
+        <div class="goal-body">
+          <h3>Normalize color &amp; exposure</h3>
+          <p>Match every frame to a stable median reference for a consistent look.</p>
+          <span class="goal-meta">Medium · histogram-match per frame</span>
+        </div>
+      </label>
     </div>
     <div class="slider-row" id="conf-row" style="margin-top:18px">
       <label for="conf">Person detection sensitivity</label>

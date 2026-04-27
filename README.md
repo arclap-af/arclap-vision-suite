@@ -1,12 +1,22 @@
 # Arclap Timelapse Cleaner
 
-Privacy-safe local processor for timelapse videos. Drag a video into a browser tab and pick what you want done:
+Privacy-safe local processor for timelapse videos and image batches. Drag a video into a browser tab (or point at a folder of 60k+ images) and pick what you want done:
 
-- **Blur faces only** — fastest; people stay visible as silhouettes (~5 min for a 95-second clip).
-- **Remove people completely** — slower; inpaints from neighboring frames (~30–40 min).
-- **Drop dark frames only** — no AI, just trims night/dusk segments (under 1 minute).
+- **Blur faces only** — fastest; people stay visible as silhouettes. Optional `--include-vehicles` blurs cars/buses/trucks too (license plates, decals).
+- **Remove people completely** — slower; plate-mode inpainting from neighboring frames.
+- **Drop dark frames only** — no AI, just trims night/dusk segments.
+- **Stabilize camera shake** — two-pass ffmpeg vidstab to remove drift / jitter.
+- **Normalize color & exposure** — histogram-match every frame to a stable reference for a consistent look across hours of changing light.
 
-Everything runs on your machine — videos never leave the box. Uses an NVIDIA GPU when present, falls back to CPU otherwise.
+Everything runs on your machine — videos never leave the box. Uses an NVIDIA GPU when present, falls back to CPU.
+
+### Workflow features
+
+- **Folder input** — point at a server-local folder of 60k+ JPGs/PNGs and they're processed in place (no upload).
+- **Persistent jobs** — a SQLite store at `_data/jobs.db` keeps every run. Close the browser, re-open, history is intact.
+- **Job queue** — single GPU worker serializes submissions so multiple jobs can't OOM each other.
+- **Project workspaces** — group jobs under named projects with per-project default settings.
+- **Watch folder** — `python watcher.py --watch ./incoming --mode blur` polls a directory and auto-submits any new video as a job.
 
 ---
 
@@ -129,9 +139,15 @@ run.bat / run.sh            Launcher for the web app
 scripts/setup.py            Cross-platform Python install logic
 app.py                      FastAPI backend (preferred web UI)
 gui.py                      Gradio backend (alternative web UI)
+core/
+  db.py                     SQLite job + project persistence
+  queue.py                  Single-worker GPU job queue + runner
 clean.py                    Rolling-median person-removal pipeline (v1)
 clean_v2.py                 Plate-mode inpainting pipeline (v2)
-clean_blur.py               Head-blur pipeline (v3)
+clean_blur.py               Head-blur (v3) — supports --include-vehicles
+stabilize.py                Camera-shake stabilization (ffmpeg vidstab)
+color_normalize.py          Color & exposure normalization
+watcher.py                  Watch-folder daemon that auto-submits jobs
 static/
   index.html                Single-page wizard frontend
   style.css                 Modern dark UI styling
