@@ -37,7 +37,15 @@ GPU_NAME = torch.cuda.get_device_name(0) if GPU_AVAILABLE else "CPU only"
 
 app = FastAPI(title="Arclap Timelapse Cleaner")
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
-app.mount("/files", StaticFiles(directory=str(ROOT)), name="files")
+# Narrow file mounts: only expose the upload + output directories,
+# never the project root (which would leak source, .git, venv, etc.).
+app.mount("/files/uploads", StaticFiles(directory=str(UPLOADS)), name="uploads")
+app.mount("/files/outputs", StaticFiles(directory=str(OUTPUTS)), name="outputs")
+
+# Upload limits
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB
+ALLOWED_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
+ALLOWED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 
 # In-memory state
 JOBS: dict[str, dict] = {}
@@ -72,11 +80,29 @@ def system_info():
 
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
+    # Validate extension
+    suffix = Path(file.filename).suffix.lower() or ".mp4"
+    if suffix not in ALLOWED_VIDEO_EXTS:
+        raise HTTPException(
+            415,
+            f"Unsupported file type '{suffix}'. Allowed: {', '.join(sorted(ALLOWED_VIDEO_EXTS))}",
+        )
+
     file_id = uuid.uuid4().hex[:12]
-    suffix = Path(file.filename).suffix or ".mp4"
     dest = UPLOADS / f"{file_id}{suffix}"
+
+    # Stream to disk with size cap
+    written = 0
     with open(dest, "wb") as f:
         while chunk := await file.read(1 << 20):
+            written += len(chunk)
+            if written > MAX_UPLOAD_BYTES:
+                f.close()
+                dest.unlink(missing_ok=True)
+                raise HTTPException(
+                    413,
+                    f"File exceeds {MAX_UPLOAD_BYTES // (1024**3)} GB upload limit.",
+                )
             f.write(chunk)
     cap = cv2.VideoCapture(str(dest))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -95,7 +121,7 @@ async def upload(file: UploadFile = File(...)):
         "duration": duration,
         "width": w,
         "height": h,
-        "url": f"/files/_uploads/{dest.name}",
+        "url": f"/files/uploads/{dest.name}",
     }
     return UPLOADED[file_id]
 
@@ -211,13 +237,12 @@ def run_subprocess(job_id, cmd, output_path, input_path, is_test):
     job["status"] = "done" if proc.returncode == 0 and Path(output_path).exists() else "failed"
 
     if job["status"] == "done":
-        out_rel = Path(output_path).relative_to(ROOT).as_posix()
-        job["output_url"] = f"/files/{out_rel}"
+        job["output_url"] = f"/files/outputs/{Path(output_path).name}"
         if is_test:
             try:
                 cmp = make_comparison(input_path, output_path, job_id)
                 if cmp:
-                    job["compare_url"] = f"/files/{Path(cmp).relative_to(ROOT).as_posix()}"
+                    job["compare_url"] = f"/files/outputs/{Path(cmp).name}"
             except Exception as e:
                 job["log"].append(f"[warn] could not build comparison image: {e}")
     job["finished_at"] = time.time()
