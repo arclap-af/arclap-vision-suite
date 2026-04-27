@@ -29,8 +29,12 @@ env/
 _uploads/
 _outputs/
 _work/
+_data/
 _preview*.mp4
 _compare*.jpg
+*.db
+*.db-shm
+*.db-wal
 
 # IDE / OS junk
 .vscode/
