@@ -191,12 +191,23 @@ function renderScanStats(r) {
   `;
 }
 
+function chartColors() {
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  return {
+    tickColor: isLight ? '#5a6c7d' : '#6c7689',
+    gridColor: isLight ? '#e1e5ed' : '#232a37',
+    barColor: isLight ? 'rgba(99,102,241,0.75)' : 'rgba(99,102,241,0.85)',
+    redColor: isLight ? 'rgba(239,68,68,0.6)' : 'rgba(239,68,68,0.5)',
+  };
+}
+
 function renderBrightnessChart(r) {
   const ctx = $('brightness-chart').getContext('2d');
   if (state.brightChart) state.brightChart.destroy();
+  const c = chartColors();
   const labels = r.histogram.edges.slice(0, -1).map(v => v.toFixed(0));
   const recIdx = r.histogram.edges.findIndex(v => v >= r.recommended);
-  const colors = labels.map((_, i) => i < recIdx ? 'rgba(239,68,68,0.5)' : 'rgba(99,102,241,0.85)');
+  const colors = labels.map((_, i) => i < recIdx ? c.redColor : c.barColor);
   state.brightChart = new Chart(ctx, {
     type: 'bar',
     data: {
@@ -216,8 +227,8 @@ function renderBrightnessChart(r) {
         },
       },
       scales: {
-        x: { ticks: { color: '#6c7689', maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, grid: { display: false } },
-        y: { ticks: { color: '#6c7689' }, grid: { color: '#232a37' } },
+        x: { ticks: { color: c.tickColor, maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, grid: { display: false } },
+        y: { ticks: { color: c.tickColor }, grid: { color: c.gridColor } },
       },
     },
   });
@@ -447,6 +458,10 @@ $('theme-toggle').addEventListener('click', () => {
   document.documentElement.setAttribute('data-theme', next);
   localStorage.setItem('arclap_theme', next);
   $('theme-toggle').textContent = next === 'light' ? '◑' : '◐';
+  // Re-render chart so its colours pick up the new theme
+  if (state.brightChart && state.scanData) {
+    renderBrightnessChart(state.scanData);
+  }
 });
 
 // Keyboard shortcut: Ctrl/Cmd + Enter on the wizard runs the full job
@@ -818,6 +833,65 @@ $('btn-export-recipe').addEventListener('click', () => {
   a.click();
   URL.revokeObjectURL(url);
 });
+
+// Maintenance: cleanup old runs
+let cleanupPreviewData = null;
+
+if ($('btn-cleanup-preview')) {
+  $('btn-cleanup-preview').addEventListener('click', async () => {
+    const days = parseInt($('cleanup-days').value) || 30;
+    const r = await fetch('/api/maintenance/cleanup-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days, delete_files: $('cleanup-files').checked }),
+    });
+    if (!r.ok) { toast('Preview failed', 'error'); return; }
+    const data = await r.json();
+    cleanupPreviewData = data;
+    const box = $('cleanup-result');
+    box.classList.add('has-content');
+    if (data.jobs_to_delete === 0) {
+      box.innerHTML = `<strong>Nothing to clean up.</strong> No jobs older than ${days} day(s) match.`;
+      $('btn-cleanup-run').disabled = true;
+    } else {
+      const sample = data.sample.map(s =>
+        `<li><code>${s.id}</code> · ${s.mode} · <span class="muted">${s.output}</span></li>`
+      ).join('');
+      box.innerHTML = `
+        <p><strong>${data.jobs_to_delete}</strong> job(s) would be deleted, freeing
+           <strong>${data.mb_on_disk} MB</strong> across ${data.files_on_disk} file(s).</p>
+        <ul style="margin:8px 0 0 0; padding-left:20px;">${sample}</ul>
+        ${data.jobs_to_delete > 10 ? `<p class="muted small">…and ${data.jobs_to_delete - 10} more.</p>` : ''}
+      `;
+      $('btn-cleanup-run').disabled = false;
+    }
+  });
+
+  $('btn-cleanup-run').addEventListener('click', async () => {
+    if (!cleanupPreviewData || cleanupPreviewData.jobs_to_delete === 0) return;
+    if (!confirm(`Delete ${cleanupPreviewData.jobs_to_delete} job(s)? This cannot be undone.`)) return;
+    const days = parseInt($('cleanup-days').value) || 30;
+    $('btn-cleanup-run').classList.add('loading');
+    try {
+      const r = await fetch('/api/maintenance/cleanup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days, delete_files: $('cleanup-files').checked }),
+      });
+      const data = await r.json();
+      toast(`Deleted ${data.jobs_deleted} job(s), freed ${data.mb_freed} MB`, 'success');
+      $('cleanup-result').innerHTML =
+        `<strong>Done.</strong> Deleted ${data.jobs_deleted} job(s), ${data.files_deleted} file(s), freed ${data.mb_freed} MB.`;
+      $('btn-cleanup-run').disabled = true;
+      cleanupPreviewData = null;
+      refreshHistory();
+    } catch (err) {
+      toast('Cleanup failed: ' + err.message, 'error');
+    } finally {
+      $('btn-cleanup-run').classList.remove('loading');
+    }
+  });
+}
 
 $('btn-import-recipe').addEventListener('click', () => $('recipe-import-input').click());
 $('recipe-import-input').addEventListener('change', async e => {

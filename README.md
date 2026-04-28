@@ -1,6 +1,6 @@
 # Arclap Vision Suite
 
-[![CI](https://github.com/arclap-af/arclap-timelapse-cleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/arclap-af/arclap-timelapse-cleaner/actions/workflows/ci.yml)
+[![CI](https://github.com/arclap-af/arclap-vision-suite/actions/workflows/ci.yml/badge.svg)](https://github.com/arclap-af/arclap-vision-suite/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)
 [![CUDA](https://img.shields.io/badge/CUDA-12.4-76b900.svg)](https://developer.nvidia.com/cuda-toolkit)
@@ -10,7 +10,7 @@ A **local-first computer-vision workbench** built around YOLO. Timelapse cleanup
 
 > **Privacy-first by design.** Every frame, every model, every output stays on your machine. No cloud upload, no telemetry, no third-party calls.
 
-> **Note on the repo name.** The repo is currently `arclap-timelapse-cleaner` for historical reasons; the project is now branded as Arclap Vision Suite. Rename the repo on GitHub when convenient.
+> **Note on the repo name.** The repo is currently `arclap-vision-suite` for historical reasons; the project is now branded as Arclap Vision Suite. Rename the repo on GitHub when convenient.
 
 ---
 
@@ -43,14 +43,14 @@ All accessible through a **single FastAPI app** with a five-tab dark-themed wiza
 ## One-click install
 
 ### Windows
-1. Clone or [download as ZIP](https://github.com/arclap-af/arclap-timelapse-cleaner/archive/refs/heads/main.zip).
+1. Clone or [download as ZIP](https://github.com/arclap-af/arclap-vision-suite/archive/refs/heads/main.zip).
 2. Double-click **`install.bat`**.
 3. When done, double-click **`run.bat`** — your browser opens to <http://127.0.0.1:8000>.
 
 ### macOS / Linux
 ```bash
-git clone https://github.com/arclap-af/arclap-timelapse-cleaner.git
-cd arclap-timelapse-cleaner
+git clone https://github.com/arclap-af/arclap-vision-suite.git
+cd arclap-vision-suite
 ./install.sh    # one-time setup
 ./run.sh        # start the app
 ```

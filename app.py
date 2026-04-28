@@ -239,6 +239,70 @@ def system_info():
     }
 
 
+class RetentionRequest(BaseModel):
+    days: float = 30.0
+    delete_files: bool = True
+    statuses: list[str] | None = None  # default: clean up done/failed/stopped
+
+
+@app.post("/api/maintenance/cleanup-preview")
+def cleanup_preview(req: RetentionRequest):
+    """Preview which jobs would be deleted. Doesn't actually delete anything."""
+    statuses = req.statuses or ["done", "failed", "stopped"]
+    jobs = db.jobs_older_than(days=req.days, statuses=statuses)
+    total_files_size = 0
+    file_count = 0
+    for j in jobs:
+        for path in (Path(j.output_path),
+                     Path(j.output_path).with_suffix(".audit.html"),
+                     Path(j.output_path).with_suffix(".live_status.json"),
+                     Path(j.output_path).with_suffix(".ppe_report.csv")):
+            if path.is_file():
+                total_files_size += path.stat().st_size
+                file_count += 1
+    return {
+        "jobs_to_delete": len(jobs),
+        "files_on_disk": file_count,
+        "bytes_on_disk": total_files_size,
+        "mb_on_disk": round(total_files_size / (1024 * 1024), 1),
+        "sample": [
+            {"id": j.id, "mode": j.mode,
+             "created_at": j.created_at, "finished_at": j.finished_at,
+             "output": Path(j.output_path).name}
+            for j in jobs[:10]
+        ],
+    }
+
+
+@app.post("/api/maintenance/cleanup")
+def cleanup(req: RetentionRequest):
+    """Actually delete jobs older than `days` plus their output files."""
+    statuses = req.statuses or ["done", "failed", "stopped"]
+    jobs = db.jobs_older_than(days=req.days, statuses=statuses)
+    deleted_files = 0
+    bytes_freed = 0
+    if req.delete_files:
+        for j in jobs:
+            for path in (Path(j.output_path),
+                         Path(j.output_path).with_suffix(".audit.html"),
+                         Path(j.output_path).with_suffix(".live_status.json"),
+                         Path(j.output_path).with_suffix(".ppe_report.csv")):
+                if path.is_file():
+                    bytes_freed += path.stat().st_size
+                    try:
+                        path.unlink()
+                        deleted_files += 1
+                    except OSError:
+                        pass
+    deleted = db.delete_jobs([j.id for j in jobs])
+    return {
+        "jobs_deleted": deleted,
+        "files_deleted": deleted_files,
+        "bytes_freed": bytes_freed,
+        "mb_freed": round(bytes_freed / (1024 * 1024), 1),
+    }
+
+
 @app.get("/health")
 def health():
     """Liveness probe for Docker / k8s. Returns 200 when the worker is alive."""

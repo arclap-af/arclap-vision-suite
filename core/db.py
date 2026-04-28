@@ -315,3 +315,30 @@ class DB:
             )
             self._conn.commit()
             return cur.rowcount
+
+    def jobs_older_than(self, *, days: float, statuses: list[str] | None = None) -> list[JobRow]:
+        """List jobs whose finished_at (or created_at if never finished) is older than N days."""
+        cutoff = time.time() - days * 86400
+        where = "COALESCE(finished_at, created_at) < ?"
+        params = [cutoff]
+        if statuses:
+            placeholders = ",".join("?" * len(statuses))
+            where += f" AND status IN ({placeholders})"
+            params.extend(statuses)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM jobs WHERE {where} ORDER BY created_at ASC", params
+            ).fetchall()
+            return [JobRow(**dict(r)) for r in rows]
+
+    def delete_jobs(self, ids: list[str]) -> int:
+        """Delete the given job rows. Returns count actually deleted."""
+        if not ids:
+            return 0
+        with self._lock:
+            placeholders = ",".join("?" * len(ids))
+            cur = self._conn.execute(
+                f"DELETE FROM jobs WHERE id IN ({placeholders})", ids
+            )
+            self._conn.commit()
+            return cur.rowcount

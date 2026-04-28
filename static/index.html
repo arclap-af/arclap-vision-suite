@@ -28,8 +28,10 @@
     <button class="topnav-btn" data-page="projects">Projects</button>
   </nav>
   <div class="header-right">
-    <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark">◐</button>
-    <select id="locale-toggle" class="locale-select" title="Language">
+    <button class="theme-toggle" id="theme-toggle"
+            title="Toggle light/dark theme">◐</button>
+    <select id="locale-toggle" class="locale-select"
+            title="Interface language" aria-label="Language">
       <option value="en">EN</option>
       <option value="de">DE</option>
     </select>
@@ -504,11 +506,35 @@
       <p>Save your wizard settings as a JSON recipe and share with the team.</p>
     </div>
     <div class="recipe-row">
-      <button class="btn btn-secondary" id="btn-export-recipe">Export current settings</button>
+      <button class="btn btn-secondary" id="btn-export-recipe"
+              title="Download a JSON file with the current wizard settings">Export current settings</button>
       <input type="file" id="recipe-import-input" accept=".json" hidden />
-      <button class="btn btn-secondary" id="btn-import-recipe">Import recipe…</button>
+      <button class="btn btn-secondary" id="btn-import-recipe"
+              title="Load wizard settings from a previously-exported JSON">Import recipe…</button>
     </div>
     <pre id="recipe-output" class="recipe-output muted small hidden"></pre>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h2>Maintenance — clean up old runs</h2>
+      <p>Delete completed/failed jobs older than N days plus their output files. Preview first; runs are irreversible.</p>
+    </div>
+    <div class="maintenance-row">
+      <label class="text-row">
+        <span>Older than (days)</span>
+        <input type="number" id="cleanup-days" min="1" value="30" />
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="cleanup-files" checked />
+        Also delete the output files on disk
+      </label>
+      <div class="actions">
+        <button class="btn btn-secondary" id="btn-cleanup-preview">Preview impact</button>
+        <button class="btn btn-primary" id="btn-cleanup-run" disabled>Run cleanup</button>
+      </div>
+    </div>
+    <div id="cleanup-result" class="muted small"></div>
   </section>
 </main>
 

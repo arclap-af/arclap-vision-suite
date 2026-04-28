@@ -98,3 +98,33 @@ def test_delete_project_unlinks_jobs(tmp_db):
     fresh = tmp_db.get_job(j.id)
     assert fresh is not None
     assert fresh.project_id is None
+
+
+def test_jobs_older_than_filters_by_age(tmp_db):
+    """jobs_older_than() should only return jobs older than the cutoff."""
+    old = tmp_db.create_job(kind="video", mode="blur",
+                            input_ref="/old", output_path="/old.mp4")
+    new = tmp_db.create_job(kind="video", mode="blur",
+                            input_ref="/new", output_path="/new.mp4")
+    # Force the old one to be 100 days old
+    tmp_db.update_job(old.id, finished_at=time.time() - 100 * 86400, status="done")
+    tmp_db.update_job(new.id, finished_at=time.time() - 1 * 86400, status="done")
+    listed = tmp_db.jobs_older_than(days=30, statuses=["done"])
+    ids = {j.id for j in listed}
+    assert old.id in ids
+    assert new.id not in ids
+
+
+def test_delete_jobs_removes_specified(tmp_db):
+    j1 = tmp_db.create_job(kind="video", mode="blur",
+                           input_ref="/a", output_path="/a.mp4")
+    j2 = tmp_db.create_job(kind="video", mode="blur",
+                           input_ref="/b", output_path="/b.mp4")
+    n = tmp_db.delete_jobs([j1.id])
+    assert n == 1
+    assert tmp_db.get_job(j1.id) is None
+    assert tmp_db.get_job(j2.id) is not None  # untouched
+
+
+def test_delete_jobs_handles_empty_list(tmp_db):
+    assert tmp_db.delete_jobs([]) == 0
