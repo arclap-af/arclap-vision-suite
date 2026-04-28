@@ -1484,8 +1484,22 @@
     <div class="swiss-data-controls">
       <button class="btn btn-secondary btn-small" id="btn-swiss-import-zip">📁 Upload Roboflow / CVAT zip</button>
       <input type="file" id="swiss-import-zip-input" accept=".zip" hidden />
-      <button class="btn btn-secondary btn-small" id="btn-swiss-import-fdrive">⬇️ Import from F:\\ Construction Site Intelligence</button>
+      <button class="btn btn-secondary btn-small" id="btn-swiss-import-folder">📂 Import from any folder…</button>
+      <button class="btn btn-ghost btn-small" id="btn-swiss-import-fdrive">⬇️ Import from F:\\ Construction Site Intelligence</button>
       <span class="muted small" id="swiss-import-status"></span>
+    </div>
+
+    <!-- Folder import inline form (shown when clicking 'Import from any folder') -->
+    <div id="swiss-folder-import-row" class="swiss-folder-import-row hidden">
+      <label class="text-row" style="flex:1">
+        <span>Server-local folder</span>
+        <div class="folder-input-row">
+          <input type="text" id="swiss-folder-import-path" placeholder="C:\path\to\dataset  (with images/{train,val} + labels/{train,val})" />
+          <button class="btn btn-secondary btn-small" id="btn-swiss-folder-browse" type="button">📁 Browse…</button>
+        </div>
+        <span class="muted small">Standard YOLO layout: <code>&lt;root&gt;/images/{train,val}/</code> + <code>&lt;root&gt;/labels/{train,val}/</code>. CVAT layout (<code>&lt;root&gt;/{train,val}/{images,labels}</code>) and flat-bag layouts also work.</span>
+      </label>
+      <button class="btn btn-primary btn-small" id="btn-swiss-folder-import-go">⬇️ Import</button>
     </div>
     <div id="swiss-data-bars" class="swiss-data-bars">
       <p class="muted small" style="padding:14px">No data yet — import a dataset above.</p>
@@ -1979,6 +1993,6 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-29-d-bulk-collect"></script>
+<script src="/static/app.js?v=2026-04-29-e-folder-import"></script>
 </body>
 </html>

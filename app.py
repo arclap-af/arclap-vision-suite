@@ -3576,6 +3576,145 @@ def swiss_import_zip(file: UploadFile = File(...)):
     return {"ok": True, "imported_images": n_imgs, "imported_labels": n_lbls}
 
 
+class SwissImportFolderRequest(BaseModel):
+    path: str
+    include_artifacts: bool = True   # also pull training-run artifacts if present
+    images_subdir: str = "images"    # supports custom layouts
+    labels_subdir: str = "labels"
+
+
+@app.post("/api/swiss/dataset/import-folder")
+def swiss_import_folder(req: SwissImportFolderRequest):
+    """Import a YOLO-format dataset from ANY folder you choose. The folder
+    can be on a local disk, a network share, an external SSD, OneDrive —
+    anywhere the server can read.
+
+    Expected layout (the standard Ultralytics format):
+        <root>/<images_subdir>/{train,val}/*.jpg
+        <root>/<images_subdir>/<images_subdir>/{train,val}/*.txt   (labels)
+        OR
+        <root>/{train,val}/images/*.jpg
+        <root>/{train,val}/labels/*.txt   (CVAT-style)
+
+    The function tries both layouts. Idempotent — files already present
+    in the managed dataset are skipped."""
+    src = Path(req.path).expanduser()
+    try:
+        src = src.resolve()
+    except OSError as e:
+        raise HTTPException(400, f"Cannot resolve path: {e}")
+    if not src.is_dir():
+        raise HTTPException(400, f"Not a directory: {src}")
+    swiss_core.ensure_initialized(ROOT)
+    droot = swiss_core.dataset_root(ROOT)
+
+    n_imgs = n_lbls = 0
+    found_any_split = False
+
+    for split in ("train", "val", "valid"):
+        split_canon = "val" if split == "valid" else split
+        # Layout 1 (Ultralytics): <root>/images/<split>/ + <root>/labels/<split>/
+        # Layout 2 (CVAT-ish):    <root>/<split>/images/ + <root>/<split>/labels/
+        layouts = [
+            (src / req.images_subdir / split, src / req.labels_subdir / split),
+            (src / split / req.images_subdir, src / split / req.labels_subdir),
+        ]
+        for img_dir, lbl_dir in layouts:
+            if not img_dir.is_dir():
+                continue
+            found_any_split = True
+            dst_img = droot / "images" / split_canon
+            dst_img.mkdir(parents=True, exist_ok=True)
+            for f in img_dir.iterdir():
+                if f.is_file() and f.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+                    target = dst_img / f.name
+                    if target.exists():
+                        continue
+                    try:
+                        shutil.copy2(f, target)
+                        n_imgs += 1
+                    except Exception:
+                        continue
+            if lbl_dir.is_dir():
+                dst_lbl = droot / "labels" / split_canon
+                dst_lbl.mkdir(parents=True, exist_ok=True)
+                for f in lbl_dir.iterdir():
+                    if f.is_file() and f.suffix.lower() == ".txt":
+                        target = dst_lbl / f.name
+                        if target.exists():
+                            continue
+                        try:
+                            shutil.copy2(f, target)
+                            n_lbls += 1
+                        except Exception:
+                            continue
+            break  # don't try Layout 2 if Layout 1 worked for this split
+
+    if not found_any_split:
+        # Last-resort: maybe the folder is just a flat bag of images +
+        # matching .txt files (no train/val split). Drop them all into train.
+        flat_imgs = list(src.glob("*.jpg")) + list(src.glob("*.jpeg")) + \
+                    list(src.glob("*.png")) + list(src.glob("*.bmp"))
+        if flat_imgs:
+            dst_img = droot / "images" / "train"
+            dst_img.mkdir(parents=True, exist_ok=True)
+            dst_lbl = droot / "labels" / "train"
+            dst_lbl.mkdir(parents=True, exist_ok=True)
+            for img in flat_imgs:
+                target_img = dst_img / img.name
+                if not target_img.exists():
+                    try:
+                        shutil.copy2(img, target_img)
+                        n_imgs += 1
+                    except Exception:
+                        continue
+                lbl = img.with_suffix(".txt")
+                if lbl.is_file():
+                    target_lbl = dst_lbl / lbl.name
+                    if not target_lbl.exists():
+                        try:
+                            shutil.copy2(lbl, target_lbl)
+                            n_lbls += 1
+                        except Exception:
+                            pass
+
+    # Optionally also pull training-run artifacts (results.csv, PR curves)
+    # if the source folder contains them at root level
+    n_artifacts = 0
+    if req.include_artifacts:
+        artifact_exts = {".csv", ".png", ".jpg", ".jpeg", ".yaml", ".yml", ".json"}
+        # Look for a results.csv as the marker that this folder IS a run
+        # output (not just a dataset). Only pull artifacts in that case.
+        if (src / "results.csv").is_file():
+            target_run = ROOT / "_runs" / "swiss_train" / src.name
+            target_run.mkdir(parents=True, exist_ok=True)
+            for f in src.iterdir():
+                if f.is_file() and f.suffix.lower() in artifact_exts:
+                    tgt = target_run / f.name
+                    if not tgt.exists():
+                        try:
+                            shutil.copy2(f, tgt)
+                            n_artifacts += 1
+                        except Exception:
+                            continue
+
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "folder_import",
+        "source": str(src),
+        "n_images": n_imgs,
+        "n_labels": n_lbls,
+        "n_artifacts": n_artifacts,
+    })
+    return {
+        "ok": True,
+        "source": str(src),
+        "imported_images": n_imgs,
+        "imported_labels": n_lbls,
+        "imported_artifacts": n_artifacts,
+        "found_split_layout": found_any_split,
+    }
+
+
 @app.post("/api/swiss/dataset/import-from-f-drive")
 def swiss_import_from_f():
     """Convenience one-click: import the existing F:\\Construction Site

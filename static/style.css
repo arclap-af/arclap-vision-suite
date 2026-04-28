@@ -2536,6 +2536,15 @@ code { background: var(--bg-2); padding: 1px 6px; border-radius: 4px; font-famil
   display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
   margin: 8px 0 14px;
 }
+.swiss-folder-import-row {
+  display: flex; gap: 10px; align-items: end;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+}
+.swiss-folder-import-row.hidden { display: none; }
 .swiss-data-bars {
   display: flex; flex-direction: column; gap: 4px;
 }

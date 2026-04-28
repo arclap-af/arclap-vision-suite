@@ -3834,6 +3834,34 @@ async function swissImportZipFile(file) {
   }
 }
 
+async function swissImportFromFolder(path) {
+  if (!path) return;
+  $('swiss-import-status').textContent = `Importing from ${path}…`;
+  try {
+    const r = await fetch('/api/swiss/dataset/import-folder', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, include_artifacts: true }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    if (d.imported_images === 0 && d.imported_labels === 0) {
+      $('swiss-import-status').textContent =
+        `Nothing imported — check the folder layout (expected images/{train,val}/ + labels/{train,val}/, or {train,val}/{images,labels}/, or a flat bag of .jpg + .txt).`;
+    } else {
+      $('swiss-import-status').textContent =
+        `Imported ${d.imported_images} images + ${d.imported_labels} labels${d.imported_artifacts ? ` + ${d.imported_artifacts} run artifacts` : ''} from ${d.source}.`;
+      toast(`Imported ${d.imported_images + d.imported_labels} files`, 'success');
+    }
+    await loadSwissState();
+  } catch (e) {
+    $('swiss-import-status').textContent = '';
+    toast('Import failed: ' + e.message, 'error');
+  }
+}
+
 async function swissImportFromFDrive() {
   $('swiss-import-status').textContent = 'Importing from F:\\Construction Site Intelligence…';
   try {
@@ -3949,6 +3977,24 @@ if ($('swiss-import-zip-input')) {
 }
 if ($('btn-swiss-import-fdrive')) {
   $('btn-swiss-import-fdrive').addEventListener('click', swissImportFromFDrive);
+}
+if ($('btn-swiss-import-folder')) {
+  $('btn-swiss-import-folder').addEventListener('click', () => {
+    $('swiss-folder-import-row').classList.toggle('hidden');
+    if (!$('swiss-folder-import-row').classList.contains('hidden')) {
+      $('swiss-folder-import-path').focus();
+    }
+  });
+}
+if ($('btn-swiss-folder-browse')) {
+  $('btn-swiss-folder-browse').addEventListener('click', () => openFolderModal('swiss-folder-import-path'));
+}
+if ($('btn-swiss-folder-import-go')) {
+  $('btn-swiss-folder-import-go').addEventListener('click', () => {
+    const p = $('swiss-folder-import-path').value.trim();
+    if (!p) { toast('Pick or paste a folder path first', 'error'); return; }
+    swissImportFromFolder(p);
+  });
 }
 if ($('btn-swiss-train')) {
   $('btn-swiss-train').addEventListener('click', swissTrainNewVersion);
