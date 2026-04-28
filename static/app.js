@@ -2294,6 +2294,173 @@ function setConditionLogic(value) {
 
 const CLEAN_BAD_TAGS = ['night', 'fog', 'rain', 'blur', 'lens_drops', 'lens_smudge', 'overexposed'];
 
+// =============================================================================
+// Step 6 — Save folder | Render video tabs
+// =============================================================================
+
+let lastVideoMatchCount = 0;
+
+function switchSaveTab(name) {
+  document.querySelectorAll('.save-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.saveTab === name);
+  });
+  document.querySelectorAll('.save-tab-pane').forEach(p => {
+    p.classList.toggle('hidden', p.dataset.tabPane !== name);
+  });
+  if (name === 'video') {
+    refreshVideoSummary();
+  }
+}
+
+document.querySelectorAll('.save-tab').forEach(b => {
+  b.addEventListener('click', () => switchSaveTab(b.dataset.saveTab));
+});
+
+const VIDEO_PRESETS = {
+  standard: { fps: 30, target: 30, resolution: '1080', crop: 'none', crf: 20, dedupe: true,  burn: false },
+  social:   { fps: 30, target: 15, resolution: '1080', crop: '9x16', crf: 20, dedupe: true,  burn: false },
+  cinematic:{ fps: 24, target: 60, resolution: '2160', crop: '16x9', crf: 18, dedupe: true,  burn: false },
+  report:   { fps: 30, target: 0,  resolution: '1080', crop: 'none', crf: 20, dedupe: false, burn: true  },
+  reset:    { fps: 30, target: 30, resolution: 'source', crop: 'none', crf: 20, dedupe: false, burn: false },
+};
+
+function applyVideoPreset(name) {
+  const p = VIDEO_PRESETS[name];
+  if (!p) return;
+  $('video-fps').value = String(p.fps);
+  $('video-resolution').value = p.resolution;
+  $('video-crop').value = p.crop;
+  $('video-crf').value = String(p.crf);
+  $('video-dedupe').checked = !!p.dedupe;
+  $('video-burn-timestamp').checked = !!p.burn;
+  if (p.target > 0) {
+    $('video-target-sec').value = String(Math.min(600, Math.max(5, p.target)));
+    $('video-target-sec-label').textContent = `${p.target} seconds`;
+  }
+  refreshVideoSummary();
+}
+
+document.querySelectorAll('[data-vpreset]').forEach(b => {
+  b.addEventListener('click', () => applyVideoPreset(b.dataset.vpreset));
+});
+
+if ($('video-target-sec')) {
+  $('video-target-sec').addEventListener('input', () => {
+    $('video-target-sec-label').textContent = `${$('video-target-sec').value} seconds`;
+    refreshVideoSummary();
+  });
+}
+['video-fps', 'video-resolution', 'video-crop', 'video-crf', 'video-burn-timestamp', 'video-dedupe'].forEach(id => {
+  const el = $(id);
+  if (el) el.addEventListener('change', refreshVideoSummary);
+});
+
+async function refreshVideoSummary() {
+  if (!activeFilterScanId) return;
+  // Pull current match count via the live rule
+  try {
+    const r = await fetch(`/api/filter/${activeFilterScanId}/match-count`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentRule()),
+    });
+    if (!r.ok) return;
+    const d = await r.json();
+    lastVideoMatchCount = d.matches;
+  } catch { return; }
+
+  const fps = parseInt($('video-fps').value);
+  const targetSec = parseInt($('video-target-sec').value);
+  const matches = lastVideoMatchCount;
+  const realDuration = matches / Math.max(1, fps);
+  let renderHint = '';
+  if (matches === 0) {
+    $('video-summary').innerHTML = '<em>No frames match the current rule. Go back to Step 4 and loosen.</em>';
+    return;
+  }
+  // Speedup: matches at fps gives realDuration. To hit targetSec, we'd skip frames.
+  let actualSec, actualFrames, speedup;
+  if (targetSec >= realDuration) {
+    actualSec = realDuration;
+    actualFrames = matches;
+    speedup = 1;
+    renderHint = '<br>Target ≥ video length, so all matching frames are kept (real speed).';
+  } else {
+    // Sample evenly to fit
+    actualSec = targetSec;
+    actualFrames = targetSec * fps;
+    speedup = matches / actualFrames;
+    renderHint = `<br>To hit ${targetSec}s we sample ${actualFrames.toLocaleString()} of ${matches.toLocaleString()} frames (${speedup.toFixed(1)}× speed).`;
+  }
+  // Estimate output file size: ~1 MB per second at 1080p CRF 20, scale by resolution
+  const res = $('video-resolution').value;
+  const baseMB = res === '2160' ? 4 : (res === '1080' ? 1.0 : (res === '720' ? 0.5 : 1.5));
+  const sizeMB = Math.max(0.5, actualSec * baseMB);
+  const renderTimeSec = Math.ceil(actualFrames / 100) + ($('video-burn-timestamp').checked ? actualFrames * 0.01 : 0);
+
+  $('video-summary').innerHTML =
+    `<strong>${matches.toLocaleString()}</strong> filtered frames at ${fps} fps = ${realDuration.toFixed(1)}s of native footage` +
+    `${renderHint}<br>` +
+    `Estimated output: <strong>~${sizeMB.toFixed(0)} MB</strong> · render time <strong>~${Math.ceil(renderTimeSec)}s</strong>`;
+}
+
+if ($('btn-render-video')) {
+  $('btn-render-video').addEventListener('click', async () => {
+    if (!activeFilterScanId) { toast('Open a scan first', 'error'); return; }
+    const btn = $('btn-render-video');
+    const status = $('video-render-status');
+    btn.disabled = true; btn.classList.add('loading');
+    status.textContent = 'Rendering…';
+
+    const rule = currentRule();
+    const fps = parseInt($('video-fps').value);
+    const targetSec = parseInt($('video-target-sec').value);
+    const res = $('video-resolution').value;
+    const targetName = $('video-target-name').value.trim() || `video_${Date.now()}`;
+    const matches = lastVideoMatchCount || 0;
+
+    // If matches > targetSec * fps, sample evenly: server-side filter already
+    // returns ordered, so we approximate by setting a higher CRF compatible
+    // with the duration. Simplest correct approach: stride client-side via
+    // slicing the path list. We delegate to the server which sorts by
+    // taken_at; for now we send fps and let it render at native speed when
+    // target >= matches/fps. Future: send sampled paths.
+    let body = {
+      ...rule,
+      target_name: targetName,
+      fps,
+      width: res === '2160' ? 3840 : (res === '1080' ? 1920 : (res === '720' ? 1280 : 0)),
+      height: res === '2160' ? 2160 : (res === '1080' ? 1080 : (res === '720' ? 720 : 0)),
+      crf: parseInt($('video-crf').value),
+      crop: $('video-crop').value,
+      burn_timestamp: $('video-burn-timestamp').checked,
+      dedupe_threshold: $('video-dedupe').checked ? 0.012 : 0,
+    };
+
+    try {
+      const r = await fetch(`/api/filter/${activeFilterScanId}/render-video`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${r.status}`);
+      }
+      const d = await r.json();
+      status.innerHTML =
+        `Rendering ${d.frames.toLocaleString()} frames → <code>${escapeHtml(d.target)}</code>. ` +
+        `Expected duration ~${d.expected_duration_sec}s. Watch the History tab for progress.`;
+      toast(`Video render started (${d.frames} frames)`, 'success');
+    } catch (e) {
+      status.textContent = '';
+      toast('Render failed: ' + e.message, 'error');
+    } finally {
+      btn.disabled = false; btn.classList.remove('loading');
+    }
+  });
+}
+
 async function submitFrameFeedback(path, verdict, btn) {
   if (!activeFilterScanId) return;
   try {

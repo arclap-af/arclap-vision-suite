@@ -1,10 +1,13 @@
 # Pipeline / ML
 ultralytics==8.4.41
-yt-dlp>=2024.4.0  # optional but recommended — enables YouTube/Vimeo URL ingest
-inference-sdk>=0.9  # optional — enables Roboflow hosted-workflow detection
+yt-dlp>=2024.4.0           # YouTube / Vimeo URL ingest
+inference-sdk>=0.9         # Roboflow hosted-workflow detection
 opencv-python>=4.10
 numpy>=2.0
 tqdm>=4.66
+pillow>=10.0                # CLIP refinement reads images via PIL
+open-clip-torch>=2.24       # CLIP zero-shot refinement (Filter Section D)
+ffmpeg-python>=0.2          # Python wrapper used by the timelapse video render
 
 # FastAPI web app (preferred UI: app.py)
 fastapi>=0.115
@@ -21,3 +24,9 @@ matplotlib>=3.9
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 # For CPU-only:
 #   pip install torch torchvision
+#
+# The ffmpeg BINARY (not the Python wrapper) is also required for video render.
+# install.bat / install.sh handle this automatically; manual fallback:
+#   winget install -e --id Gyan.FFmpeg          (Windows)
+#   brew install ffmpeg                         (macOS)
+#   sudo apt install -y ffmpeg                  (Debian/Ubuntu)

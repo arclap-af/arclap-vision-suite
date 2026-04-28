@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -114,6 +115,27 @@ def parse_args():
     rc.add_argument("--only-uncertain", action="store_true",
                     help="Skip frames whose heuristic verdict is already "
                          "confident (>= 0.85). Default re-checks every frame.")
+
+    rv = sub.add_parser("render-video",
+                        help="Render the filtered pictures as an MP4 timelapse.")
+    rv.add_argument("--from-list", required=True,
+                    help="Text file with one image path per line, ordered as "
+                         "they should appear in the video.")
+    rv.add_argument("--out", required=True, help="Output .mp4 path")
+    rv.add_argument("--fps", type=int, default=30)
+    rv.add_argument("--width", type=int, default=0,
+                    help="Target width (0 = use source). Aspect kept if --height=0.")
+    rv.add_argument("--height", type=int, default=0)
+    rv.add_argument("--crf", type=int, default=20,
+                    help="H.264 quality: 18=visually-lossless, 23=default, 28=small.")
+    rv.add_argument("--crop", default="none",
+                    choices=["none", "16x9", "9x16", "1x1"],
+                    help="Aspect crop applied centered.")
+    rv.add_argument("--burn-timestamp", action="store_true",
+                    help="Overlay parsed filename timestamp on each frame.")
+    rv.add_argument("--dedupe-threshold", type=float, default=0.0,
+                    help="Skip a frame if normalized mean diff vs previous "
+                         "kept frame is less than this. 0 disables. Typical 0.012.")
     return p.parse_args()
 
 
@@ -793,6 +815,169 @@ def refine_with_clip(args) -> None:
           f"Refined {len(targets)} frames.")
 
 
+# ----------------------------------------------------------------------------
+# Timelapse video render — MP4 H.264 from a filtered, ordered frame list
+# ----------------------------------------------------------------------------
+
+def _find_ffmpeg() -> str | None:
+    """Return absolute path to ffmpeg, or None if not available.
+    Order: PATH, then known Windows install location."""
+    import shutil as _sh
+    p = _sh.which("ffmpeg")
+    if p:
+        return p
+    candidates = [
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+    ]
+    for c in candidates:
+        if Path(c).is_file():
+            return c
+    return None
+
+
+def _crop_filter(crop: str) -> str | None:
+    """Generate ffmpeg crop filter for centered aspect crop, or None."""
+    if crop == "16x9":
+        return "crop='if(gt(iw/ih,16/9),ih*16/9,iw)':'if(gt(iw/ih,16/9),ih,iw*9/16)'"
+    if crop == "9x16":
+        return "crop='if(gt(iw/ih,9/16),ih*9/16,iw)':'if(gt(iw/ih,9/16),ih,iw*16/9)'"
+    if crop == "1x1":
+        return "crop='min(iw,ih)':'min(iw,ih)'"
+    return None
+
+
+def render_video(args) -> None:
+    ffmpeg = _find_ffmpeg()
+    if not ffmpeg:
+        sys.exit("ffmpeg not found. Run install.bat / install.sh which auto-installs it, "
+                 "or install manually: winget install -e --id Gyan.FFmpeg")
+
+    list_path = Path(args.from_list)
+    if not list_path.is_file():
+        sys.exit(f"--from-list file not found: {list_path}")
+    paths = [ln.strip() for ln in list_path.read_text(encoding="utf-8").splitlines()
+             if ln.strip() and Path(ln.strip()).is_file()]
+    if not paths:
+        sys.exit("No usable image paths in --from-list (file empty or all paths missing).")
+    print(f"[render] {len(paths)} input frames at {args.fps} fps "
+          f"= {len(paths) / args.fps:.1f}s output")
+
+    out = Path(args.out).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    work = out.parent / f".render_{out.stem}"
+    work.mkdir(exist_ok=True)
+
+    # Optional dedupe pass
+    if args.dedupe_threshold > 0:
+        import cv2 as _cv2
+        import numpy as np
+        kept: list[str] = []
+        prev = None
+        for p in paths:
+            try:
+                g = _cv2.imread(p, _cv2.IMREAD_GRAYSCALE)
+                if g is None:
+                    continue
+                if max(g.shape) > 480:
+                    s = 480 / max(g.shape)
+                    g = _cv2.resize(g, None, fx=s, fy=s)
+                cur = g.astype(np.float32) / 255
+                if prev is not None and abs(prev - cur).mean() < args.dedupe_threshold:
+                    continue
+                kept.append(p)
+                prev = cur
+            except Exception:
+                continue
+        if not kept:
+            sys.exit("Dedupe filter rejected every frame — lower --dedupe-threshold.")
+        print(f"[render] dedupe kept {len(kept)} of {len(paths)} frames.")
+        paths = kept
+
+    # Optional timestamp burn-in: pre-render each frame to .render_xxx/0001.jpg
+    using_burn = args.burn_timestamp
+    if using_burn:
+        import cv2 as _cv2
+        from datetime import datetime
+        print(f"[render] burning timestamps onto {len(paths)} frames…")
+        for i, p in enumerate(paths):
+            try:
+                img = _cv2.imread(p)
+                if img is None:
+                    continue
+                ts = parse_filename_datetime(p)
+                if ts is not None:
+                    label = datetime.fromtimestamp(ts).strftime("%Y-%m-%d  %H:%M")
+                    h, w = img.shape[:2]
+                    fs = max(0.6, w / 1600)
+                    pad = max(8, int(w / 200))
+                    (tw, th), _b = _cv2.getTextSize(label, _cv2.FONT_HERSHEY_DUPLEX, fs, 2)
+                    _cv2.rectangle(img, (pad - 4, pad - 4),
+                                   (pad + tw + 8, pad + th + 12), (0, 0, 0), -1)
+                    _cv2.putText(img, label, (pad + 2, pad + th + 4),
+                                 _cv2.FONT_HERSHEY_DUPLEX, fs, (255, 255, 255), 2,
+                                 _cv2.LINE_AA)
+                _cv2.imwrite(str(work / f"{i:06d}.jpg"), img,
+                             [_cv2.IMWRITE_JPEG_QUALITY, 92])
+            except Exception as e:
+                print(f"[render] burn {p}: {e}")
+            if (i + 1) % 200 == 0:
+                print(f"[render] burned {i + 1}/{len(paths)}", flush=True)
+        # Use the burned frames as ffmpeg input
+        input_args = ["-framerate", str(args.fps),
+                      "-i", str(work / "%06d.jpg")]
+    else:
+        # Use ffmpeg concat protocol with an explicit list
+        list_file = work / "input.txt"
+        list_file.write_text(
+            "\n".join(f"file '{Path(p).as_posix()}'" for p in paths) + "\n",
+            encoding="utf-8",
+        )
+        input_args = ["-r", str(args.fps),
+                      "-f", "concat", "-safe", "0",
+                      "-i", str(list_file)]
+
+    # Build the video filter chain
+    vf: list[str] = []
+    crop = _crop_filter(args.crop)
+    if crop:
+        vf.append(crop)
+    if args.width > 0 or args.height > 0:
+        w = args.width if args.width > 0 else -2  # -2 = keep aspect, even number
+        h = args.height if args.height > 0 else -2
+        vf.append(f"scale={w}:{h}:flags=lanczos")
+    # H.264 needs even dimensions
+    vf.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
+
+    cmd = [
+        ffmpeg, "-y",
+        *input_args,
+        "-vf", ",".join(vf),
+        "-c:v", "libx264",
+        "-crf", str(args.crf),
+        "-preset", "medium",
+        "-pix_fmt", "yuv420p",
+        "-r", str(args.fps),
+        "-movflags", "+faststart",
+        str(out),
+    ]
+    print(f"[render] ffmpeg -> {out}")
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # Cleanup work dir
+    try:
+        for f in work.iterdir():
+            f.unlink(missing_ok=True)
+        work.rmdir()
+    except Exception:
+        pass
+    if proc.returncode != 0:
+        # Print last lines of ffmpeg stderr — the full thing is huge
+        lines = (proc.stderr or "").splitlines()[-20:]
+        sys.exit("ffmpeg failed:\n" + "\n".join(lines))
+    size_mb = out.stat().st_size / (1024 * 1024)
+    print(f"[render] done. {out} ({size_mb:.1f} MB)")
+
+
 def compute_camera_baselines(conn) -> None:
     """Group images by parsed camera id (filename prefix before first _) and
     write per-camera 10/50/90 percentiles for brightness + sharpness into
@@ -1050,6 +1235,8 @@ def main():
         export(args)
     elif args.cmd == "refine-clip":
         refine_with_clip(args)
+    elif args.cmd == "render-video":
+        render_video(args)
 
 
 if __name__ == "__main__":

@@ -13,7 +13,9 @@ venv/
 env/
 .env
 
-# YOLO model weights (downloaded automatically on first run)
+# YOLO model weights (downloaded automatically on first run).
+# Exception: swiss_detector_v2.pt is bundled — see whitelist below in the
+# _models section so a fresh clone has a working multi-class detector.
 *.pt
 *.pth
 *.onnx
@@ -38,8 +40,19 @@ env/
 01-SITE-*/
 incoming/
 
-# Custom user-uploaded model weights live in _models/
-_models/
+# Custom user-uploaded model weights live in _models/. We bundle exactly
+# one curated weights file (swiss_detector_v2.pt — 16-class Swiss
+# Construction Detector, ~50 MB) so a fresh clone has a working
+# multi-class detector out of the box. Other .pt files dropped by the
+# user stay local-only.
+_models/*
+!_models/swiss_detector_v2.pt
+
+# Reference image library — sampled 3 per class (~13 MB) so users can
+# see what the model thinks each class looks like.
+!_reference/**/*.jpg
+!_reference/**/*.png
+!_reference/**/*.jpeg
 
 # Design handoff bundle and any future design source-of-truth artefacts
 _design/

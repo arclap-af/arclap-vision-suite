@@ -1955,6 +1955,96 @@ def filter_frame_feedback(job_id: str, req: FrameFeedbackRequest):
         conn.close()
 
 
+class VideoRenderRequest(FilterRule):
+    """Full filter rule + video settings. Renders the matching frames as
+    an MP4 timelapse. Same field shape as the export request so the same
+    rule the user previewed in Step 4 drives the video."""
+    target_name: str | None = None
+    fps: int = Field(30, ge=1, le=240)
+    width: int = Field(0, ge=0, le=8192)
+    height: int = Field(0, ge=0, le=8192)
+    crf: int = Field(20, ge=14, le=32)  # H.264 quality
+    crop: str = Field("none", pattern="^(none|16x9|9x16|1x1)$")
+    burn_timestamp: bool = False
+    dedupe_threshold: float = 0.0  # 0 disables; ~0.012 from demo.py
+
+
+@app.post("/api/filter/{job_id}/render-video")
+def filter_render_video(job_id: str, req: VideoRenderRequest):
+    """Render the filtered, ordered frames as an MP4 timelapse.
+    Frames are sorted by taken_at (filename timestamp), so cameras get
+    chronological video output even if interleaved in the scan DB."""
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Filter job not found")
+    if not Path(j.output_path).is_file():
+        raise HTTPException(400, "Filter scan hasn't produced a DB yet.")
+
+    # Resolve filter rule -> ordered match paths
+    rule_for_sql = FilterRule(**req.model_dump(exclude={
+        "target_name", "fps", "width", "height", "crf", "crop",
+        "burn_timestamp", "dedupe_threshold",
+    }))
+    sql_from, params = _build_match_sql(rule_for_sql)
+    _, db_path = _filter_db(job_id)
+    conn = _sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT i.path, i.taken_at {sql_from} ORDER BY i.taken_at NULLS LAST, i.path",
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+    paths = _hour_dow_filter(rule_for_sql, [r[0] for r in rows])
+    if not paths:
+        raise HTTPException(400, "No frames match the rule — nothing to render.")
+
+    target_dirname = req.target_name or f"video_{j.id}_{int(time.time())}"
+    target = OUTPUTS / target_dirname
+    target.mkdir(parents=True, exist_ok=True)
+    list_file = target / "_render_input_paths.txt"
+    list_file.write_text("\n".join(paths), encoding="utf-8")
+    out_file = target / "timelapse.mp4"
+
+    cmd = [
+        PYTHON, "filter_index.py", "render-video",
+        "--from-list", str(list_file),
+        "--out", str(out_file),
+        "--fps", str(req.fps),
+        "--width", str(req.width),
+        "--height", str(req.height),
+        "--crf", str(req.crf),
+        "--crop", req.crop,
+    ]
+    if req.burn_timestamp:
+        cmd += ["--burn-timestamp"]
+    if req.dedupe_threshold > 0:
+        cmd += ["--dedupe-threshold", f"{req.dedupe_threshold:.4f}"]
+
+    proc = subprocess.Popen(
+        cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    def _drain():
+        try:
+            for _ in proc.stdout:
+                pass
+        finally:
+            proc.wait()
+    threading.Thread(target=_drain, daemon=True).start()
+
+    return {
+        "ok": True,
+        "pid": proc.pid,
+        "frames": len(paths),
+        "expected_duration_sec": round(len(paths) / max(1, req.fps), 1),
+        "target": str(target),
+        "output_url": f"/files/outputs/{target_dirname}/timelapse.mp4",
+        "command_argv": cmd,
+    }
+
+
 @app.post("/api/filter/{job_id}/refine-clip")
 def filter_refine_clip(job_id: str, only_uncertain: bool = True):
     """Launch the CLIP refinement pass in the background. Returns once

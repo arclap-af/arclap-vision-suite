@@ -1208,9 +1208,21 @@
 
     <div class="step-explainer">
       <strong>What's happening here?</strong>
-      <p>The filtered pictures are written into a folder under <code>_outputs/</code>. By default they're <em>shortcuts</em> (symlinks/hardlinks) — instant, zero extra disk space, but they break if you move the originals. <em>Real copies</em> are independent files (safer, slower). You can also <strong>burn the detection boxes onto the saved pictures</strong> — useful when reviewing a curation in Explorer to see <em>why</em> each picture was kept.</p>
+      <p>Two ways to use the filtered set:</p>
+      <ul>
+        <li><strong>📁 Save folder</strong> — write the pictures into a new folder (shortcuts, hardlinks, or real copies). Optionally burn the detection boxes onto the saved files for review.</li>
+        <li><strong>🎬 Render video</strong> — turn the filtered pictures into an MP4 timelapse, ordered by their capture time. Smart FPS / duration suggestions; optional timestamp overlay; auto crop for vertical-social or cinema 16:9.</li>
+      </ul>
+      <p>You can do <em>both</em> in one click — the video tab and folder tab don't conflict.</p>
     </div>
 
+    <!-- Save tabs -->
+    <nav class="save-tabs">
+      <button type="button" class="save-tab active" data-save-tab="folder">📁 Save folder</button>
+      <button type="button" class="save-tab" data-save-tab="video">🎬 Render video</button>
+    </nav>
+
+    <div class="save-tab-pane" data-tab-pane="folder">
     <h3>What do you want to save?</h3>
     <div class="save-mode-grid">
       <label class="save-mode-card">
@@ -1293,6 +1305,93 @@
       <button class="btn btn-primary btn-lg" id="btn-save">Save</button>
       <span class="muted small" id="filter-export-status"></span>
     </div>
+    </div><!-- /folder pane -->
+
+    <!-- ============= Video render pane ============= -->
+    <div class="save-tab-pane hidden" data-tab-pane="video">
+      <h3>Quick presets</h3>
+      <p class="muted small" style="margin:0 0 10px">One click loads a typical setup. Tweak below if you need to.</p>
+      <div class="video-preset-row">
+        <button class="btn btn-ghost btn-small" data-vpreset="standard">🎯 Standard 30s</button>
+        <button class="btn btn-ghost btn-small" data-vpreset="social">📱 Social 15s · 9:16</button>
+        <button class="btn btn-ghost btn-small" data-vpreset="cinematic">🎬 Cinematic 1m · 4K · 24fps</button>
+        <button class="btn btn-ghost btn-small" data-vpreset="report">📊 Engineering report (real speed)</button>
+        <button class="btn btn-ghost btn-small" data-vpreset="reset">↺ Reset</button>
+      </div>
+
+      <h3 style="margin-top:18px">How long should the video be?</h3>
+      <p class="muted small" style="margin:0 0 6px">Pick a target duration. We'll figure out which frames to keep so it lands on that length.</p>
+      <div class="video-duration-row">
+        <input type="range" id="video-target-sec" min="5" max="600" step="5" value="30" />
+        <span class="video-duration-label" id="video-target-sec-label">30 seconds</span>
+      </div>
+      <div id="video-summary" class="video-summary muted small">—</div>
+
+      <h3 style="margin-top:18px">Smoothness</h3>
+      <div class="filter-grid">
+        <label class="text-row">
+          <span>Frames per second</span>
+          <select id="video-fps">
+            <option value="24">24 fps — cinema feel</option>
+            <option value="30" selected>30 fps — standard</option>
+            <option value="60">60 fps — extra smooth</option>
+            <option value="120">120 fps — ultra-smooth</option>
+          </select>
+          <span class="muted small">Higher = smoother motion. 30 is the sweet spot for most timelapses.</span>
+        </label>
+        <label class="text-row">
+          <span>Resolution</span>
+          <select id="video-resolution">
+            <option value="source" selected>Source (no resize)</option>
+            <option value="2160">4K (3840×2160)</option>
+            <option value="1080">1080p (1920×1080)</option>
+            <option value="720">720p (1280×720)</option>
+          </select>
+        </label>
+        <label class="text-row">
+          <span>Aspect crop</span>
+          <select id="video-crop">
+            <option value="none" selected>Original (keep aspect)</option>
+            <option value="16x9">16:9 (cinema / YouTube)</option>
+            <option value="9x16">9:16 (vertical / TikTok / Reels)</option>
+            <option value="1x1">1:1 (square / Instagram)</option>
+          </select>
+        </label>
+        <label class="text-row">
+          <span>Quality</span>
+          <select id="video-crf">
+            <option value="28">Draft — small file</option>
+            <option value="23">Good — balanced</option>
+            <option value="20" selected>Excellent — visually-lossless</option>
+            <option value="18">Maximum — archival</option>
+          </select>
+          <span class="muted small">H.264 quality (lower CRF = bigger file, sharper).</span>
+        </label>
+      </div>
+
+      <h3 style="margin-top:18px">Optional bells &amp; whistles</h3>
+      <div class="video-options-grid">
+        <label class="checkbox-row">
+          <input type="checkbox" id="video-burn-timestamp" />
+          🕒 Burn timestamp on each frame (top-left)
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="video-dedupe" />
+          🔁 Skip near-duplicate frames (smoother playback, no stuttery bursts)
+        </label>
+      </div>
+
+      <h3 style="margin-top:18px">Output folder name</h3>
+      <label class="text-row">
+        <input type="text" id="video-target-name" placeholder="e.g. site_a_q3_timelapse" />
+        <span class="muted small">Created inside <code>_outputs/</code> as <code>&lt;name&gt;/timelapse.mp4</code>.</span>
+      </label>
+
+      <div class="actions" style="margin-top:18px">
+        <button class="btn btn-primary btn-lg" id="btn-render-video">🎬 Render video</button>
+        <span class="muted small" id="video-render-status"></span>
+      </div>
+    </div><!-- /video pane -->
   </section>
 </main>
 
@@ -1463,6 +1562,6 @@
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-28-f-clip-feedback"></script>
+<script src="/static/app.js?v=2026-04-28-g-video-render"></script>
 </body>
 </html>

@@ -1,0 +1,36 @@
+{
+  "name": "swiss_construction_v2",
+  "title": "Swiss Construction (16 classes)",
+  "description": "Preset matched 1:1 to swiss_detector_v2.pt — a YOLOv8 detector trained on 1250 Swiss timelapse frames. Bilingual EN/DE labels with brand colours per class. Pick this preset whenever the Filter scan was done with the Swiss Construction Detector.",
+  "model_match": "swiss_detector_v2.pt",
+  "n_classes": 16,
+  "layers": [
+    {"id": 1, "title": "Cranes & lifts", "range": [0, 1]},
+    {"id": 2, "title": "Earthmovers", "range": [2, 4]},
+    {"id": 3, "title": "Concrete & transport", "range": [5, 8]},
+    {"id": 4, "title": "Structures & rigging", "range": [9, 10]},
+    {"id": 5, "title": "People & site state", "range": [11, 13]},
+    {"id": 6, "title": "Specialist plant", "range": [14, 15]}
+  ],
+  "ppe_roles": {
+    "person": 11
+  },
+  "classes": [
+    {"id": 0,  "en": "Tower crane",          "de": "Turmdrehkran",  "color": "#1E88E5", "layer": 1, "category": "Crane"},
+    {"id": 1,  "en": "Mobile crane",         "de": "Mobilkran",     "color": "#1976D2", "layer": 1, "category": "Crane"},
+    {"id": 2,  "en": "Excavator",            "de": "Bagger",        "color": "#43A047", "layer": 2, "category": "Machine"},
+    {"id": 3,  "en": "Wheel loader",         "de": "Radlader",      "color": "#FBC02D", "layer": 2, "category": "Machine"},
+    {"id": 4,  "en": "Bulldozer",            "de": "Planierraupe",  "color": "#F57C00", "layer": 2, "category": "Machine"},
+    {"id": 5,  "en": "Concrete mixer truck", "de": "Betonmischer",  "color": "#7B1FA2", "layer": 3, "category": "Vehicle"},
+    {"id": 6,  "en": "Concrete pump truck",  "de": "Betonpumpe",    "color": "#6A1B9A", "layer": 3, "category": "Vehicle"},
+    {"id": 7,  "en": "Dump truck / tipper",  "de": "Kipper",        "color": "#D84315", "layer": 3, "category": "Vehicle"},
+    {"id": 8,  "en": "Low loader",           "de": "Tieflader",     "color": "#BF360C", "layer": 3, "category": "Vehicle"},
+    {"id": 9,  "en": "Scaffolding",          "de": "Gerüst",        "color": "#616161", "layer": 4, "category": "Structure"},
+    {"id": 10, "en": "Crane hook",           "de": "Kranhaken",     "color": "#455A64", "layer": 4, "category": "Object"},
+    {"id": 11, "en": "Construction worker",  "de": "Arbeiter",      "color": "#E53935", "layer": 5, "category": "Person"},
+    {"id": 12, "en": "Site barrier / fence", "de": "Absperrung",    "color": "#757575", "layer": 5, "category": "Structure"},
+    {"id": 13, "en": "Site container",       "de": "Container",     "color": "#5D4037", "layer": 5, "category": "Structure"},
+    {"id": 14, "en": "Drill / piling rig",   "de": "Bohrgerät",     "color": "#00897B", "layer": 6, "category": "Machine"},
+    {"id": 15, "en": "Compactor / roller",   "de": "Verdichter",    "color": "#FFA000", "layer": 6, "category": "Machine"}
+  ]
+}

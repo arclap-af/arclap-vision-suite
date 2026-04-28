@@ -18,13 +18,23 @@ A **local-first computer-vision workbench** built around YOLO. Timelapse cleanup
 
 | Tool | What it does |
 |---|---|
+| **Bulk Picture Filter** | Index folders of 50k–15M images, auto-tag every frame for objects + weather/lens conditions (night / fog / blur / lens-drops / …) + per-camera baselines, build multi-axis filter rules with live preview, **render the filtered set as an MP4 timelapse**, or save as folder of shortcuts/copies — annotated or raw. |
 | **Timelapse Cleanup** | Blur faces, remove people entirely, drop dark frames, normalize colour & exposure, stabilize camera shake. |
 | **YOLO Model Playground** | Drop any `.pt` (detect / segment / pose / OBB / classify), auto-detects task + classes, run inference with annotated overlay. |
 | **Live RTSP / IP Camera** | Connect to any RTSP stream, run YOLO live, blur or detect in real time, record annotated MP4. |
 | **PPE Compliance** | Helmet + hi-vis vest detection with a custom PPE-trained model. Annotated video + per-frame CSV + compliance summary. |
 | **Site Analytics** | Activity heatmap + people-count chart + per-frame CSV + summary JSON. Turn timelapses into BI. |
+| **Train tab** | CVAT-format dataset → YOLOv8 fine-tune in one click. |
 | **Watch Folder** | Polls a directory and auto-submits new videos as jobs (sidecar service). |
 | **Watermarks / Title Cards** | `overlay.py` adds branding via ffmpeg filters. |
+
+### Bundled out of the box (no extra downloads)
+
+- **`_models/swiss_detector_v2.pt`** — a 16-class Swiss Construction Detector (mAP50 ≈ 0.86, trained on 1250 hand-annotated frames). Detects: tower crane, mobile crane, excavator, wheel loader, bulldozer, concrete mixer, concrete pump, dump truck, low loader, scaffolding, crane hook, worker, site barrier, container, drill rig, compactor.
+- **`presets/swiss_construction_v2.json`** — bilingual (EN/DE) class taxonomy mapped 1:1 to the model. Auto-applied to give friendly labels + brand colours on annotated exports.
+- **`presets/arclap_construction.json`** — extended 40-class taxonomy (4 layers: equipment, materials, PPE, site state) for retraining a v3 with broader coverage.
+- **`_reference/<class>/`** — sample reference images per class (3 per class, ~13 MB total) for class-validation UI.
+- **CLIP refinement** — `open-clip-torch` ships in `requirements.txt`; the Filter wizard exposes an opt-in "Refine tags with CLIP" button (~3-5 min for 50k frames; +10–15 pp accuracy on borderline conditions).
 
 All accessible through a **single FastAPI app** with a five-tab dark-themed wizard UI: Wizard / Models / Live RTSP / History / Projects.
 
