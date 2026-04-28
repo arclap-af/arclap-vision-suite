@@ -863,6 +863,132 @@ $('btn-test-run').addEventListener('click', async () => {
 });
 
 // =============================================================================
+// Roboflow hosted-workflow panel (Playground tab)
+// =============================================================================
+
+const RF_KEY = 'arclap_rf_creds';
+let rfImageId = null;
+
+function loadRfCreds() {
+  try {
+    const c = JSON.parse(localStorage.getItem(RF_KEY) || '{}');
+    if (c.api_key  && $('rf-api-key'))     $('rf-api-key').value = c.api_key;
+    if (c.workspace && $('rf-workspace'))  $('rf-workspace').value = c.workspace;
+    if (c.workflow_id && $('rf-workflow-id')) $('rf-workflow-id').value = c.workflow_id;
+    if (c.classes && $('rf-classes'))      $('rf-classes').value = c.classes;
+  } catch {}
+}
+function saveRfCreds() {
+  if (!$('rf-api-key')) return;
+  localStorage.setItem(RF_KEY, JSON.stringify({
+    api_key:    $('rf-api-key').value.trim(),
+    workspace:  $('rf-workspace').value.trim(),
+    workflow_id:$('rf-workflow-id').value.trim(),
+    classes:    $('rf-classes').value.trim(),
+  }));
+}
+
+if ($('rf-api-key')) {
+  loadRfCreds();
+  ['rf-api-key','rf-workspace','rf-workflow-id','rf-classes'].forEach(id => {
+    $(id).addEventListener('change', saveRfCreds);
+  });
+}
+
+if ($('btn-rf-clear-creds')) {
+  $('btn-rf-clear-creds').addEventListener('click', () => {
+    localStorage.removeItem(RF_KEY);
+    ['rf-api-key','rf-workspace','rf-workflow-id','rf-classes'].forEach(id => {
+      if ($(id)) $(id).value = '';
+    });
+    toast('Cleared Roboflow credentials from this browser', 'success');
+  });
+}
+
+const rfDz = $('rf-image-dropzone');
+const rfInput = $('rf-image-input');
+if (rfDz) {
+  rfDz.addEventListener('click', () => rfInput.click());
+  rfDz.addEventListener('dragover', e => { e.preventDefault(); rfDz.classList.add('dragover'); });
+  rfDz.addEventListener('dragleave', () => rfDz.classList.remove('dragover'));
+  rfDz.addEventListener('drop', e => {
+    e.preventDefault(); rfDz.classList.remove('dragover');
+    if (e.dataTransfer.files.length) handleRfImage(e.dataTransfer.files[0]);
+  });
+  rfInput.addEventListener('change', e => {
+    if (e.target.files.length) handleRfImage(e.target.files[0]);
+  });
+}
+
+async function handleRfImage(file) {
+  const isVideo = file.type.startsWith('video/');
+  const endpoint = isVideo ? '/api/upload' : '/api/upload-image';
+  const form = new FormData();
+  form.append('file', file);
+  $('rf-status').textContent = 'Uploading…';
+  try {
+    const r = await fetch(endpoint, { method: 'POST', body: form });
+    if (!r.ok) throw new Error('upload failed');
+    const data = await r.json();
+    rfImageId = data.id;
+    $('btn-rf-run').disabled = false;
+    $('rf-status').textContent = `Sample loaded: ${escapeHtml(file.name)}`;
+  } catch (err) {
+    $('rf-status').textContent = '';
+    toast('Upload failed: ' + err.message, 'error');
+  }
+}
+
+if ($('btn-rf-run')) {
+  $('btn-rf-run').addEventListener('click', async () => {
+    if (!rfImageId) { toast('Drop a test image first', 'error'); return; }
+    const api_key   = $('rf-api-key').value.trim();
+    const workspace = $('rf-workspace').value.trim();
+    const workflow_id = $('rf-workflow-id').value.trim();
+    if (!api_key || !workspace || !workflow_id) {
+      toast('Fill API key, workspace, workflow ID', 'error'); return;
+    }
+    saveRfCreds();
+    $('btn-rf-run').classList.add('loading');
+    $('rf-status').textContent = 'Calling Roboflow…';
+    try {
+      const r = await fetch('/api/roboflow/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image_id: rfImageId,
+          api_key, workspace, workflow_id,
+          classes: $('rf-classes').value.trim() || null,
+        }),
+      });
+      if (!r.ok) {
+        const err = await r.json();
+        throw new Error(err.detail || `HTTP ${r.status}`);
+      }
+      const data = await r.json();
+      if (data.annotated_url) {
+        $('rf-result-image').src = data.annotated_url + '?t=' + Date.now();
+      } else {
+        $('rf-result-image').removeAttribute('src');
+      }
+      $('rf-result-table').innerHTML = `
+        <strong>${data.n_detections} detection${data.n_detections === 1 ? '' : 's'}</strong>
+        ${data.detections.length ? '· ' + data.detections.slice(0, 12).map(d =>
+          `${escapeHtml(d.label)} ${d.confidence.toFixed(2)}`).join(' · ') : ''}
+        ${data.detections.length > 12 ? ` …+${data.detections.length - 12}` : ''}
+      `;
+      $('rf-status').textContent = `Done · ${escapeHtml(data.workflow)}`;
+      toast(`${data.n_detections} detections from Roboflow`, 'success');
+    } catch (e) {
+      $('rf-status').textContent = '';
+      toast('Roboflow call failed: ' + e.message, 'error');
+    } finally {
+      $('btn-rf-run').classList.remove('loading');
+    }
+  });
+}
+
+// =============================================================================
 // History page
 // =============================================================================
 

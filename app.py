@@ -2290,6 +2290,76 @@ def filter_preset_summary(job_id: str, preset: str = "arclap_construction"):
         conn.close()
 
 
+# ----------------------------------------------------------------------------
+# Roboflow hosted-workflow integration
+# ----------------------------------------------------------------------------
+
+class RoboflowRunRequest(BaseModel):
+    image_id: str           # uploaded image / video file_id
+    api_key: str
+    workspace: str
+    workflow_id: str
+    classes: str | None = None
+    api_url: str = "https://serverless.roboflow.com"
+
+
+@app.post("/api/roboflow/run")
+def roboflow_run(req: RoboflowRunRequest):
+    """Run a Roboflow workflow against an uploaded image. The API key is
+    passed in per-request and never persisted server-side."""
+    from core.roboflow_workflow import (
+        extract_annotated_image_bytes,
+        extract_predictions,
+        run_workflow,
+    )
+    upload = UPLOADED.get(req.image_id)
+    if not upload:
+        raise HTTPException(404, "Image/video not found (upload first)")
+
+    src_path = Path(upload["path"])
+    if upload.get("kind") == "video" or src_path.suffix.lower() in ALLOWED_VIDEO_EXTS:
+        cap = cv2.VideoCapture(str(src_path))
+        ok, frame = cap.read()
+        cap.release()
+        if not ok:
+            raise HTTPException(400, "Could not read first frame from video.")
+        sample = OUTPUTS / f"_rf_sample_{uuid.uuid4().hex[:8]}.jpg"
+        cv2.imwrite(str(sample), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        image_path = str(sample)
+    else:
+        image_path = str(src_path)
+
+    try:
+        result = run_workflow(
+            api_key=req.api_key,
+            workspace=req.workspace,
+            workflow_id=req.workflow_id,
+            image_path=image_path,
+            classes=req.classes,
+            api_url=req.api_url,
+        )
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Roboflow call failed: {e}")
+
+    annotated_bytes = extract_annotated_image_bytes(result)
+    annotated_url = None
+    if annotated_bytes:
+        out_name = f"_rf_result_{uuid.uuid4().hex[:8]}.jpg"
+        out_path = OUTPUTS / out_name
+        out_path.write_bytes(annotated_bytes)
+        annotated_url = f"/files/outputs/{out_name}"
+
+    detections = extract_predictions(result)
+    return {
+        "annotated_url": annotated_url,
+        "detections": detections,
+        "n_detections": len(detections),
+        "workflow": f"{req.workspace}/{req.workflow_id}",
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return FileResponse(STATIC / "index.html")

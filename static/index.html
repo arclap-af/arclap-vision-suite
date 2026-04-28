@@ -487,6 +487,52 @@
 
   <section class="card">
     <div class="card-header">
+      <h2>Hosted workflow — Roboflow</h2>
+      <p>Use a workflow you've published on Roboflow Universe (e.g. <code>arclap/general-segmentation-api</code>). The Suite proxies the call so your API key never persists on disk — it lives in your browser's localStorage only.</p>
+    </div>
+    <div class="filter-grid">
+      <label class="text-row">
+        <span>API key</span>
+        <input type="password" id="rf-api-key" placeholder="paste your Roboflow private key" autocomplete="off" />
+        <span class="muted small">Roboflow → Settings → API Key (saved in localStorage)</span>
+      </label>
+      <label class="text-row">
+        <span>Workspace</span>
+        <input type="text" id="rf-workspace" placeholder="arclap" />
+      </label>
+      <label class="text-row">
+        <span>Workflow ID</span>
+        <input type="text" id="rf-workflow-id" placeholder="general-segmentation-api" />
+      </label>
+      <label class="text-row">
+        <span>Class filter (optional, comma-separated)</span>
+        <input type="text" id="rf-classes" placeholder="e.g. excavator, concrete_mixer_truck, dump_truck" />
+      </label>
+    </div>
+    <div class="dropzone small" id="rf-image-dropzone" style="margin-top:14px">
+      <input type="file" id="rf-image-input" accept="image/*,video/*" hidden />
+      <div class="dropzone-content">
+        <p class="dropzone-title">Drop a test image (or video — first frame is used)</p>
+        <p class="dropzone-hint">JPG / PNG / MP4</p>
+      </div>
+    </div>
+    <div class="actions" style="margin-top:14px">
+      <button class="btn btn-primary btn-lg" id="btn-rf-run" disabled>Run workflow</button>
+      <button class="btn btn-ghost" id="btn-rf-clear-creds">Clear saved credentials</button>
+      <span class="muted small" id="rf-status"></span>
+    </div>
+    <div class="test-grid" style="margin-top:14px">
+      <div></div>
+      <div>
+        <h4>Result</h4>
+        <img id="rf-result-image" class="test-result" alt="Run the workflow to see results here" />
+        <div id="rf-result-table" class="muted small"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
       <h2>Add a model</h2>
       <p>Upload any YOLOv8 / YOLOv11 <code>.pt</code> file (detection, segmentation, pose, OBB, classification). The Suite auto-detects the task and class names.</p>
     </div>
