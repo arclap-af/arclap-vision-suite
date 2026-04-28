@@ -43,6 +43,8 @@ from core import cameras as camera_registry
 from core import discovery as discovery_core
 from core import zones as zones_core
 from core import events as events_core
+from core import watchdog as watchdog_core
+from core import disk as disk_core
 
 PYTHON = sys.executable
 ROOT = Path(__file__).parent.resolve()
@@ -225,6 +227,31 @@ def _startup() -> None:
     n = db.reset_running_to_failed()
     if n:
         print(f"Cleaned up {n} orphaned job(s) from previous run.")
+
+    # Watchdog — auto-restart cameras on stale heartbeat
+    try:
+        def _start_camera_inline(cam_id: str):
+            return camera_start_endpoint(cam_id)
+        def _stop_job_inline(job_id: str):
+            runner.stop_current()
+        def _get_session_inline(cam_id: str):
+            return camera_registry.list_sessions(ROOT, camera_id=cam_id, limit=1)
+        watchdog_core.start(
+            ROOT, db_factory=lambda: db,
+            queue_factory=lambda: queue,
+            log_event_fn=camera_registry.log_event,
+            start_camera_fn=_start_camera_inline,
+            stop_job_fn=_stop_job_inline,
+            get_camera_session_fn=_get_session_inline,
+        )
+    except Exception as e:
+        print(f"Watchdog failed to start: {e}")
+
+    # Disk sweep — rolling cleanup of old recordings + events + capped discovery
+    try:
+        disk_core.start(ROOT, interval_sec=30 * 60)
+    except Exception as e:
+        print(f"Disk sweep failed to start: {e}")
 
     # Auto-register any .pt files already on disk so the user doesn't have
     # to re-upload models that were downloaded in earlier runs.
@@ -5662,6 +5689,179 @@ def events_bulk_endpoint(req: EventsBulkRequest):
     elif req.action == "new":
         n_updated = events_core.update_status(ROOT, req.event_ids, "new")
     return {"ok": True, "updated": n_updated}
+
+
+# ============================================================================
+# Operations: system stats, camera health, recordings library, INT8 export
+# ============================================================================
+
+@app.get("/api/system/stats")
+def system_stats_endpoint():
+    """Live snapshot for the Operations card / Mission Control hero."""
+    out = {
+        "gpu": {"name": GPU_NAME, "available": GPU_AVAILABLE},
+        "disks": {},
+        "running_cameras": 0,
+        "total_cameras": 0,
+        "events_today": 0,
+        "ts": time.time(),
+    }
+    # Disk usage on each drive that hosts our data
+    for label, p in [("suite_root", ROOT), ("outputs", OUTPUTS), ("data", DATA)]:
+        try:
+            out["disks"][label] = disk_core.disk_usage(p)
+        except Exception:
+            pass
+    # Camera counts
+    try:
+        cams = camera_registry.list_cameras(ROOT)
+        out["total_cameras"] = len(cams)
+        # Count cameras with an open session (no stopped_at)
+        for c in cams:
+            sess = camera_registry.list_sessions(ROOT, camera_id=c.id, limit=1)
+            if sess and not sess[0].get("stopped_at"):
+                out["running_cameras"] += 1
+    except Exception:
+        pass
+    # Events today
+    try:
+        st = events_core.stats(ROOT, since_ts=time.time() - 86400)
+        out["events_today"] = st.get("total", 0)
+    except Exception:
+        pass
+    # GPU live stats (utilization + memory) via torch
+    if GPU_AVAILABLE:
+        try:
+            out["gpu"]["mem_used_mb"] = round(torch.cuda.memory_allocated() / (1024 * 1024), 1)
+            out["gpu"]["mem_total_mb"] = round(torch.cuda.get_device_properties(0).total_memory / (1024 * 1024), 1)
+        except Exception:
+            pass
+    return out
+
+
+@app.get("/api/cameras/{cam_id}/health")
+def camera_health_endpoint(cam_id: str):
+    """Watchdog-tracked health (green/orange/red + recent crash count)."""
+    return watchdog_core.camera_health_status(cam_id)
+
+
+@app.post("/api/cameras/{cam_id}/reset-health")
+def camera_reset_health_endpoint(cam_id: str):
+    """Re-enable a camera disabled by watchdog after 5 crashes."""
+    watchdog_core.reset_camera_health(cam_id)
+    return {"ok": True}
+
+
+@app.get("/api/recordings")
+def recordings_list_endpoint(camera_id: str | None = None, limit: int = 200):
+    """List MP4 recordings on disk, grouped by camera+date."""
+    out_root = OUTPUTS
+    out: list[dict] = []
+    if not out_root.is_dir():
+        return {"recordings": []}
+    for mp4 in sorted(out_root.rglob("*.mp4"), key=lambda p: -p.stat().st_mtime)[:limit]:
+        try:
+            st = mp4.stat()
+            # Try to parse camera_id from filename pattern cam_<id>_<ts>.mp4
+            cam_id = ""
+            if mp4.name.startswith("cam_"):
+                parts = mp4.stem.split("_")
+                if len(parts) >= 2:
+                    cam_id = parts[1]
+            if camera_id and cam_id != camera_id:
+                continue
+            out.append({
+                "name": mp4.name,
+                "path": str(mp4),
+                "url": f"/files/outputs/{mp4.relative_to(out_root).as_posix()}",
+                "size_mb": round(st.st_size / (1024 * 1024), 2),
+                "created_at": st.st_mtime,
+                "camera_id": cam_id,
+            })
+        except Exception:
+            continue
+    return {"recordings": out}
+
+
+@app.delete("/api/recordings")
+def recording_delete_endpoint(path: str):
+    """Delete a specific recording."""
+    p = Path(path)
+    # Safety: must be inside _outputs
+    try:
+        p.resolve().relative_to(OUTPUTS.resolve())
+    except ValueError:
+        raise HTTPException(400, "Path is outside _outputs/")
+    if not p.is_file():
+        raise HTTPException(404)
+    p.unlink()
+    return {"ok": True}
+
+
+@app.post("/api/disk/sweep")
+def disk_sweep_now_endpoint():
+    """Trigger an immediate disk-cleanup sweep instead of waiting for the
+    30-min cycle."""
+    return disk_core.run_full_sweep(ROOT)
+
+
+# TensorRT INT8 export (already had FP16 — adding INT8 with calibration)
+class SwissTensorRTInt8Request(BaseModel):
+    version_name: str
+    image_size: int = 640
+    workspace_gb: float = 4.0
+
+
+@app.post("/api/swiss/export-tensorrt-int8")
+def swiss_export_tensorrt_int8(req: SwissTensorRTInt8Request):
+    """INT8 TensorRT engine — uses the managed dataset's val/ split as
+    calibration data automatically. Smaller + faster than FP16, ~1-3pp
+    accuracy drop typically."""
+    model_path = MODELS_DIR / f"{req.version_name}.pt"
+    if not model_path.is_file():
+        raise HTTPException(404, f"Model not found: {model_path}")
+    try:
+        from ultralytics import YOLO
+    except ImportError as e:
+        raise HTTPException(500, f"ultralytics: {e}")
+    try:
+        import tensorrt   # noqa: F401
+    except ImportError:
+        raise HTTPException(501,
+                             "TensorRT not installed. Install via: "
+                             "pip install tensorrt --extra-index-url https://pypi.nvidia.com")
+    # Calibration via managed val data
+    data_yaml = swiss_core.write_data_yaml(ROOT)
+    try:
+        model = YOLO(str(model_path))
+        out = model.export(
+            format="engine",
+            imgsz=int(req.image_size),
+            int8=True,
+            data=str(data_yaml),
+            workspace=float(req.workspace_gb),
+        )
+    except Exception as e:
+        raise HTTPException(500, f"INT8 export failed: {type(e).__name__}: {e}")
+    out_path = Path(out) if out else model_path.with_suffix(".engine")
+    if not out_path.is_file():
+        cands = list(model_path.parent.glob(f"{model_path.stem}*.engine"))
+        if cands:
+            out_path = cands[0]
+    if not out_path.is_file():
+        raise HTTPException(500, "INT8 engine not produced")
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "tensorrt_int8_exported",
+        "version": req.version_name,
+        "out_path": str(out_path),
+        "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
+    })
+    return {
+        "ok": True,
+        "out_path": str(out_path),
+        "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
+        "precision": "INT8",
+    }
 
 
 if __name__ == "__main__":

@@ -3302,3 +3302,68 @@ code { background: var(--bg-2); padding: 1px 6px; border-radius: 4px; font-famil
 }
 .folder-image-count.has-images { background: var(--color-brand); color: white; }
 #folder-current-path { font-family: var(--font-mono); font-size: 12px; flex: 1; overflow-wrap: anywhere; }
+
+/* ─── Tier 2: Recordings library ─────────────────────────────── */
+.recordings-list { width: 100%; border-collapse: collapse; font-size: 13px; }
+.recordings-list th, .recordings-list td {
+  text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--color-border);
+}
+.recordings-list th { font-weight: 600; color: var(--color-text-soft); background: var(--color-surface-2, transparent); }
+.recordings-list tr:hover td { background: var(--color-surface-2, rgba(0,0,0,0.02)); }
+.recordings-list .rec-actions { display: flex; gap: 6px; }
+.recording-player {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 9999;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.recording-player video { max-width: 90vw; max-height: 80vh; border-radius: var(--radius-2); }
+.recording-player .close-x {
+  position: absolute; top: 16px; right: 20px; font-size: 28px; color: white;
+  cursor: pointer; background: none; border: none;
+}
+
+/* ─── Tier 2: Zones polygon editor ──────────────────────────── */
+.zones-controls {
+  display: flex; gap: 12px; align-items: center; padding: 10px 14px;
+  background: var(--color-surface-2, var(--color-surface)); border-radius: var(--radius-2);
+  margin-bottom: 12px; flex-wrap: wrap;
+}
+.zones-editor-grid {
+  display: grid; grid-template-columns: 1fr 320px; gap: 14px;
+}
+.zones-canvas-wrap {
+  position: relative; background: #111; border-radius: var(--radius-2); overflow: hidden;
+  min-height: 480px; display: flex; align-items: center; justify-content: center;
+}
+.zones-canvas-wrap canvas { max-width: 100%; cursor: crosshair; display: block; }
+.zones-canvas-wrap .empty-msg { color: var(--color-text-soft); font-size: 13px; padding: 20px; }
+.zones-sidebar {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-2); padding: 12px; max-height: 70vh; overflow-y: auto;
+}
+.zone-row {
+  display: flex; align-items: center; gap: 8px; padding: 8px;
+  border-radius: var(--radius-2); cursor: pointer; margin-bottom: 4px;
+}
+.zone-row:hover { background: var(--color-surface-2, rgba(0,0,0,0.04)); }
+.zone-row.active { background: var(--color-brand-soft, rgba(99,102,241,0.12)); }
+.zone-swatch { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; border: 1px solid rgba(0,0,0,0.2); }
+.zone-row .zone-name { flex: 1; font-weight: 500; font-size: 13px; }
+.zone-row .zone-del { font-size: 12px; color: var(--color-danger); cursor: pointer; }
+.zone-form {
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--color-border);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.zone-form label { font-size: 12px; color: var(--color-text-soft); display: block; }
+.zone-form input, .zone-form select, .zone-form textarea {
+  width: 100%; padding: 6px 8px; border: 1px solid var(--color-border);
+  border-radius: var(--radius-2); font-size: 13px; background: var(--color-bg);
+}
+
+/* ─── Tier 2: System health badges ──────────────────────────── */
+.health-badge {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+  border-radius: 999px; font-size: 11px; font-weight: 600;
+}
+.health-badge.green { background: rgba(34,197,94,0.15); color: #16a34a; }
+.health-badge.orange { background: rgba(251,146,60,0.15); color: #ea580c; }
+.health-badge.red { background: rgba(239,68,68,0.15); color: #dc2626; }

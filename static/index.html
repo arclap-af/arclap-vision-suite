@@ -1642,6 +1642,8 @@
     <button class="swiss-subtab" data-stab="deploy">🚀 Deploy</button>
     <button class="swiss-subtab" data-stab="review">👁️ Review queue</button>
     <button class="swiss-subtab" data-stab="events">🎯 Events</button>
+    <button class="swiss-subtab" data-stab="recordings">📼 Recordings</button>
+    <button class="swiss-subtab" data-stab="zones">📐 Zones</button>
     <button class="swiss-subtab" data-stab="activity">🕒 Activity</button>
   </nav>
 
@@ -2132,6 +2134,88 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
     </div>
   </section>
 
+  <!-- ===== Recordings library sub-tab ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="recordings">
+    <div class="card-header">
+      <h3>📼 Recordings library</h3>
+      <p>Every annotated MP4 written by the live processor. Auto-cleanup deletes recordings older than 7 days (configurable). Click a row to play in browser.</p>
+    </div>
+    <div class="actions">
+      <button class="btn btn-ghost btn-small" id="btn-recordings-refresh">🔄 Refresh</button>
+      <button class="btn btn-secondary btn-small" id="btn-disk-sweep">🧹 Run disk sweep now</button>
+      <span class="muted small" id="recordings-summary">—</span>
+    </div>
+    <div id="recordings-list" class="recordings-list" style="margin-top:12px"></div>
+    <div id="recording-player" class="recording-player hidden">
+      <video id="recording-video" controls style="width:100%;max-height:600px;background:#000;border-radius:var(--radius-2)"></video>
+    </div>
+  </section>
+
+  <!-- ===== Zones polygon editor sub-tab ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="zones">
+    <div class="card-header">
+      <h3>📐 Zones — polygon rules per camera</h3>
+      <p>Pick a registered camera, draw polygon zones on its latest snapshot, attach rules: allowed/forbidden classes, count thresholds, time windows, custom alert messages. Zone alerts fire live during streaming.</p>
+    </div>
+    <div class="zones-controls">
+      <label class="text-row">
+        <span>Camera</span>
+        <select id="zones-camera-pick"><option value="">(pick a camera)</option></select>
+      </label>
+      <button class="btn btn-secondary btn-small" id="btn-zones-snapshot">📸 Capture latest frame</button>
+      <button class="btn btn-primary btn-small" id="btn-zones-new">➕ New zone</button>
+      <button class="btn btn-ghost btn-small" id="btn-zones-save">💾 Save zones</button>
+      <span class="muted small" id="zones-status">—</span>
+    </div>
+    <div class="zones-editor-grid">
+      <div class="zones-canvas-wrap">
+        <canvas id="zones-canvas" width="800" height="450"></canvas>
+        <p class="muted small">Click to add polygon points · Double-click to close · Drag to move points · Right-click to delete a point</p>
+      </div>
+      <div class="zones-sidebar">
+        <h4>Zones on this camera</h4>
+        <div id="zones-list" class="zones-list">
+          <p class="muted small">No zones yet.</p>
+        </div>
+        <div id="zone-form" class="zone-form hidden">
+          <h4>Edit zone</h4>
+          <label class="text-row">
+            <span>Name</span><input type="text" id="zone-name" />
+          </label>
+          <label class="text-row">
+            <span>Color</span><input type="color" id="zone-color" value="#1E88E5" />
+          </label>
+          <label class="text-row">
+            <span>Allowed classes (comma-separated IDs, blank = any)</span>
+            <input type="text" id="zone-allowed" placeholder="e.g. 11,32" />
+          </label>
+          <label class="text-row">
+            <span>Forbidden classes (alert if seen)</span>
+            <input type="text" id="zone-forbidden" placeholder="e.g. 11" />
+          </label>
+          <div class="filter-grid">
+            <label class="text-row">
+              <span>Count min (alert if fewer)</span>
+              <input type="number" id="zone-cmin" />
+            </label>
+            <label class="text-row">
+              <span>Count max (alert if more)</span>
+              <input type="number" id="zone-cmax" />
+            </label>
+          </div>
+          <label class="text-row">
+            <span>Custom alert message</span>
+            <input type="text" id="zone-msg" placeholder="(optional)" />
+          </label>
+          <div class="actions">
+            <button class="btn btn-primary btn-small" id="btn-zone-update">Update zone</button>
+            <button class="btn btn-ghost btn-small" id="btn-zone-delete">Delete zone</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ===== Activity sub-tab ===== -->
   <section class="card swiss-stab-pane hidden" data-stab-pane="activity">
     <div class="card-header">
@@ -2394,6 +2478,6 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-30-b-tier1-events"></script>
+<script src="/static/app.js?v=2026-04-30-c-tier2"></script>
 </body>
 </html>

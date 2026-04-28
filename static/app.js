@@ -4124,6 +4124,298 @@ if ($('ev-filter-min-conf')) {
 }
 
 // =============================================================================
+// 📼 Recordings library
+// =============================================================================
+
+async function loadRecordings() {
+  try {
+    const d = await fetch('/api/recordings').then(r => r.json());
+    const recs = d.recordings || [];
+    if (!recs.length) {
+      $('recordings-list').innerHTML = '<p class="muted small" style="padding:14px">No recordings yet.</p>';
+      $('recordings-summary').textContent = '0 recordings';
+      return;
+    }
+    const totalMb = recs.reduce((s, r) => s + r.size_mb, 0);
+    $('recordings-summary').textContent =
+      `${recs.length} recordings · ${totalMb.toFixed(1)} MB total`;
+    $('recordings-list').innerHTML = `
+      <table class="cv-eval-table">
+        <thead><tr><th>Filename</th><th>Camera</th><th>Created</th><th class="num">Size</th><th></th></tr></thead>
+        <tbody>${recs.map(r => `
+          <tr>
+            <td><strong>${escapeHtml(r.name)}</strong></td>
+            <td>${escapeHtml(r.camera_id || '—')}</td>
+            <td>${new Date(r.created_at * 1000).toLocaleString()}</td>
+            <td class="num">${r.size_mb} MB</td>
+            <td>
+              <button class="btn btn-ghost btn-small" data-act="play" data-url="${escapeHtml(r.url)}">▶ Play</button>
+              <a class="btn btn-ghost btn-small" href="${escapeHtml(r.url)}" download>⬇️</a>
+              <button class="btn btn-ghost btn-small" data-act="del" data-path="${escapeHtml(r.path)}">🗑️</button>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+    $('recordings-list').querySelectorAll('button[data-act]').forEach(b => {
+      b.addEventListener('click', () => {
+        const act = b.dataset.act;
+        if (act === 'play') {
+          $('recording-player').classList.remove('hidden');
+          $('recording-video').src = b.dataset.url;
+          $('recording-video').play();
+          $('recording-player').scrollIntoView({behavior: 'smooth'});
+        }
+        if (act === 'del') {
+          if (!confirm('Delete this recording?')) return;
+          fetch(`/api/recordings?path=${encodeURIComponent(b.dataset.path)}`, {method:'DELETE'})
+            .then(() => loadRecordings());
+        }
+      });
+    });
+  } catch (e) {
+    $('recordings-list').innerHTML = `<p class="muted small" style="color:#dc2626">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+if ($('btn-recordings-refresh')) $('btn-recordings-refresh').addEventListener('click', loadRecordings);
+if ($('btn-disk-sweep')) $('btn-disk-sweep').addEventListener('click', async () => {
+  toast('Running disk sweep…', 'info');
+  try {
+    const r = await fetch('/api/disk/sweep', { method: 'POST' }).then(r => r.json());
+    toast(`Swept: ${(r.recordings && r.recordings.deleted) || 0} recordings, ${(r.events && r.events.deleted_files) || 0} event files`, 'success');
+    loadRecordings();
+  } catch { toast('Sweep failed', 'error'); }
+});
+
+// =============================================================================
+// 📐 Zones polygon editor
+// =============================================================================
+
+let zonesData = [];           // [{name, polygon, rule, color}]
+let zonesActiveIdx = -1;
+let zonesDrawing = false;     // are we adding a new polygon?
+let zonesCurrentPoly = [];    // points for in-progress polygon
+let zonesCanvasImg = null;    // background snapshot Image element
+
+async function loadZonesPage() {
+  // Populate camera dropdown
+  try {
+    const d = await fetch('/api/cameras').then(r => r.json());
+    const opts = ['<option value="">(pick a camera)</option>'].concat(
+      (d.cameras || []).map(c =>
+        `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)} (${escapeHtml(c.site || '')})</option>`));
+    $('zones-camera-pick').innerHTML = opts.join('');
+  } catch {}
+}
+
+async function loadZonesForCamera(camId) {
+  if (!camId) {
+    zonesData = [];
+    renderZonesList();
+    redrawZonesCanvas();
+    return;
+  }
+  try {
+    const d = await fetch(`/api/zones/${camId}`).then(r => r.json());
+    zonesData = d.zones || [];
+    zonesActiveIdx = -1;
+    renderZonesList();
+    redrawZonesCanvas();
+    $('zones-status').textContent = `${zonesData.length} zone${zonesData.length === 1 ? '' : 's'} loaded for this camera.`;
+  } catch (e) {
+    $('zones-status').textContent = 'Load failed: ' + e.message;
+  }
+}
+
+function renderZonesList() {
+  if (!zonesData.length) {
+    $('zones-list').innerHTML = '<p class="muted small">No zones yet. Click ➕ New zone.</p>';
+    return;
+  }
+  $('zones-list').innerHTML = zonesData.map((z, i) => `
+    <div class="zone-row ${i === zonesActiveIdx ? 'active' : ''}" data-idx="${i}">
+      <span class="zone-swatch" style="background:${escapeHtml(z.color || '#1E88E5')}"></span>
+      <span>${escapeHtml(z.name || '(unnamed)')}</span>
+      <span class="muted small">${(z.polygon || []).length} pts</span>
+    </div>`).join('');
+  $('zones-list').querySelectorAll('.zone-row').forEach(r => {
+    r.addEventListener('click', () => selectZone(parseInt(r.dataset.idx)));
+  });
+}
+
+function selectZone(idx) {
+  zonesActiveIdx = idx;
+  const z = zonesData[idx];
+  if (!z) return;
+  $('zone-form').classList.remove('hidden');
+  $('zone-name').value = z.name || '';
+  $('zone-color').value = z.color || '#1E88E5';
+  $('zone-allowed').value = ((z.rule && z.rule.allowed_classes) || []).join(',');
+  $('zone-forbidden').value = ((z.rule && z.rule.forbidden_classes) || []).join(',');
+  $('zone-cmin').value = (z.rule && z.rule.count_min != null) ? z.rule.count_min : '';
+  $('zone-cmax').value = (z.rule && z.rule.count_max != null) ? z.rule.count_max : '';
+  $('zone-msg').value = (z.rule && z.rule.custom_alert_message) || '';
+  renderZonesList();
+  redrawZonesCanvas();
+}
+
+function redrawZonesCanvas() {
+  const cv = $('zones-canvas');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  if (zonesCanvasImg) {
+    ctx.drawImage(zonesCanvasImg, 0, 0, cv.width, cv.height);
+  } else {
+    ctx.fillStyle = '#666';
+    ctx.font = '14px sans-serif';
+    ctx.fillText('No snapshot — click 📸 Capture latest frame after starting the camera', 20, 30);
+  }
+  // Existing zones
+  zonesData.forEach((z, i) => {
+    if (!z.polygon || !z.polygon.length) return;
+    ctx.strokeStyle = z.color || '#1E88E5';
+    ctx.lineWidth = i === zonesActiveIdx ? 3 : 2;
+    ctx.fillStyle = (z.color || '#1E88E5') + '33';
+    ctx.beginPath();
+    z.polygon.forEach((p, j) => {
+      if (j === 0) ctx.moveTo(p[0], p[1]);
+      else ctx.lineTo(p[0], p[1]);
+    });
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    // Label
+    ctx.fillStyle = z.color || '#1E88E5';
+    ctx.font = 'bold 13px sans-serif';
+    ctx.fillText(z.name || `zone ${i}`, z.polygon[0][0] + 4, z.polygon[0][1] - 6);
+  });
+  // In-progress polygon
+  if (zonesCurrentPoly.length > 0) {
+    ctx.strokeStyle = '#E5213C';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    zonesCurrentPoly.forEach((p, j) => {
+      if (j === 0) ctx.moveTo(p[0], p[1]);
+      else ctx.lineTo(p[0], p[1]);
+    });
+    ctx.stroke();
+    zonesCurrentPoly.forEach(p => {
+      ctx.fillStyle = '#E5213C';
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], 4, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+}
+
+if ($('zones-canvas')) {
+  $('zones-canvas').addEventListener('click', e => {
+    if (!zonesDrawing) return;
+    const rect = e.target.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (e.target.width / rect.width);
+    const y = (e.clientY - rect.top) * (e.target.height / rect.height);
+    zonesCurrentPoly.push([x, y]);
+    redrawZonesCanvas();
+  });
+  $('zones-canvas').addEventListener('dblclick', () => {
+    if (!zonesDrawing || zonesCurrentPoly.length < 3) return;
+    // Close the polygon → save as a new zone
+    const newZ = {
+      name: `zone ${zonesData.length + 1}`,
+      polygon: zonesCurrentPoly.map(p => [Math.round(p[0]), Math.round(p[1])]),
+      rule: { allowed_classes: [], forbidden_classes: [], time_window_hours: [] },
+      color: '#1E88E5',
+    };
+    zonesData.push(newZ);
+    zonesCurrentPoly = [];
+    zonesDrawing = false;
+    zonesActiveIdx = zonesData.length - 1;
+    renderZonesList();
+    selectZone(zonesActiveIdx);
+    redrawZonesCanvas();
+  });
+}
+
+if ($('btn-zones-new')) $('btn-zones-new').addEventListener('click', () => {
+  zonesDrawing = true;
+  zonesCurrentPoly = [];
+  $('zones-status').textContent = 'Click to add polygon points · Double-click to close';
+});
+
+if ($('btn-zones-snapshot')) $('btn-zones-snapshot').addEventListener('click', async () => {
+  // Take latest snapshot from any running session of this camera
+  if (rtspJobId) {
+    await fetch(`/api/rtsp/${rtspJobId}/update`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshot: true }),
+    });
+    setTimeout(async () => {
+      const d = await fetch(`/api/rtsp/${rtspJobId}/snapshots`).then(r => r.json());
+      if (d.snapshots && d.snapshots.length) {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => { zonesCanvasImg = img; redrawZonesCanvas(); };
+        img.src = d.snapshots[0].url;
+      }
+    }, 1500);
+  } else {
+    toast('Start a live session for this camera first to capture a snapshot', 'warn');
+  }
+});
+
+if ($('btn-zone-update')) $('btn-zone-update').addEventListener('click', () => {
+  if (zonesActiveIdx < 0) return;
+  const z = zonesData[zonesActiveIdx];
+  z.name = $('zone-name').value.trim();
+  z.color = $('zone-color').value;
+  z.rule = z.rule || {};
+  z.rule.allowed_classes = $('zone-allowed').value.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+  z.rule.forbidden_classes = $('zone-forbidden').value.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+  z.rule.count_min = $('zone-cmin').value === '' ? null : parseInt($('zone-cmin').value);
+  z.rule.count_max = $('zone-cmax').value === '' ? null : parseInt($('zone-cmax').value);
+  z.rule.custom_alert_message = $('zone-msg').value.trim();
+  renderZonesList();
+  redrawZonesCanvas();
+  toast('Zone updated (don\'t forget 💾 Save zones)', 'info');
+});
+
+if ($('btn-zone-delete')) $('btn-zone-delete').addEventListener('click', () => {
+  if (zonesActiveIdx < 0) return;
+  zonesData.splice(zonesActiveIdx, 1);
+  zonesActiveIdx = -1;
+  $('zone-form').classList.add('hidden');
+  renderZonesList();
+  redrawZonesCanvas();
+});
+
+if ($('btn-zones-save')) $('btn-zones-save').addEventListener('click', async () => {
+  const camId = $('zones-camera-pick').value;
+  if (!camId) { toast('Pick a camera first', 'error'); return; }
+  try {
+    const r = await fetch(`/api/zones/${camId}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ zones: zonesData }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    toast(`Saved ${zonesData.length} zones`, 'success');
+  } catch (e) { toast('Save failed: ' + e.message, 'error'); }
+});
+
+if ($('zones-camera-pick')) $('zones-camera-pick').addEventListener('change', e => {
+  loadZonesForCamera(e.target.value);
+});
+
+// Hook into sub-tab switch to load these pages on demand
+document.addEventListener('click', e => {
+  const t = e.target.closest('.swiss-subtab');
+  if (!t) return;
+  if (t.dataset.stab === 'recordings') loadRecordings();
+  if (t.dataset.stab === 'zones') loadZonesPage();
+});
+
+// =============================================================================
 // Swiss Detector tab — full lifecycle of the multi-class construction model
 // =============================================================================
 
