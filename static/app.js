@@ -448,7 +448,7 @@ $('btn-clear-log').addEventListener('click', () => { $('log-output').textContent
 // Multi-page navigation
 // =============================================================================
 
-const PAGES = ['dashboard', 'wizard', 'models', 'train', 'live', 'filter', 'history', 'projects'];
+const PAGES = ['dashboard', 'wizard', 'models', 'train', 'live', 'filter', 'swiss', 'history', 'projects'];
 
 function showPage(name) {
   PAGES.forEach(p => {
