@@ -12,6 +12,7 @@ can read the latest log lines without losing history on restart.
 from __future__ import annotations
 
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,26 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable
+
+# Strip ANSI CSI / SGR sequences (e.g. \x1b[K, \x1b[2K, \x1b[31m, cursor moves).
+_ANSI_RE = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]')
+
+# Heuristic: lines that look like a progress tick (a percent sign + a sequence
+# of bar / pipe characters or a transfer rate). When dozens of these come
+# back-to-back from `Downloading ...` or tqdm output, we only want to surface
+# the most recent one rather than logging every redraw of the same bar.
+_PROGRESS_RE = re.compile(
+    r'\d+%.*[━─━╸|/]|\d+\.?\d*[KMG]?B/s|it/s|\d+/\d+\s*\['
+)
+
+
+def _normalise_line(raw: str) -> str:
+    """Strip ANSI + collapse \\r overwrites; return the line as it would
+    look on the user's terminal after all redraws."""
+    s = _ANSI_RE.sub('', raw).rstrip('\r\n')   # drop trailing \r before splitting
+    if '\r' in s:
+        s = s.rsplit('\r', 1)[-1]              # keep only the rightmost segment
+    return s.rstrip()
 
 from .db import DB, JobRow
 
@@ -132,10 +153,18 @@ class JobRunner:
             self._proc = proc
             self._current_job_id = jid
 
-        for line in proc.stdout:
-            for piece in line.replace("\r", "\n").split("\n"):
-                if piece:
-                    self.db.append_log(jid, piece)
+        last_progress_at = 0.0
+        for raw in proc.stdout:
+            cleaned = _normalise_line(raw)
+            if not cleaned:
+                continue
+            # Throttle progress-bar redraws: at most one every 1 s.
+            if _PROGRESS_RE.search(cleaned):
+                now = time.monotonic()
+                if now - last_progress_at < 1.0:
+                    continue
+                last_progress_at = now
+            self.db.append_log(jid, cleaned)
         proc.wait()
 
         with self._proc_lock:

@@ -922,17 +922,28 @@ code { background: var(--bg-2); padding: 1px 6px; border-radius: 4px; font-famil
   border-radius: 6px;
   font: inherit;
 }
-#train-log.log-output {
-  background: var(--bg-2);
-  border: 1px solid var(--border-1);
-  border-radius: var(--radius-sm);
-  padding: 14px 18px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.82rem;
+#train-log.log-output, #filter-log.log-output {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-3);
+  padding: var(--space-4) var(--space-5);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
   max-height: 380px;
   overflow-y: auto;
   white-space: pre-wrap;
-  color: var(--text-2);
+  word-break: break-word;
+  color: var(--color-text);
+}
+#train-log.log-output::-webkit-scrollbar,
+#filter-log.log-output::-webkit-scrollbar { width: 10px; }
+#train-log.log-output::-webkit-scrollbar-thumb,
+#filter-log.log-output::-webkit-scrollbar-thumb {
+  background: var(--arc-ink-300);
+  border-radius: 5px;
+  border: 2px solid var(--color-surface);
+  background-clip: content-box;
 }
 
 /* Maintenance card */
