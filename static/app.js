@@ -1836,6 +1836,120 @@ if ($('btn-preview-matches'))     $('btn-preview-matches').addEventListener('cli
 if ($('btn-preview-nonmatches'))  $('btn-preview-nonmatches').addEventListener('click', () => loadPreview('nonmatches'));
 if ($('btn-preview-reroll'))      $('btn-preview-reroll').addEventListener('click', () => loadPreview('matches'));
 
+// =============================================================================
+// Filter Step 6 — single Save form
+// =============================================================================
+
+const STAR_LABELS = {
+  1: '★ — anything (lowest bar)',
+  2: '★★ — anything OK',
+  3: '★★★ — average and up',
+  4: '★★★★ — sharp and bright',
+  5: '★★★★★ — premium only',
+};
+
+document.querySelectorAll('input[name="save-mode"]').forEach(r => {
+  r.addEventListener('change', () => {
+    const isBest = document.querySelector('input[name="save-mode"]:checked').value === 'best';
+    $('save-best-options').classList.toggle('hidden', !isBest);
+    $('btn-save').textContent = isBest ? 'Pick best & save' : 'Save matching pictures';
+  });
+});
+
+const starRow = $('best-quality-stars');
+if (starRow) {
+  starRow.querySelectorAll('button').forEach(b => {
+    b.addEventListener('click', () => {
+      const v = parseInt(b.dataset.stars);
+      starRow.dataset.value = v;
+      // Map 1..5 stars to 0.10 .. 0.90 quality
+      const qualityPct = 10 + (v - 1) * 20;
+      $('best-quality').value = qualityPct;
+      $('best-quality-label').textContent = STAR_LABELS[v];
+    });
+  });
+}
+
+async function refreshSaveSummary() {
+  if (!activeFilterScanId) return;
+  const sum = $('save-summary');
+  if (!sum) return;
+  try {
+    const r = await fetch(`/api/filter/${activeFilterScanId}/match-count`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentRule()),
+    });
+    if (!r.ok) return;
+    const d = await r.json();
+    sum.textContent = `${d.matches.toLocaleString()} of ${d.total.toLocaleString()} pictures match your rules. They'll be saved into the folder you choose below.`;
+  } catch {}
+}
+
+if ($('btn-save')) {
+  $('btn-save').addEventListener('click', async () => {
+    if (!activeFilterScanId) { toast('Pick a scan first', 'error'); return; }
+    const mode = document.querySelector('input[name="save-mode"]:checked').value;
+    const target = $('save-target').value.trim() || `filtered_${Date.now()}`;
+    const method = $('save-method').value;
+    $('btn-save').classList.add('loading');
+    try {
+      let url, body;
+      if (mode === 'all') {
+        const rule = currentRule();
+        url = `/api/filter/${activeFilterScanId}/export`;
+        body = {
+          classes: rule.classes,
+          logic: rule.logic,
+          min_conf: rule.min_conf,
+          min_count: rule.min_count,
+          mode: method,
+          target_name: target,
+        };
+      } else {
+        url = `/api/filter/${activeFilterScanId}/pick-best`;
+        body = {
+          n: parseInt($('best-n').value) || 200,
+          min_quality: parseInt($('best-quality').value) / 100,
+          diversify: $('best-diversify').value === 'true',
+          target_name: target,
+          mode: method,
+        };
+      }
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const err = await r.json();
+        throw new Error(err.detail || `HTTP ${r.status}`);
+      }
+      const data = await r.json();
+      const where = data.target || target;
+      const count = data.picked != null ? data.picked : '';
+      $('filter-export-status').textContent =
+        mode === 'best' && count ? `Saved ${count} pictures → ${where}` : `Saving → ${where}`;
+      toast(mode === 'best' && count ? `Saved ${count} pictures` : 'Save started', 'success');
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
+    } finally {
+      $('btn-save').classList.remove('loading');
+    }
+  });
+}
+
+// Refresh the match-count headline whenever the user lands on Step 6
+document.querySelectorAll('#filter-stepper .wiz-step').forEach(el => {
+  el.addEventListener('click', () => {
+    if (parseInt(el.dataset.step) === 6) refreshSaveSummary();
+  });
+});
+
+if ($('btn-preview-continue')) {
+  $('btn-preview-continue').addEventListener('click', refreshSaveSummary);
+}
+
 if ($('btn-pick-best')) {
   $('btn-pick-best').addEventListener('click', async () => {
     if (!activeFilterScanId) { toast('Pick a scan first', 'error'); return; }

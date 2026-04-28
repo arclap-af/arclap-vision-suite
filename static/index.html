@@ -734,12 +734,12 @@
       <p>Point at a folder of <strong>50k–15M images</strong>. The Suite indexes every one with YOLO, computes quality metrics, and lets you build complex filters with live previews. Designed for curating annotation candidates and producing client-ready subsets.</p>
     </div>
     <nav class="wiz-stepper" id="filter-stepper">
-      <div class="wiz-step active" data-step="1"><span class="wiz-num">1</span><span class="wiz-label">Source</span></div>
-      <div class="wiz-step" data-step="2"><span class="wiz-num">2</span><span class="wiz-label">Index</span></div>
-      <div class="wiz-step" data-step="3"><span class="wiz-num">3</span><span class="wiz-label">Analyse</span></div>
-      <div class="wiz-step" data-step="4"><span class="wiz-num">4</span><span class="wiz-label">Rules</span></div>
-      <div class="wiz-step" data-step="5"><span class="wiz-num">5</span><span class="wiz-label">Preview</span></div>
-      <div class="wiz-step" data-step="6"><span class="wiz-num">6</span><span class="wiz-label">Export</span></div>
+      <div class="wiz-step active" data-step="1"><span class="wiz-num">1</span><span class="wiz-label">Pick folder</span></div>
+      <div class="wiz-step" data-step="2"><span class="wiz-num">2</span><span class="wiz-label">Scan</span></div>
+      <div class="wiz-step" data-step="3"><span class="wiz-num">3</span><span class="wiz-label">Results</span></div>
+      <div class="wiz-step" data-step="4"><span class="wiz-num">4</span><span class="wiz-label">What to keep</span></div>
+      <div class="wiz-step" data-step="5"><span class="wiz-num">5</span><span class="wiz-label">Sample check</span></div>
+      <div class="wiz-step" data-step="6"><span class="wiz-num">6</span><span class="wiz-label">Save</span></div>
     </nav>
   </section>
 
@@ -965,58 +965,82 @@
     </div>
   </section>
 
-  <!-- ============= STEP 6: Export ============= -->
+  <!-- ============= STEP 6: Save ============= -->
   <section class="card wiz-pane hidden" data-pane="6">
     <div class="card-header">
-      <h2><span class="step-badge">6</span> Export the filtered subset</h2>
-      <p>Materialise the result as a folder. Symlinks are recommended for big sets — zero extra disk, instant.</p>
+      <h2><span class="step-badge">6</span> Save the filtered set</h2>
+      <p id="save-summary" class="muted small">Loading match count…</p>
     </div>
-    <div class="filter-grid">
-      <label class="text-row">
-        <span>Materialise as</span>
-        <select id="export-mode">
-          <option value="symlink" selected>Symlink — fastest, zero disk overhead</option>
-          <option value="hardlink">Hardlink — same drive only, zero disk overhead</option>
-          <option value="copy">Copy — independent files</option>
-          <option value="list">List file (filtered.txt only)</option>
-        </select>
+
+    <h3>What do you want to save?</h3>
+    <div class="save-mode-grid">
+      <label class="save-mode-card">
+        <input type="radio" name="save-mode" value="all" checked />
+        <div class="save-mode-body">
+          <h4>All matching pictures</h4>
+          <p>Save every picture that matches your rules. Use this when you want the full filtered subset (e.g. for client delivery).</p>
+        </div>
       </label>
-      <label class="text-row">
-        <span>Output folder name</span>
-        <input type="text" id="export-target" placeholder="e.g. people_or_machines" />
+      <label class="save-mode-card">
+        <input type="radio" name="save-mode" value="best" />
+        <div class="save-mode-body">
+          <h4>Best ones only — for annotation</h4>
+          <p>From the matches, keep only the highest-quality, most-diverse pictures. Use this when curating a labelling batch.</p>
+        </div>
       </label>
     </div>
 
-    <hr style="margin:18px 0; border:none; border-top:1px solid var(--color-border)" />
+    <div id="save-best-options" class="hidden">
+      <h3 style="margin-top:18px">Best-of options</h3>
+      <div class="filter-grid">
+        <label class="text-row">
+          <span>How many?</span>
+          <input type="number" id="best-n" min="1" max="100000" value="200" />
+          <span class="muted small">e.g. 200 for an annotation sprint</span>
+        </label>
+        <label class="text-row">
+          <span>Quality bar</span>
+          <div class="star-row" id="best-quality-stars" data-value="2">
+            <button type="button" data-stars="1">★</button>
+            <button type="button" data-stars="2">★★</button>
+            <button type="button" data-stars="3">★★★</button>
+            <button type="button" data-stars="4">★★★★</button>
+            <button type="button" data-stars="5">★★★★★</button>
+          </div>
+          <span class="muted small" id="best-quality-label">★★ — anything OK</span>
+          <input type="hidden" id="best-quality" value="40" />
+        </label>
+        <label class="text-row">
+          <span>Mix classes evenly</span>
+          <select id="best-diversify">
+            <option value="true" selected>Yes — equal share per class</option>
+            <option value="false">No — purely top quality</option>
+          </select>
+        </label>
+      </div>
+    </div>
 
-    <h3>Or: pick best N for annotation</h3>
-    <p class="muted small">A second export mode that uses the rule as a candidate pool, then sorts by composite quality and (optionally) round-robins across classes so the final set is diverse.</p>
+    <h3 style="margin-top:18px">Where to save</h3>
     <div class="filter-grid">
       <label class="text-row">
-        <span>How many candidates</span>
-        <input type="number" id="best-n" min="1" max="100000" value="200" />
-      </label>
-      <label class="text-row">
-        <span>Min quality</span>
-        <input type="range" id="best-quality" min="10" max="90" step="1" value="40" />
-        <span id="best-quality-value" class="muted small">0.40</span>
-      </label>
-      <label class="text-row">
-        <span>Diversify across classes</span>
-        <select id="best-diversify">
-          <option value="true" selected>Yes — round-robin</option>
-          <option value="false">No — pure top quality</option>
-        </select>
-      </label>
-      <label class="text-row">
         <span>Output folder name</span>
-        <input type="text" id="best-target" placeholder="e.g. annotation_batch_1" />
+        <input type="text" id="save-target" placeholder="e.g. people_or_machines" />
+        <span class="muted small">Created inside <code>_outputs/</code></span>
+      </label>
+      <label class="text-row">
+        <span>Copy method</span>
+        <select id="save-method">
+          <option value="symlink" selected>Quick (shortcuts) — recommended</option>
+          <option value="hardlink">Quick (hardlinks)</option>
+          <option value="copy">Real copies (independent files)</option>
+          <option value="list">Just the list of filenames</option>
+        </select>
+        <span class="muted small">Shortcuts/hardlinks use no extra disk; copies are full duplicates.</span>
       </label>
     </div>
 
     <div class="actions" style="margin-top:18px">
-      <button class="btn btn-primary btn-lg" id="btn-filter-export">Create filtered folder</button>
-      <button class="btn btn-secondary btn-lg" id="btn-pick-best">Pick best N</button>
+      <button class="btn btn-primary btn-lg" id="btn-save">Save</button>
       <span class="muted small" id="filter-export-status"></span>
     </div>
   </section>

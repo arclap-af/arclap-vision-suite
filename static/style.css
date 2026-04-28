@@ -1255,6 +1255,76 @@ code { background: var(--bg-2); padding: 1px 6px; border-radius: 4px; font-famil
 }
 .empty-state p { margin-bottom: 16px; }
 
+/* Filter Step 6 — single Save form with mode toggle */
+.save-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.save-mode-card {
+  display: flex;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-3);
+  cursor: pointer;
+  transition: border-color var(--dur-2) var(--ease-out),
+              box-shadow var(--dur-2) var(--ease-out);
+}
+.save-mode-card input[type="radio"] {
+  margin-top: 4px;
+  accent-color: var(--color-brand);
+}
+.save-mode-card:hover { border-color: var(--color-brand); }
+.save-mode-card:has(input:checked) {
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 3px var(--color-brand-soft);
+  background: var(--color-brand-soft);
+}
+.save-mode-body h4 {
+  font-family: var(--font-brand);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-strong);
+  text-transform: none;
+  letter-spacing: -0.01em;
+  margin-bottom: 4px;
+}
+.save-mode-body p {
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+}
+
+.star-row {
+  display: inline-flex;
+  gap: 2px;
+}
+.star-row button {
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  font-size: 18px;
+  color: var(--color-border);
+  cursor: pointer;
+  letter-spacing: -2px;
+  transition: color var(--dur-2) var(--ease-out);
+}
+.star-row button:hover { color: var(--color-brand-hover); }
+.star-row[data-value="1"] button[data-stars="1"],
+.star-row[data-value="2"] button[data-stars="1"],
+.star-row[data-value="2"] button[data-stars="2"],
+.star-row[data-value="3"] button[data-stars="1"],
+.star-row[data-value="3"] button[data-stars="2"],
+.star-row[data-value="3"] button[data-stars="3"],
+.star-row[data-value="4"] button[data-stars="1"],
+.star-row[data-value="4"] button[data-stars="2"],
+.star-row[data-value="4"] button[data-stars="3"],
+.star-row[data-value="4"] button[data-stars="4"],
+.star-row[data-value="5"] button { color: var(--color-brand); }
+
 /* Filter — preset bar, PPE summary, layered class breakdown */
 .preset-bar {
   display: flex; gap: 12px; align-items: end;
