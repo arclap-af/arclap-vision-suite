@@ -571,19 +571,24 @@ def list_pipelines():
 # ----------------------------------------------------------------------------
 
 class RtspStartRequest(BaseModel):
-    url: str
+    url: str                            # rtsp://, http://, file path, or "0"/"1" for webcam
     output_name: str | None = None
-    rtsp_mode: str = "blur"  # blur | detect | count | record
+    rtsp_mode: str = "detect"           # blur | detect | count | record
     conf: float = 0.30
+    iou: float = 0.45
     detect_every: int = 2
     max_fps: float = 15.0
-    duration: int = 0  # seconds; 0 = run until stopped
+    duration: int = 0
     project_id: str | None = None
+    model: str | None = None            # absolute path to .pt; defaults to active CSI
+    tracker: str = "bytetrack"          # bytetrack | botsort | none
+    class_filter: str = ""              # comma-separated class IDs
+    mjpeg_port: int = 8765
 
 
 @app.post("/api/rtsp/start")
 def rtsp_start(req: RtspStartRequest):
-    """Spawn a live RTSP processor as a queued job."""
+    """Spawn the live processor as a queued job."""
     out_name = (req.output_name or f"rtsp_{int(time.time())}").strip()
     if not out_name.lower().endswith(".mp4"):
         out_name += ".mp4"
@@ -595,13 +600,34 @@ def rtsp_start(req: RtspStartRequest):
             proj_dir.mkdir(exist_ok=True)
             output_path = proj_dir / out_name
 
+    # Default model = active CSI version when not supplied
+    model_path = req.model
+    if not model_path:
+        try:
+            active = swiss_core.active_version(ROOT)
+            if active:
+                model_path = active["path"]
+        except Exception:
+            model_path = None
+
+    base = output_path.with_suffix("")
     settings = {
         "rtsp_mode": req.rtsp_mode,
         "conf": req.conf,
+        "iou": req.iou,
         "detect_every": req.detect_every,
         "max_fps": req.max_fps,
         "duration": req.duration,
+        "tracker": req.tracker,
+        "class_filter": req.class_filter,
+        "mjpeg_port": req.mjpeg_port,
+        "status_path": str(base) + ".live_status.json",
+        "control_path": str(base) + ".control.json",
+        "events_csv": str(base) + ".events.csv",
+        "snapshot_dir": str(base) + "_snapshots",
     }
+    if model_path:
+        settings["model"] = model_path
     job = db.create_job(
         kind="stream",
         mode="rtsp",
@@ -611,7 +637,143 @@ def rtsp_start(req: RtspStartRequest):
         project_id=req.project_id,
     )
     queue.submit(job.id)
-    return {"job_id": job.id}
+    return {"job_id": job.id, "mjpeg_port": req.mjpeg_port}
+
+
+@app.get("/api/rtsp/{job_id}/mjpeg")
+def rtsp_mjpeg_proxy(job_id: str):
+    """Proxy the MJPEG stream from the live processor's localhost server.
+    The browser hits this URL (relative to the Suite); we stream from
+    the script's MJPEG server."""
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Job not found")
+    port = (j.settings or {}).get("mjpeg_port", 8765)
+    upstream_url = f"http://127.0.0.1:{port}/mjpeg"
+    import urllib.request
+    try:
+        upstream = urllib.request.urlopen(upstream_url, timeout=5)
+    except Exception as e:
+        raise HTTPException(503, f"MJPEG upstream unreachable: {e}")
+    boundary = "arclapframe"
+
+    def _gen():
+        try:
+            while True:
+                chunk = upstream.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        except Exception:
+            pass
+        finally:
+            try: upstream.close()
+            except Exception: pass
+
+    return StreamingResponse(
+        _gen(),
+        media_type=f"multipart/x-mixed-replace; boundary={boundary}",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+class RtspUpdateRequest(BaseModel):
+    conf: float | None = None
+    iou: float | None = None
+    class_filter: list[int] | None = None
+    paused: bool | None = None
+    snapshot: bool | None = None
+
+
+@app.post("/api/rtsp/{job_id}/update")
+def rtsp_update_settings(job_id: str, req: RtspUpdateRequest):
+    """Live-update the running processor's conf / iou / class filter / pause /
+    request snapshot. Writes the control JSON file the script polls every 500ms."""
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Job not found")
+    ctrl_path = (j.settings or {}).get("control_path")
+    if not ctrl_path:
+        raise HTTPException(400, "Job has no control file (started before live-update support)")
+    p = Path(ctrl_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    existing = {}
+    if p.is_file():
+        try:
+            existing = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+    payload = req.model_dump(exclude_none=True)
+    existing.update(payload)
+    p.write_text(json.dumps(existing), encoding="utf-8")
+    return {"ok": True, "applied": payload}
+
+
+@app.get("/api/rtsp/{job_id}/events.csv")
+def rtsp_events_csv(job_id: str):
+    """Download the per-detection events CSV the script writes."""
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404)
+    p = (j.settings or {}).get("events_csv")
+    if not p or not Path(p).is_file():
+        raise HTTPException(404, "No events CSV yet — start the stream first.")
+    return FileResponse(p, media_type="text/csv",
+                         filename=Path(p).name)
+
+
+@app.get("/api/rtsp/{job_id}/snapshots")
+def rtsp_list_snapshots(job_id: str):
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404)
+    d = (j.settings or {}).get("snapshot_dir")
+    if not d or not Path(d).is_dir():
+        return {"snapshots": []}
+    snaps = sorted(Path(d).glob("snap_*.png"),
+                    key=lambda p: -p.stat().st_mtime)
+    return {"snapshots": [{"name": s.name, "size_kb": round(s.stat().st_size / 1024, 1),
+                            "url": f"/api/rtsp/{job_id}/snapshot-file?name={s.name}"}
+                          for s in snaps[:50]]}
+
+
+@app.get("/api/rtsp/{job_id}/snapshot-file")
+def rtsp_snapshot_file(job_id: str, name: str):
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404)
+    d = (j.settings or {}).get("snapshot_dir")
+    if not d:
+        raise HTTPException(404)
+    safe = Path(name).name
+    p = Path(d) / safe
+    if not p.is_file():
+        raise HTTPException(404)
+    return FileResponse(p)
+
+
+@app.get("/api/cameras/webcams")
+def list_webcams():
+    """Probe the first 5 USB camera indices, return which respond. Cheap
+    test using cv2.VideoCapture — opens, reads one frame, closes."""
+    cams = []
+    for idx in range(5):
+        try:
+            cap = cv2.VideoCapture(
+                idx, cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY)
+            ok = cap.isOpened()
+            w = h = 0
+            if ok:
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    h, w = frame.shape[:2]
+            cap.release()
+            if ok and w > 0:
+                cams.append({"index": idx, "label": f"Webcam {idx}",
+                              "resolution": [w, h]})
+        except Exception:
+            continue
+    return {"webcams": cams}
 
 
 @app.get("/api/rtsp/{job_id}/live")

@@ -3158,33 +3158,150 @@ const rtspConf = $('rtsp-conf');
 const rtspEvery = $('rtsp-detect-every');
 const rtspFps = $('rtsp-fps');
 
-if (rtspConf) {
-  rtspConf.addEventListener('input', () => $('rtsp-conf-value').textContent = (rtspConf.value / 100).toFixed(2));
-  rtspEvery.addEventListener('input', () => {
-    const v = parseInt(rtspEvery.value);
-    $('rtsp-detect-every-value').textContent = v === 1 ? 'every frame'
-      : v === 2 ? '2 (skip every other frame)' : `${v} (skip ${v-1} of every ${v} frames)`;
-  });
-  rtspFps.addEventListener('input', () => $('rtsp-fps-value').textContent = `${rtspFps.value} fps`);
+// Source-kind toggle
+function rtspSyncSourceKind() {
+  const kind = (document.querySelector('input[name="rtsp-source-kind"]:checked') || {}).value || 'rtsp';
+  $('rtsp-url-row').classList.toggle('hidden', kind !== 'rtsp');
+  $('rtsp-file-row').classList.toggle('hidden', kind !== 'file');
+  $('rtsp-webcam-row').classList.toggle('hidden', kind !== 'webcam');
+  if (kind === 'webcam') rescanWebcams();
+}
+document.querySelectorAll('input[name="rtsp-source-kind"]').forEach(el => {
+  el.addEventListener('change', rtspSyncSourceKind);
+});
+
+async function rescanWebcams() {
+  $('rtsp-webcam-pick').innerHTML = '<option>(scanning…)</option>';
+  try {
+    const r = await fetch('/api/cameras/webcams');
+    const d = await r.json();
+    if (!d.webcams || !d.webcams.length) {
+      $('rtsp-webcam-pick').innerHTML = '<option value="">(no webcams found)</option>';
+      return;
+    }
+    $('rtsp-webcam-pick').innerHTML = d.webcams.map(c =>
+      `<option value="${c.index}">${escapeHtml(c.label)} · ${c.resolution[0]}×${c.resolution[1]}</option>`
+    ).join('');
+  } catch {
+    $('rtsp-webcam-pick').innerHTML = '<option value="">(scan failed)</option>';
+  }
+}
+if ($('btn-rtsp-rescan-webcams')) $('btn-rtsp-rescan-webcams').addEventListener('click', rescanWebcams);
+if ($('btn-rtsp-browse-file')) $('btn-rtsp-browse-file').addEventListener('click', () => openFolderModal('rtsp-file-path'));
+
+// Populate model dropdown from /api/models
+async function rtspPopulateModels() {
+  if (!$('rtsp-model')) return;
+  try {
+    const models = await fetch('/api/models').then(r => r.json());
+    const detect = (models || []).filter(m => ['detect', 'segment', 'obb'].includes((m.task || '').toLowerCase()));
+    if (!detect.length) {
+      $('rtsp-model').innerHTML = '<option value="">(no detection models registered)</option>';
+      return;
+    }
+    // Sort: CSI_V* on top
+    detect.sort((a, b) => {
+      const ac = a.name.startsWith('CSI_V') ? 0 : 1;
+      const bc = b.name.startsWith('CSI_V') ? 0 : 1;
+      return ac - bc;
+    });
+    $('rtsp-model').innerHTML = detect.map(m =>
+      `<option value="${escapeHtml(m.path)}">${escapeHtml(m.name)} — ${m.task}, ${m.n_classes} cls (${m.size_mb} MB)</option>`
+    ).join('');
+  } catch {
+    $('rtsp-model').innerHTML = '<option value="">(could not load)</option>';
+  }
 }
 
+// Live-tunable sliders
+if ($('rtsp-conf')) {
+  $('rtsp-conf').addEventListener('input', () => {
+    $('rtsp-conf-value').textContent = ($('rtsp-conf').value / 100).toFixed(2);
+    rtspMaybeLiveUpdate();
+  });
+}
+if ($('rtsp-iou')) {
+  $('rtsp-iou').addEventListener('input', () => {
+    $('rtsp-iou-value').textContent = ($('rtsp-iou').value / 100).toFixed(2);
+    rtspMaybeLiveUpdate();
+  });
+}
+if ($('rtsp-detect-every')) {
+  $('rtsp-detect-every').addEventListener('input', () => {
+    const v = parseInt($('rtsp-detect-every').value);
+    $('rtsp-detect-every-value').textContent =
+      v === 1 ? 'every frame' :
+      v === 2 ? 'every 2nd' :
+      `every ${v}th`;
+  });
+}
+if ($('rtsp-fps')) {
+  $('rtsp-fps').addEventListener('input', () => {
+    $('rtsp-fps-value').textContent = `${$('rtsp-fps').value} fps`;
+  });
+}
+
+let rtspLiveUpdateTimer = null;
+function rtspMaybeLiveUpdate() {
+  if (!rtspJobId) return;   // not running yet
+  if (rtspLiveUpdateTimer) clearTimeout(rtspLiveUpdateTimer);
+  rtspLiveUpdateTimer = setTimeout(async () => {
+    try {
+      await fetch(`/api/rtsp/${rtspJobId}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conf: parseInt($('rtsp-conf').value) / 100,
+          iou: parseInt($('rtsp-iou').value) / 100,
+        }),
+      });
+    } catch {}
+  }, 250);
+}
+
+// Tab switching for the live panel
+document.querySelectorAll('.rtsp-tab').forEach(b => {
+  b.addEventListener('click', () => {
+    const name = b.dataset.rtspTab;
+    document.querySelectorAll('.rtsp-tab').forEach(t => t.classList.toggle('active', t === b));
+    document.querySelectorAll('.rtsp-tab-pane').forEach(p =>
+      p.classList.toggle('hidden', p.dataset.rtspPane !== name));
+  });
+});
+
+let rtspPaused = false;
+
 async function rtspStart() {
-  const url = $('rtsp-url').value.trim();
-  if (!url) { toast('Enter an RTSP URL first', 'error'); return; }
+  const kind = (document.querySelector('input[name="rtsp-source-kind"]:checked') || {}).value || 'rtsp';
+  let url = '';
+  if (kind === 'rtsp') {
+    url = $('rtsp-url').value.trim();
+    if (!url) { toast('Enter a stream URL first', 'error'); return; }
+  } else if (kind === 'file') {
+    url = $('rtsp-file-path').value.trim();
+    if (!url) { toast('Pick a video file first', 'error'); return; }
+  } else if (kind === 'webcam') {
+    url = $('rtsp-webcam-pick').value;
+    if (!url) { toast('No webcam selected', 'error'); return; }
+  }
   const body = {
     url,
     rtsp_mode: $('rtsp-mode').value,
     conf: parseInt($('rtsp-conf').value) / 100,
+    iou: parseInt($('rtsp-iou').value) / 100,
     detect_every: parseInt($('rtsp-detect-every').value),
     max_fps: parseFloat($('rtsp-fps').value),
     duration: parseInt($('rtsp-duration').value) || 0,
     output_name: $('rtsp-output-name').value.trim() || 'rtsp_record.mp4',
+    model: $('rtsp-model').value || null,
+    tracker: $('rtsp-tracker').value,
+    class_filter: '',
+    mjpeg_port: 8765 + Math.floor(Math.random() * 100),  // avoid clashes
   };
   $('btn-rtsp-start').classList.add('loading');
   try {
     const r = await fetch('/api/rtsp/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (!r.ok) {
@@ -3193,10 +3310,24 @@ async function rtspStart() {
     }
     const data = await r.json();
     rtspJobId = data.job_id;
+    rtspPaused = false;
     toast(`Live job ${data.job_id} queued. Connecting…`, 'success');
     $('btn-rtsp-start').classList.add('hidden');
     $('btn-rtsp-stop').classList.remove('hidden');
+    $('btn-rtsp-pause').classList.remove('hidden');
+    $('btn-rtsp-snapshot').classList.remove('hidden');
     $('rtsp-live-panel').classList.remove('hidden');
+    // Wire export download links to this job
+    $('btn-rtsp-events-csv').href = `/api/rtsp/${rtspJobId}/events.csv`;
+    // Start MJPEG (after a short delay to let the python script bind the port)
+    setTimeout(() => {
+      const img = $('rtsp-mjpeg');
+      if (img) {
+        img.src = `/api/rtsp/${rtspJobId}/mjpeg?t=${Date.now()}`;
+        img.onerror = () => { $('rtsp-video-overlay').textContent = 'MJPEG stream unavailable — first frames may take a few seconds.'; };
+        img.onload = () => { $('rtsp-video-overlay').classList.add('hidden'); };
+      }
+    }, 2500);
     pollRtsp();
   } catch (err) {
     toast('Could not start: ' + err.message, 'error');
@@ -3211,7 +3342,70 @@ async function rtspStop() {
   toast('Stop sent', 'warn');
   if (rtspPollHandle) { clearInterval(rtspPollHandle); rtspPollHandle = null; }
   $('btn-rtsp-stop').classList.add('hidden');
+  $('btn-rtsp-pause').classList.add('hidden');
+  $('btn-rtsp-snapshot').classList.add('hidden');
   $('btn-rtsp-start').classList.remove('hidden');
+  destroyRtspCharts();
+}
+
+async function rtspTogglePause() {
+  if (!rtspJobId) return;
+  rtspPaused = !rtspPaused;
+  await fetch(`/api/rtsp/${rtspJobId}/update`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paused: rtspPaused }),
+  });
+  $('btn-rtsp-pause').textContent = rtspPaused ? '▶ Resume' : '⏸ Pause';
+}
+
+async function rtspSnapshot() {
+  if (!rtspJobId) return;
+  await fetch(`/api/rtsp/${rtspJobId}/update`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ snapshot: true }),
+  });
+  toast('Snapshot saved', 'success');
+  setTimeout(refreshRtspSnapshots, 1000);
+}
+
+async function refreshRtspSnapshots() {
+  if (!rtspJobId) return;
+  try {
+    const d = await fetch(`/api/rtsp/${rtspJobId}/snapshots`).then(r => r.json());
+    if (!d.snapshots || !d.snapshots.length) {
+      $('rtsp-snapshots-list').innerHTML = '<p class="muted small">No snapshots yet.</p>';
+      return;
+    }
+    $('rtsp-snapshots-list').innerHTML =
+      d.snapshots.map(s =>
+        `<div style="margin:4px 0"><a href="${s.url}" target="_blank">${escapeHtml(s.name)}</a> <span class="muted small">${s.size_kb} KB</span></div>`
+      ).join('');
+  } catch {}
+}
+
+// Charts
+let rtspCharts = {};
+function destroyRtspCharts() {
+  for (const k in rtspCharts) {
+    try { rtspCharts[k].destroy(); } catch {}
+  }
+  rtspCharts = {};
+}
+
+function createOrUpdateRtspChart(canvasId, datasets, labels) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+  if (rtspCharts[canvasId]) {
+    rtspCharts[canvasId].data.labels = labels;
+    rtspCharts[canvasId].data.datasets = datasets;
+    rtspCharts[canvasId].update('none');
+  } else {
+    rtspCharts[canvasId] = new Chart(ctx, {
+      type: 'line',
+      data: { labels, datasets },
+      options: commonChartOptions(),
+    });
+  }
 }
 
 async function pollRtsp() {
@@ -3220,31 +3414,140 @@ async function pollRtsp() {
     if (!rtspJobId) return;
     try {
       const r = await fetch(`/api/rtsp/${rtspJobId}/live`).then(r => r.json());
+      // Engineering tab
       $('live-state').textContent = r.state || '—';
-      $('live-people').textContent = r.people ?? '—';
+      $('live-decode-fps').textContent = r.decode_fps != null ? `${r.decode_fps}` : '—';
+      $('live-infer-fps').textContent = r.infer_fps != null ? `${r.infer_fps}` : '—';
+      $('live-infer-p50').textContent = r.infer_ms_p50 != null ? `${r.infer_ms_p50} ms` : '—';
+      $('live-infer-p95').textContent = r.infer_ms_p95 != null ? `${r.infer_ms_p95} ms` : '—';
+      $('live-infer-p99').textContent = r.infer_ms_p99 != null ? `${r.infer_ms_p99} ms` : '—';
       $('live-frames').textContent = r.frames ?? '—';
-      $('live-fps').textContent = r.fps_actual ? r.fps_actual.toFixed(1) : '—';
-      $('live-elapsed').textContent = r.elapsed_s
-        ? `${Math.round(r.elapsed_s)}s` : '—';
-      $('live-res').textContent = r.resolution
-        ? `${r.resolution[0]}×${r.resolution[1]}` : '—';
-      $('live-raw').textContent = JSON.stringify(r, null, 2);
+      $('live-ai-runs').textContent = r.ai_runs ?? '—';
+      $('live-elapsed').textContent = r.elapsed_s ? `${Math.round(r.elapsed_s)}s` : '—';
+      $('live-res').textContent = r.resolution ? `${r.resolution[0]}×${r.resolution[1]}` : '—';
+      $('live-tracker').textContent = r.tracker || '—';
+      $('live-model').textContent = r.model ? r.model.split(/[\\\/]/).pop() : '—';
+
+      // Live preview tab — class chips
+      if (r.frame_classes && Object.keys(r.frame_classes).length) {
+        $('rtsp-class-chips').innerHTML = Object.entries(r.frame_classes)
+          .sort((a, b) => b[1] - a[1])
+          .map(([name, n]) => `<span class="rtsp-chip">${escapeHtml(name)} · ${n}</span>`)
+          .join(' ');
+      } else if (r.state === 'running') {
+        $('rtsp-class-chips').innerHTML = '<p class="muted small">No detections in current frame.</p>';
+      }
+      $('rtsp-tracks-active').textContent = r.tracks_active ?? '—';
+      $('rtsp-tracks-total').textContent = r.tracks_total ?? '—';
+
+      // Alerts banner
+      if (r.fired_alerts && r.fired_alerts.length) {
+        $('rtsp-alerts').innerHTML = '<h4>Alerts</h4>' +
+          r.fired_alerts.slice(-5).reverse().map(a =>
+            `<div class="rtsp-alert rtsp-alert-${escapeHtml(a.severity || 'warn')}">⚠️ ${escapeHtml(a.msg)}</div>`
+          ).join('');
+      }
+
+      // Engineering charts
+      if (r.history_fps && r.history_fps.length) {
+        const labels = r.history_fps.map(p => new Date(p[0] * 1000).toLocaleTimeString().slice(-8));
+        createOrUpdateRtspChart('chart-rtsp-fps', [
+          {label: 'Decode FPS', borderColor: '#1E88E5', data: r.history_fps.map(p => p[1]), borderWidth: 2, pointRadius: 0, tension: 0.25},
+          {label: 'Inference FPS', borderColor: '#43A047', data: r.history_fps.map(p => p[2]), borderWidth: 2, pointRadius: 0, tension: 0.25},
+          {label: 'Display FPS', borderColor: '#FBC02D', data: r.history_fps.map(p => p[3]), borderWidth: 2, pointRadius: 0, tension: 0.25},
+        ], labels);
+        // Latency chart — pull single-point series from current values for now
+        // Real per-second history of latency would need backend support; we can synthesize from the rolling p50/p95/p99.
+        createOrUpdateRtspChart('chart-rtsp-latency', [
+          {label: 'P50', borderColor: '#1E88E5', data: r.history_fps.map(() => r.infer_ms_p50), borderWidth: 2, pointRadius: 0, tension: 0.25},
+          {label: 'P95', borderColor: '#FBC02D', data: r.history_fps.map(() => r.infer_ms_p95), borderWidth: 2, pointRadius: 0, tension: 0.25},
+          {label: 'P99', borderColor: '#E5213C', data: r.history_fps.map(() => r.infer_ms_p99), borderWidth: 2, pointRadius: 0, tension: 0.25},
+        ], labels);
+      }
+      if (r.history_dets && r.history_dets.length) {
+        const labels = r.history_dets.map(p => new Date(p[0] * 1000).toLocaleTimeString().slice(-8));
+        createOrUpdateRtspChart('chart-rtsp-dets', [
+          {label: 'Total dets/frame', borderColor: '#E5213C', backgroundColor: '#E5213C22', data: r.history_dets.map(p => p[1]), borderWidth: 2, pointRadius: 0, tension: 0.25, fill: true},
+        ], labels);
+        // Per-class chart: aggregate top 5 classes across history
+        const classTotals = {};
+        for (const [, , c] of r.history_dets) {
+          for (const k in c) classTotals[k] = (classTotals[k] || 0) + c[k];
+        }
+        const top = Object.entries(classTotals).sort((a, b) => b[1] - a[1]).slice(0, 5);
+        const palette = ['#E5213C','#1E88E5','#43A047','#FBC02D','#7B1FA2'];
+        createOrUpdateRtspChart('chart-rtsp-per-class',
+          top.map(([cid, _], i) => ({
+            label: `class ${cid}`,
+            borderColor: palette[i],
+            data: r.history_dets.map(p => p[2][cid] || 0),
+            borderWidth: 2, pointRadius: 0, tension: 0.25,
+          })), labels);
+      }
+
+      // Events tab — render recent
+      if (r.recent_events) {
+        $('rtsp-events-log').innerHTML = r.recent_events.slice().reverse().map(e => {
+          const t = e.at ? new Date(e.at * 1000).toLocaleTimeString() : '—';
+          if (e.kind === 'first_seen') {
+            return `<div class="rtsp-event">${t} · 🆕 first seen track #${e.track_id} (${escapeHtml(e.class || '?')}, conf ${(e.conf || 0).toFixed(2)})</div>`;
+          }
+          if (e.kind === 'alert') {
+            return `<div class="rtsp-event rtsp-event-alert">${t} · ⚠️ ${escapeHtml(e.msg)}</div>`;
+          }
+          return `<div class="rtsp-event">${t} · ${escapeHtml(JSON.stringify(e))}</div>`;
+        }).join('');
+      }
+
+      $('rtsp-output-info').textContent = (r.url || '') + ' · ' + (r.frames || 0) + ' frames';
+
       if (r.state === 'stopped') {
         clearInterval(rtspPollHandle);
         rtspPollHandle = null;
         $('btn-rtsp-stop').classList.add('hidden');
+        $('btn-rtsp-pause').classList.add('hidden');
+        $('btn-rtsp-snapshot').classList.add('hidden');
         $('btn-rtsp-start').classList.remove('hidden');
       }
     } catch (e) {
-      // network blip; keep polling
+      // network blip — keep polling
     }
   }, 500);
+}
+
+function rtspExportSession() {
+  if (!rtspJobId) { toast('Start a session first', 'error'); return; }
+  const session = {
+    job_id: rtspJobId,
+    timestamp: new Date().toISOString(),
+    source_kind: (document.querySelector('input[name="rtsp-source-kind"]:checked') || {}).value,
+    url: $('rtsp-url').value || $('rtsp-file-path').value || $('rtsp-webcam-pick').value,
+    model: $('rtsp-model').value,
+    mode: $('rtsp-mode').value,
+    tracker: $('rtsp-tracker').value,
+    conf: parseInt($('rtsp-conf').value) / 100,
+    iou: parseInt($('rtsp-iou').value) / 100,
+    detect_every: parseInt($('rtsp-detect-every').value),
+    max_fps: parseFloat($('rtsp-fps').value),
+  };
+  const blob = new Blob([JSON.stringify(session, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `rtsp_session_${rtspJobId}.json`;
+  a.click();
 }
 
 if ($('btn-rtsp-start')) {
   $('btn-rtsp-start').addEventListener('click', rtspStart);
   $('btn-rtsp-stop').addEventListener('click', rtspStop);
 }
+if ($('btn-rtsp-pause')) $('btn-rtsp-pause').addEventListener('click', rtspTogglePause);
+if ($('btn-rtsp-snapshot')) $('btn-rtsp-snapshot').addEventListener('click', rtspSnapshot);
+if ($('btn-rtsp-export-session')) $('btn-rtsp-export-session').addEventListener('click', rtspExportSession);
+
+// Populate model dropdown when the page loads
+rtspPopulateModels();
+rtspSyncSourceKind();
 
 // =============================================================================
 // Swiss Detector tab — full lifecycle of the multi-class construction model

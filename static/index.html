@@ -704,41 +704,86 @@
 <main class="container hidden" id="page-live">
   <section class="card">
     <div class="card-header">
-      <h2>Live RTSP / IP camera</h2>
-      <p>Connect to any RTSP stream (Hikvision, Reolink, Axis, Dahua, generic ONVIF). The processor reads frames live, runs YOLO, and either blurs faces in real time, draws detection boxes, or just records — all while updating a live status panel.</p>
+      <h2>📹 Live testing environment</h2>
+      <p>Professional CV engineering testing — connect to any RTSP camera, USB webcam, or local video file; run any registered model with object tracking; see live boxes, performance metrics, engineering charts, event log, and configurable alerts. Live-tunable confidence + class filter without restarting.</p>
+    </div>
+
+    <!-- Source + model + settings ============================================= -->
+    <h3>Source &amp; model</h3>
+    <div class="rtsp-source-row">
+      <label class="checkbox-row">
+        <input type="radio" name="rtsp-source-kind" value="rtsp" checked /> RTSP / HTTP URL
+      </label>
+      <label class="checkbox-row">
+        <input type="radio" name="rtsp-source-kind" value="file" /> Local video file
+      </label>
+      <label class="checkbox-row">
+        <input type="radio" name="rtsp-source-kind" value="webcam" /> USB webcam
+      </label>
     </div>
     <div class="rtsp-form">
-      <label class="text-row">
+      <label class="text-row" id="rtsp-url-row">
         <span>Stream URL</span>
         <input type="text" id="rtsp-url" placeholder="rtsp://user:pass@camera.local:554/stream1" />
       </label>
+      <label class="text-row hidden" id="rtsp-file-row">
+        <span>Server-local video file</span>
+        <div class="folder-input-row">
+          <input type="text" id="rtsp-file-path" placeholder="C:\path\to\sample.mp4" />
+          <button class="btn btn-secondary btn-small" id="btn-rtsp-browse-file" type="button">📁 Browse…</button>
+        </div>
+      </label>
+      <label class="text-row hidden" id="rtsp-webcam-row">
+        <span>Webcam</span>
+        <select id="rtsp-webcam-pick"><option>(scanning…)</option></select>
+        <button class="btn btn-ghost btn-small" id="btn-rtsp-rescan-webcams" type="button">🔄 Rescan</button>
+      </label>
+
       <div class="rtsp-grid">
+        <label class="text-row">
+          <span>Model</span>
+          <select id="rtsp-model"></select>
+          <span class="muted small">CSI_V1 by default. Pick any registered model.</span>
+        </label>
         <label class="text-row">
           <span>Mode</span>
           <select id="rtsp-mode">
+            <option value="detect" selected>Detect &amp; draw boxes</option>
             <option value="blur">Blur faces in real time</option>
-            <option value="detect">Detect &amp; draw boxes</option>
-            <option value="count">Count people only (no recording)</option>
+            <option value="count">Count only (no recording)</option>
             <option value="record">Raw recording (no AI)</option>
           </select>
         </label>
         <label class="text-row">
-          <span>Detection sensitivity</span>
-          <input type="range" id="rtsp-conf" min="10" max="80" step="1" value="30"/>
+          <span>Tracker</span>
+          <select id="rtsp-tracker">
+            <option value="bytetrack" selected>ByteTrack (default — fast)</option>
+            <option value="botsort">BoT-SORT (more accurate, slower)</option>
+            <option value="none">None (raw detections only)</option>
+          </select>
+        </label>
+        <label class="text-row">
+          <span>Confidence threshold (live-tunable)</span>
+          <input type="range" id="rtsp-conf" min="5" max="95" step="1" value="30" />
           <span id="rtsp-conf-value" class="muted small">0.30</span>
         </label>
         <label class="text-row">
+          <span>IoU threshold (live-tunable)</span>
+          <input type="range" id="rtsp-iou" min="10" max="90" step="1" value="45" />
+          <span id="rtsp-iou-value" class="muted small">0.45</span>
+        </label>
+        <label class="text-row">
           <span>Process every Nth frame</span>
-          <input type="range" id="rtsp-detect-every" min="1" max="10" step="1" value="2"/>
-          <span id="rtsp-detect-every-value" class="muted small">2 (skip every other frame)</span>
+          <input type="range" id="rtsp-detect-every" min="1" max="10" step="1" value="2" />
+          <span id="rtsp-detect-every-value" class="muted small">every 2nd</span>
         </label>
         <label class="text-row">
           <span>Max output FPS</span>
-          <input type="range" id="rtsp-fps" min="5" max="30" step="1" value="15"/>
+          <input type="range" id="rtsp-fps" min="5" max="60" step="1" value="15" />
           <span id="rtsp-fps-value" class="muted small">15 fps</span>
         </label>
         <label class="text-row">
-          <span>Auto-stop after (seconds, 0 = never)</span>
+          <span>Auto-stop after (sec, 0 = never)</span>
           <input type="number" id="rtsp-duration" value="0" min="0" />
         </label>
         <label class="text-row">
@@ -746,30 +791,124 @@
           <input type="text" id="rtsp-output-name" value="rtsp_record.mp4" />
         </label>
       </div>
-      <button class="btn btn-primary btn-lg" id="btn-rtsp-start">
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-          <polygon points="5 3 19 12 5 21 5 3"/>
-        </svg>
-        Start live processing
-      </button>
-      <button class="btn btn-ghost hidden" id="btn-rtsp-stop">Stop</button>
+      <div class="actions">
+        <button class="btn btn-primary btn-lg" id="btn-rtsp-start">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          Start live testing
+        </button>
+        <button class="btn btn-ghost hidden" id="btn-rtsp-stop">⏹ Stop</button>
+        <button class="btn btn-ghost hidden" id="btn-rtsp-pause">⏸ Pause</button>
+        <button class="btn btn-ghost hidden" id="btn-rtsp-snapshot">📸 Snapshot</button>
+      </div>
     </div>
   </section>
 
+  <!-- Live panel (only after start) ========================================= -->
   <section class="card hidden" id="rtsp-live-panel">
-    <div class="card-header">
-      <h2>Live status</h2>
-      <p>Updates twice a second from the running stream processor.</p>
+    <nav class="rtsp-tabs">
+      <button class="rtsp-tab active" data-rtsp-tab="live">📺 Live preview</button>
+      <button class="rtsp-tab" data-rtsp-tab="engineering">📊 Engineering</button>
+      <button class="rtsp-tab" data-rtsp-tab="events">🕒 Events</button>
+      <button class="rtsp-tab" data-rtsp-tab="export">💾 Export</button>
+    </nav>
+
+    <!-- Live preview tab -->
+    <div class="rtsp-tab-pane" data-rtsp-pane="live">
+      <div class="rtsp-live-grid">
+        <div class="rtsp-video-wrap">
+          <img id="rtsp-mjpeg" alt="Live preview will appear here once frames arrive…" />
+          <div class="rtsp-video-overlay" id="rtsp-video-overlay">Connecting…</div>
+        </div>
+        <div class="rtsp-side">
+          <div class="rtsp-class-counts">
+            <h4>Per-class counts (current frame)</h4>
+            <div id="rtsp-class-chips"><p class="muted small">No detections yet.</p></div>
+          </div>
+          <div class="rtsp-tracking">
+            <h4>Tracking</h4>
+            <div class="rtsp-track-stats">
+              <div><dt>Active tracks</dt><dd id="rtsp-tracks-active">—</dd></div>
+              <div><dt>Total seen</dt><dd id="rtsp-tracks-total">—</dd></div>
+            </div>
+          </div>
+          <div class="rtsp-alerts" id="rtsp-alerts">
+            <h4>Alerts</h4>
+            <p class="muted small">No alerts firing.</p>
+          </div>
+        </div>
+      </div>
     </div>
-    <div class="live-grid">
-      <div class="live-stat"><dt>State</dt><dd id="live-state">—</dd></div>
-      <div class="live-stat"><dt>People in frame</dt><dd id="live-people">—</dd></div>
-      <div class="live-stat"><dt>Frames captured</dt><dd id="live-frames">—</dd></div>
-      <div class="live-stat"><dt>Effective FPS</dt><dd id="live-fps">—</dd></div>
-      <div class="live-stat"><dt>Elapsed</dt><dd id="live-elapsed">—</dd></div>
-      <div class="live-stat"><dt>Resolution</dt><dd id="live-res">—</dd></div>
+
+    <!-- Engineering tab -->
+    <div class="rtsp-tab-pane hidden" data-rtsp-pane="engineering">
+      <div class="rtsp-perf-grid">
+        <div class="live-stat"><dt>State</dt><dd id="live-state">—</dd></div>
+        <div class="live-stat"><dt>Decode FPS</dt><dd id="live-decode-fps">—</dd></div>
+        <div class="live-stat"><dt>Inference FPS</dt><dd id="live-infer-fps">—</dd></div>
+        <div class="live-stat"><dt>Inference P50</dt><dd id="live-infer-p50">—</dd></div>
+        <div class="live-stat"><dt>Inference P95</dt><dd id="live-infer-p95">—</dd></div>
+        <div class="live-stat"><dt>Inference P99</dt><dd id="live-infer-p99">—</dd></div>
+        <div class="live-stat"><dt>Frames captured</dt><dd id="live-frames">—</dd></div>
+        <div class="live-stat"><dt>AI runs</dt><dd id="live-ai-runs">—</dd></div>
+        <div class="live-stat"><dt>Elapsed</dt><dd id="live-elapsed">—</dd></div>
+        <div class="live-stat"><dt>Resolution</dt><dd id="live-res">—</dd></div>
+        <div class="live-stat"><dt>Tracker</dt><dd id="live-tracker">—</dd></div>
+        <div class="live-stat"><dt>Model</dt><dd id="live-model">—</dd></div>
+      </div>
+      <div class="charts-grid" style="margin-top:14px">
+        <div class="chart-card wide">
+          <h4>FPS over time (decode / inference / display)</h4>
+          <canvas id="chart-rtsp-fps"></canvas>
+        </div>
+        <div class="chart-card wide">
+          <h4>Inference latency P50 / P95 / P99</h4>
+          <canvas id="chart-rtsp-latency"></canvas>
+        </div>
+        <div class="chart-card wide">
+          <h4>Detections per frame</h4>
+          <canvas id="chart-rtsp-dets"></canvas>
+        </div>
+        <div class="chart-card wide">
+          <h4>Per-class rate (last 60 sec)</h4>
+          <canvas id="chart-rtsp-per-class"></canvas>
+        </div>
+      </div>
     </div>
-    <pre id="live-raw" class="muted small"></pre>
+
+    <!-- Events tab -->
+    <div class="rtsp-tab-pane hidden" data-rtsp-pane="events">
+      <h4>Recent events (last 100)</h4>
+      <p class="muted small">Detection events, first-time-seen tracks, alerts, errors. Live-updating.</p>
+      <div id="rtsp-events-log" class="rtsp-events-log"></div>
+    </div>
+
+    <!-- Export tab -->
+    <div class="rtsp-tab-pane hidden" data-rtsp-pane="export">
+      <h4>Export from this session</h4>
+      <div class="cv-tools-grid">
+        <div class="cv-tool-card">
+          <h4>📥 Detection events CSV</h4>
+          <p class="muted small">Every detection in every frame: timestamp, class, confidence, bbox, track ID.</p>
+          <a class="btn btn-secondary btn-small" id="btn-rtsp-events-csv" target="_blank" rel="noopener">⬇️ Download CSV</a>
+        </div>
+        <div class="cv-tool-card">
+          <h4>📸 Snapshots</h4>
+          <p class="muted small">Click 📸 Snapshot in the toolbar to capture the current annotated frame.</p>
+          <div id="rtsp-snapshots-list"><p class="muted small">No snapshots yet.</p></div>
+        </div>
+        <div class="cv-tool-card">
+          <h4>🎬 Recorded MP4</h4>
+          <p class="muted small">Annotated MP4 keeps writing to <code id="rtsp-output-info">—</code> while the stream runs.</p>
+        </div>
+        <div class="cv-tool-card">
+          <h4>⚙️ Session config</h4>
+          <p class="muted small">Reproducible test setup — save as JSON to replay this exact session later.</p>
+          <button class="btn btn-secondary btn-small" id="btn-rtsp-export-session" type="button">⬇️ Save session JSON</button>
+        </div>
+      </div>
+    </div>
   </section>
 </main>
 
@@ -2089,6 +2228,6 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-29-g-csi-rebrand"></script>
+<script src="/static/app.js?v=2026-04-29-h-live-pro"></script>
 </body>
 </html>
