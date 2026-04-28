@@ -1441,9 +1441,32 @@
   <section class="card swiss-stab-pane hidden" data-stab-pane="classes">
     <div class="card-header">
       <h3>📋 Class taxonomy</h3>
-      <p>Every class the model could detect. IDs are immutable so old annotations never break. Add a class, then click 🔍 Web on its card to collect training images.</p>
+      <p>Every class the model could detect. IDs are immutable so old annotations never break. Add a class, then click 🔍 Web on its card to collect training images — or use the <strong>Bulk web collect</strong> below to fill <em>all</em> classes in one click.</p>
     </div>
-    <div class="swiss-class-toolbar">
+
+    <div class="bulk-collect-panel">
+      <h4>🌐 Bulk web collect — fill all classes at once</h4>
+      <p class="muted small" style="margin:0 0 8px">Runs DuckDuckGo + Bing + Wikimedia (+ optional Pexels) in sequence for every active class. With <em>auto-accept</em> on, accepted images go straight into the per-class staging folder ready for the next training run.</p>
+      <div class="bulk-collect-row">
+        <label class="text-row">
+          <span>Images per class</span>
+          <input type="number" id="bulk-per-class" value="30" min="5" max="200" />
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="bulk-auto-accept" checked />
+          Auto-accept (skip review modal)
+        </label>
+        <button class="btn btn-primary" id="btn-bulk-collect">🌐 Collect for ALL active classes</button>
+      </div>
+      <div id="bulk-collect-progress" class="bulk-collect-progress hidden">
+        <div class="bulk-collect-status muted small">Starting…</div>
+        <div class="bulk-collect-bar"><div class="bulk-collect-fill"></div></div>
+        <div class="bulk-collect-results"></div>
+        <button class="btn btn-ghost btn-small" id="btn-bulk-stop">Stop</button>
+      </div>
+    </div>
+
+    <div class="swiss-class-toolbar" style="margin-top:14px">
       <button class="btn btn-primary btn-small" id="btn-swiss-add-class">+ Add new class</button>
       <span class="muted small" id="swiss-class-summary">—</span>
     </div>
@@ -1956,6 +1979,6 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-29-c-engineering-charts"></script>
+<script src="/static/app.js?v=2026-04-29-d-bulk-collect"></script>
 </body>
 </html>

@@ -4218,6 +4218,105 @@ if ($('btn-cv-auto-go'))   $('btn-cv-auto-go').addEventListener('click', cvAutoA
 if ($('btn-cv-eval-go'))   $('btn-cv-eval-go').addEventListener('click', cvEvaluateRun);
 
 // =============================================================================
+// Bulk web-collect — fill every class with N images in one click
+// =============================================================================
+
+let bulkCollectId = null;
+let bulkCollectPoll = null;
+
+async function startBulkCollect() {
+  const perClass = parseInt($('bulk-per-class').value) || 30;
+  const autoAccept = $('bulk-auto-accept').checked;
+  if (!confirm(`Collect ${perClass} images for every active class? This runs sequentially across DuckDuckGo + Bing + Wikimedia and can take ${Math.round(perClass * 40 * 0.3 / 60)} minutes for 40 classes.`)) return;
+  $('btn-bulk-collect').disabled = true;
+  try {
+    const r = await fetch('/api/swiss/web-collect-bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ per_class: perClass, auto_accept: autoAccept }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    bulkCollectId = d.bulk_id;
+    $('bulk-collect-progress').classList.remove('hidden');
+    $('bulk-collect-progress').querySelector('.bulk-collect-status').textContent =
+      `Started — ${d.n_classes} classes × ~${perClass} images. Estimated ${d.estimated_minutes} min.`;
+    bulkCollectPoll = setInterval(pollBulkCollect, 2000);
+  } catch (e) {
+    toast('Bulk collect failed to start: ' + e.message, 'error');
+    $('btn-bulk-collect').disabled = false;
+  }
+}
+
+async function pollBulkCollect() {
+  if (!bulkCollectId) return;
+  try {
+    const r = await fetch(`/api/swiss/web-collect-bulk/${bulkCollectId}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    const wrap = $('bulk-collect-progress');
+    if (!wrap) return;
+    const status = wrap.querySelector('.bulk-collect-status');
+    const fill = wrap.querySelector('.bulk-collect-fill');
+    const results = wrap.querySelector('.bulk-collect-results');
+
+    const pct = d.n_classes ? (d.current_idx / d.n_classes * 100) : 0;
+    fill.style.width = `${pct.toFixed(1)}%`;
+    if (d.status === 'running') {
+      const cur = d.current_class
+        ? ` · ${d.current_class.en} (${d.current_class.de})`
+        : '';
+      status.textContent = `Class ${d.current_idx} of ${d.n_classes}${cur} · ${d.total_accepted} images accepted so far`;
+    } else if (d.status === 'done') {
+      status.innerHTML = `<strong>✓ Done.</strong> ${d.total_accepted} images accepted across ${d.completed.length} classes. ${d.auto_accept ? 'Already in staging — ready for the next training run.' : 'Review per-class to accept.'}`;
+      clearInterval(bulkCollectPoll);
+      bulkCollectPoll = null;
+      $('btn-bulk-collect').disabled = false;
+      loadSwissState();   // refresh dataset bars + class chips
+    } else if (d.status === 'error') {
+      status.innerHTML = `<strong style="color:#dc2626">Error:</strong> ${escapeHtml(d.error || '')}`;
+      clearInterval(bulkCollectPoll);
+      bulkCollectPoll = null;
+      $('btn-bulk-collect').disabled = false;
+    } else if (d.status === 'stopped') {
+      status.innerHTML = `<strong>Stopped.</strong> ${d.total_accepted} accepted before stop.`;
+      clearInterval(bulkCollectPoll);
+      bulkCollectPoll = null;
+      $('btn-bulk-collect').disabled = false;
+    }
+
+    // Per-class results table
+    if (d.completed && d.completed.length) {
+      results.innerHTML = `
+        <table class="bulk-results-table">
+          <thead><tr><th>Class</th><th>Downloaded</th><th>Accepted</th></tr></thead>
+          <tbody>
+            ${d.completed.map(c => `
+              <tr>
+                <td>${escapeHtml(c.class_name)} <span class="muted small">${escapeHtml(c.class_de)}</span></td>
+                <td class="num">${c.downloaded}</td>
+                <td class="num"><strong>${c.accepted}</strong></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+  } catch {}
+}
+
+async function stopBulkCollect() {
+  if (!bulkCollectId) return;
+  try {
+    await fetch(`/api/swiss/web-collect-bulk/${bulkCollectId}/stop`, { method: 'POST' });
+  } catch {}
+}
+
+if ($('btn-bulk-collect')) $('btn-bulk-collect').addEventListener('click', startBulkCollect);
+if ($('btn-bulk-stop'))    $('btn-bulk-stop').addEventListener('click', stopBulkCollect);
+
+// =============================================================================
 // Training charts — read results.csv + render Chart.js plots
 // =============================================================================
 

@@ -12,6 +12,7 @@ import asyncio
 import io
 import json
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -3279,6 +3280,182 @@ def swiss_web_collect_thumb(job_id: str, filename: str):
     if not p.is_file():
         raise HTTPException(404)
     return FileResponse(p)
+
+
+# ----------------------------------------------------------------------------
+# BULK web collect — fill every class with N images in one click
+# ----------------------------------------------------------------------------
+
+_swiss_bulk_jobs: dict[str, dict] = {}
+
+
+class SwissBulkWebRequest(BaseModel):
+    class_ids: list[int] | None = None   # None or [] = all active classes
+    per_class: int = 30
+    auto_accept: bool = True             # default: skip review, push straight to staging
+
+
+@app.post("/api/swiss/web-collect-bulk")
+def swiss_bulk_web_collect_start(req: SwissBulkWebRequest):
+    """Bulk: scrape N images for every chosen class (or all active classes)
+    in sequence. When `auto_accept` is true, accepted images go straight
+    into the per-class staging folder — no per-class review modal."""
+    classes = swiss_core.load_classes(ROOT)
+    if req.class_ids:
+        chosen = [c for c in classes if c.id in set(req.class_ids) and c.active]
+    else:
+        chosen = [c for c in classes if c.active]
+    if not chosen:
+        raise HTTPException(400, "No classes selected.")
+    # Skip classes with no search queries
+    chosen = [c for c in chosen if c.queries]
+    if not chosen:
+        raise HTTPException(400,
+                             "None of the selected classes have search queries. "
+                             "Edit a class to add some.")
+
+    bulk_id = uuid.uuid4().hex[:12]
+    _swiss_bulk_jobs[bulk_id] = {
+        "id": bulk_id,
+        "started_at": time.time(),
+        "status": "running",
+        "auto_accept": req.auto_accept,
+        "per_class": req.per_class,
+        "n_classes": len(chosen),
+        "current_idx": 0,
+        "current_class": None,
+        "completed": [],   # [{class_id, class_name, downloaded, accepted, error?}]
+        "total_accepted": 0,
+        "error": None,
+    }
+    threading.Thread(
+        target=_swiss_bulk_thread,
+        args=(bulk_id, chosen, req.per_class, req.auto_accept),
+        daemon=True,
+    ).start()
+    return {
+        "ok": True,
+        "bulk_id": bulk_id,
+        "n_classes": len(chosen),
+        "estimated_minutes": round(len(chosen) * req.per_class * 0.3 / 60, 1),
+    }
+
+
+def _swiss_bulk_thread(bulk_id: str, classes_list, per_class: int,
+                        auto_accept: bool):
+    bulk = _swiss_bulk_jobs.get(bulk_id)
+    if not bulk:
+        return
+    try:
+        for i, cls in enumerate(classes_list):
+            if bulk.get("status") == "stopped":
+                break
+            bulk["current_idx"] = i + 1
+            bulk["current_class"] = {"id": cls.id, "en": cls.en, "de": cls.de}
+
+            # Spawn an internal web-collect job (re-use existing per-class
+            # machinery so multi-source orchestration stays consistent)
+            sub_job_id = uuid.uuid4().hex[:12]
+            sub_dir = swiss_core.web_jobs_root(ROOT) / sub_job_id
+            sub_dir.mkdir(parents=True, exist_ok=True)
+            _swiss_web_jobs[sub_job_id] = {
+                "id": sub_job_id,
+                "class_id": cls.id,
+                "class_name": cls.en,
+                "queries": cls.queries,
+                "status": "running",
+                "progress": 0,
+                "downloaded": 0,
+                "target": per_class,
+                "started_at": time.time(),
+                "dir": str(sub_dir),
+                "candidates": [],
+                "error": None,
+            }
+            # Run collection synchronously (we're already in a background
+            # thread per the bulk job).
+            _swiss_web_collect_thread(sub_job_id, cls.queries, per_class, sub_dir)
+            sub = _swiss_web_jobs.get(sub_job_id, {})
+            downloaded = sub.get("downloaded", 0)
+            accepted = 0
+
+            if auto_accept and sub.get("candidates"):
+                # Accept every successfully-downloaded image
+                staging_dir = swiss_core.staging_root(ROOT) / cls.de
+                staging_dir.mkdir(parents=True, exist_ok=True)
+                existing = sum(1 for _ in staging_dir.iterdir()) if staging_dir.is_dir() else 0
+                for c in sub["candidates"]:
+                    src = sub_dir / c["filename"]
+                    if not src.is_file():
+                        continue
+                    ext = src.suffix.lower() or ".jpg"
+                    dst = staging_dir / f"{cls.de}_web_{existing:05d}{ext}"
+                    existing += 1
+                    try:
+                        shutil.copy2(src, dst)
+                        accepted += 1
+                    except Exception:
+                        continue
+
+            bulk["completed"].append({
+                "class_id": cls.id,
+                "class_name": cls.en,
+                "class_de": cls.de,
+                "downloaded": downloaded,
+                "accepted": accepted,
+                "warnings": sub.get("warnings", [])[:3],
+            })
+            bulk["total_accepted"] = bulk.get("total_accepted", 0) + accepted
+
+            # Cleanup sub-job temp dir if auto-accepted (we already copied)
+            if auto_accept:
+                try:
+                    shutil.rmtree(sub_dir)
+                except Exception:
+                    pass
+                _swiss_web_jobs.pop(sub_job_id, None)
+
+        bulk["status"] = "done"
+        bulk["finished_at"] = time.time()
+        if auto_accept:
+            swiss_core.append_ingestion(ROOT, {
+                "kind": "bulk_web_collect_completed",
+                "n_classes": len(classes_list),
+                "total_accepted": bulk["total_accepted"],
+            })
+    except Exception as e:
+        bulk["status"] = "error"
+        bulk["error"] = f"{type(e).__name__}: {e}"
+
+
+@app.get("/api/swiss/web-collect-bulk/{bulk_id}")
+def swiss_bulk_web_collect_status(bulk_id: str):
+    bulk = _swiss_bulk_jobs.get(bulk_id)
+    if not bulk:
+        raise HTTPException(404, "Bulk job not found")
+    return {
+        "id": bulk_id,
+        "status": bulk["status"],
+        "auto_accept": bulk["auto_accept"],
+        "per_class": bulk["per_class"],
+        "n_classes": bulk["n_classes"],
+        "current_idx": bulk["current_idx"],
+        "current_class": bulk.get("current_class"),
+        "completed": bulk["completed"],
+        "total_accepted": bulk["total_accepted"],
+        "error": bulk.get("error"),
+        "started_at": bulk.get("started_at"),
+        "finished_at": bulk.get("finished_at"),
+    }
+
+
+@app.post("/api/swiss/web-collect-bulk/{bulk_id}/stop")
+def swiss_bulk_web_collect_stop(bulk_id: str):
+    bulk = _swiss_bulk_jobs.get(bulk_id)
+    if not bulk:
+        raise HTTPException(404)
+    bulk["status"] = "stopped"
+    return {"ok": True}
 
 
 class SwissWebAcceptRequest(BaseModel):
