@@ -12,8 +12,27 @@ def test_registry_discovers_all_modes():
     modes = pipelines.discover()
     expected = {"blur", "remove", "darkonly", "stabilize",
                 "color_normalize", "ppe", "analytics", "rtsp",
-                "train", "verify"}
+                "train", "verify", "filter_scan"}
     assert expected.issubset(set(modes))
+
+
+def test_filter_scan_uses_source_and_db(fake_job):
+    cmd = pipelines.build_command(
+        fake_job("filter_scan",
+                 input_ref="/data/footage",
+                 output_path="/data/_data/filter_x.db",
+                 every=5, recurse=True),
+        CTX,
+    )
+    assert "filter_index.py" in cmd[1]
+    assert "scan" in cmd
+    assert "--source" in cmd
+    assert cmd[cmd.index("--source") + 1] == "/data/footage"
+    assert "--db" in cmd
+    assert cmd[cmd.index("--db") + 1] == "/data/_data/filter_x.db"
+    assert "--every" in cmd
+    assert cmd[cmd.index("--every") + 1] == "5"
+    assert "--recurse" in cmd
 
 
 def test_unknown_mode_raises(fake_job):

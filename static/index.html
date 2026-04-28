@@ -29,6 +29,7 @@
     <button class="topnav-btn" data-page="models">Playground</button>
     <button class="topnav-btn" data-page="train">Train</button>
     <button class="topnav-btn" data-page="live">Live RTSP</button>
+    <button class="topnav-btn" data-page="filter">Filter</button>
     <button class="topnav-btn" data-page="history">History</button>
     <button class="topnav-btn" data-page="projects">Projects</button>
   </nav>
@@ -708,6 +709,160 @@
       <div class="live-stat"><dt>Resolution</dt><dd id="live-res">—</dd></div>
     </div>
     <pre id="live-raw" class="muted small"></pre>
+  </section>
+</main>
+
+<!-- ====== Filter Page (bulk image picker) ====== -->
+<main class="container hidden" id="page-filter">
+  <section class="card">
+    <div class="card-header">
+      <h2>Bulk picture filter</h2>
+      <p>Point at a folder of <strong>50k–15M images</strong>. The Suite scans every one with YOLO, records what it finds, and lets you pull out a subset (e.g., "frames with people AND machines") into a new folder. Scan once, query as many ways as you want.</p>
+    </div>
+
+    <h3>1 · Index a folder</h3>
+    <div class="filter-form">
+      <label class="text-row">
+        <span>Source folder (server-local absolute path)</span>
+        <input type="text" id="filter-source" placeholder="C:\path\to\images  or  /home/user/site_2024" />
+      </label>
+      <div class="filter-grid">
+        <label class="text-row">
+          <span>Label (for your reference)</span>
+          <input type="text" id="filter-label" placeholder="Site A · Q3 2025" />
+        </label>
+        <label class="text-row">
+          <span>YOLO model</span>
+          <select id="filter-model">
+            <option value="yolov8x-seg.pt" selected>yolov8x-seg.pt — most accurate</option>
+            <option value="yolov8m-seg.pt">yolov8m-seg.pt — balanced</option>
+            <option value="yolov8n-seg.pt">yolov8n-seg.pt — fastest, less accurate</option>
+            <option value="yolov8x.pt">yolov8x.pt — detection only (no masks)</option>
+          </select>
+        </label>
+        <label class="text-row">
+          <span>Min confidence</span>
+          <input type="range" id="filter-conf" min="5" max="60" step="1" value="20" />
+          <span id="filter-conf-value" class="muted small">0.20</span>
+        </label>
+        <label class="text-row">
+          <span>Sample every Nth image</span>
+          <input type="number" id="filter-every" min="1" value="1" />
+          <span class="muted small">1 = every image · 10 = quick survey</span>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="filter-recurse" checked />
+          Walk subdirectories
+        </label>
+      </div>
+      <button class="btn btn-primary btn-lg" id="btn-filter-scan">Start scan</button>
+      <span class="muted small">Throughput on RTX 3090: ~20 img/s with x-seg, ~80 img/s with n-seg.</span>
+    </div>
+  </section>
+
+  <section class="card hidden" id="filter-progress-card">
+    <div class="card-header">
+      <h2>Scan progress</h2>
+      <p>Streaming live from the indexer.</p>
+    </div>
+    <pre id="filter-log" class="log-output">Waiting…</pre>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h2>2 · Pick a scan, query, export</h2>
+      <p>Already-completed indexes show up here.</p>
+    </div>
+    <div class="filter-form">
+      <label class="text-row">
+        <span>Choose a scan</span>
+        <select id="filter-scan-select">
+          <option value="">No scans yet — index a folder above first.</option>
+        </select>
+      </label>
+    </div>
+    <div id="filter-summary" class="hidden">
+      <p class="muted small" id="filter-summary-label"></p>
+
+      <h3>Engineering charts</h3>
+      <div class="charts-row" id="filter-charts-row">
+        <div class="chart-card"><h4>Quality score</h4><canvas id="chart-quality"></canvas></div>
+        <div class="chart-card"><h4>Brightness</h4><canvas id="chart-brightness"></canvas></div>
+        <div class="chart-card"><h4>Sharpness (Laplacian var)</h4><canvas id="chart-sharpness"></canvas></div>
+        <div class="chart-card"><h4>Detections per frame</h4><canvas id="chart-dets"></canvas></div>
+      </div>
+      <div class="filter-stats" id="filter-stats"></div>
+
+      <h3 style="margin-top:18px">Pick the best N for annotation</h3>
+      <p class="muted small">Composite score blends sharpness + brightness + contrast + detection diversity + confidence. Use this to curate annotation candidates from a 15M-frame archive.</p>
+      <div class="filter-grid">
+        <label class="text-row">
+          <span>How many?</span>
+          <input type="number" id="best-n" min="1" max="100000" value="200" />
+        </label>
+        <label class="text-row">
+          <span>Minimum quality (0–1)</span>
+          <input type="range" id="best-quality" min="10" max="90" step="1" value="40" />
+          <span id="best-quality-value" class="muted small">0.40</span>
+        </label>
+        <label class="text-row">
+          <span>Diversify across classes</span>
+          <select id="best-diversify">
+            <option value="true" selected>Yes — round-robin across detected classes</option>
+            <option value="false">No — pure top-quality</option>
+          </select>
+        </label>
+        <label class="text-row">
+          <span>Output folder name</span>
+          <input type="text" id="best-target" placeholder="e.g. annotation_batch_1" />
+        </label>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary btn-lg" id="btn-pick-best">Pick best for annotation</button>
+        <span class="muted small" id="best-status"></span>
+      </div>
+
+      <h3 style="margin-top:18px">Class breakdown</h3>
+      <div id="filter-class-list" class="filter-class-list"></div>
+
+      <h3 style="margin-top:18px">3 · Export the filtered subset</h3>
+      <div class="filter-grid">
+        <label class="text-row">
+          <span>Logic</span>
+          <select id="filter-logic">
+            <option value="any" selected>ANY of the picked classes (union)</option>
+            <option value="all">ALL of the picked classes (intersection)</option>
+            <option value="none">NONE of the picked classes (negation)</option>
+          </select>
+        </label>
+        <label class="text-row">
+          <span>Min detection confidence</span>
+          <input type="range" id="export-conf" min="0" max="95" step="1" value="30" />
+          <span id="export-conf-value" class="muted small">0.30</span>
+        </label>
+        <label class="text-row">
+          <span>Min count per class</span>
+          <input type="number" id="export-count" min="1" value="1" />
+        </label>
+        <label class="text-row">
+          <span>Materialise as</span>
+          <select id="export-mode">
+            <option value="symlink" selected>Symlink — fastest, zero extra disk</option>
+            <option value="hardlink">Hardlink — same drive only, zero extra disk</option>
+            <option value="copy">Copy — independent files</option>
+            <option value="list">List file (filtered.txt)</option>
+          </select>
+        </label>
+        <label class="text-row">
+          <span>Target folder name</span>
+          <input type="text" id="export-target" placeholder="e.g. people_or_machines" />
+        </label>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary btn-lg" id="btn-filter-export">Create filtered folder</button>
+        <span class="muted small" id="filter-export-status"></span>
+      </div>
+    </div>
   </section>
 </main>
 

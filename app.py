@@ -1408,6 +1408,326 @@ def start_training(req: TrainRequest):
     return {"job_id": job.id}
 
 
+# ----------------------------------------------------------------------------
+# Bulk image filter — scan, summarise, export
+# ----------------------------------------------------------------------------
+
+import sqlite3 as _sqlite3
+
+
+class FilterScanRequest(BaseModel):
+    source_path: str
+    model: str = "yolov8x-seg.pt"
+    conf: float = 0.20
+    batch: int = 32
+    every: int = 1
+    recurse: bool = True
+    classes: str | None = None  # comma-separated class IDs
+    label: str | None = None   # human label for the scan
+
+
+@app.post("/api/filter/scan")
+def filter_scan(req: FilterScanRequest):
+    src = Path(req.source_path).expanduser().resolve()
+    if not src.is_dir():
+        raise HTTPException(400, f"Folder not found: {src}")
+    scan_id = uuid.uuid4().hex[:12]
+    db_path = DATA / f"filter_{scan_id}.db"
+    label = req.label or src.name
+    settings = {
+        "model": req.model, "conf": req.conf, "batch": req.batch,
+        "every": req.every, "recurse": req.recurse, "classes": req.classes,
+        "label": label,
+    }
+    job = db.create_job(
+        kind="folder", mode="filter_scan",
+        input_ref=str(src),
+        output_path=str(db_path),
+        settings=settings,
+    )
+    queue.submit(job.id)
+    return {"job_id": job.id, "scan_id": scan_id, "db_path": str(db_path)}
+
+
+@app.get("/api/filter/scans")
+def list_filter_scans():
+    """List every completed (or in-flight) filter-scan job."""
+    out = []
+    for j in db.list_jobs(limit=200):
+        if j.mode != "filter_scan":
+            continue
+        out.append({
+            "job_id": j.id,
+            "label": (j.settings.get("label") or Path(j.input_ref).name),
+            "source": j.input_ref,
+            "db": j.output_path,
+            "status": j.status,
+            "started_at": j.started_at,
+            "finished_at": j.finished_at,
+        })
+    return out
+
+
+@app.get("/api/filter/{job_id}/summary")
+def filter_summary(job_id: str):
+    """Class-by-class breakdown of a finished filter scan."""
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Filter job not found")
+    db_path = Path(j.output_path)
+    if not db_path.is_file():
+        return {"status": j.status, "ready": False, "rows": []}
+
+    conn = _sqlite3.connect(str(db_path))
+    conn.row_factory = _sqlite3.Row
+    try:
+        total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+        rows = conn.execute(
+            "SELECT class_id, COALESCE(class_name,'') AS class_name, "
+            "COUNT(DISTINCT path) AS n_images, SUM(count) AS total_dets, "
+            "AVG(max_conf) AS avg_conf, MAX(max_conf) AS top_conf "
+            "FROM detections GROUP BY class_id ORDER BY n_images DESC"
+        ).fetchall()
+        return {
+            "status": j.status,
+            "ready": True,
+            "total_images": total,
+            "label": j.settings.get("label") or Path(j.input_ref).name,
+            "source": j.input_ref,
+            "rows": [dict(r) for r in rows],
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/filter/{job_id}/charts")
+def filter_charts(job_id: str):
+    """Engineering view of a finished filter scan: distributions of
+    quality / brightness / sharpness / detection density, plus
+    per-class image-coverage."""
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Filter job not found")
+    if not Path(j.output_path).is_file():
+        raise HTTPException(400, "Filter scan hasn't produced a DB yet.")
+
+    conn = _sqlite3.connect(j.output_path)
+    conn.row_factory = _sqlite3.Row
+    try:
+        total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0] or 0
+
+        def histogram(column: str, lo: float, hi: float, bins: int = 20):
+            edges = [lo + i * (hi - lo) / bins for i in range(bins + 1)]
+            counts = [0] * bins
+            for row in conn.execute(
+                f"SELECT {column} FROM images WHERE {column} IS NOT NULL"
+            ):
+                v = row[0]
+                idx = min(bins - 1, max(0, int((v - lo) / (hi - lo) * bins)))
+                counts[idx] += 1
+            return {"edges": edges, "counts": counts}
+
+        return {
+            "ready": True,
+            "total_images": total,
+            "by_class": [dict(r) for r in conn.execute(
+                "SELECT class_id, COALESCE(class_name,'') AS class_name, "
+                "COUNT(DISTINCT path) AS n_images, AVG(max_conf) AS avg_conf "
+                "FROM detections GROUP BY class_id "
+                "ORDER BY n_images DESC LIMIT 30"
+            )],
+            "quality_hist":    histogram("quality",    0.0, 1.0),
+            "brightness_hist": histogram("brightness", 0.0, 255.0),
+            "sharpness_hist":  histogram("sharpness",  0.0, 1500.0),
+            "detections_hist": histogram("n_dets",     0.0, 25.0),
+            "stats": dict(conn.execute(
+                "SELECT AVG(quality) AS avg_quality, "
+                "       AVG(brightness) AS avg_brightness, "
+                "       AVG(sharpness)  AS avg_sharpness, "
+                "       AVG(n_dets)     AS avg_detections, "
+                "       SUM(CASE WHEN brightness < 60 THEN 1 ELSE 0 END) AS dark_count, "
+                "       SUM(CASE WHEN sharpness < 100 THEN 1 ELSE 0 END) AS blurry_count, "
+                "       SUM(CASE WHEN n_dets = 0 THEN 1 ELSE 0 END) AS empty_count "
+                "FROM images"
+            ).fetchone() or {}),
+        }
+    finally:
+        conn.close()
+
+
+class BestNRequest(BaseModel):
+    n: int = 200
+    min_quality: float = 0.4
+    require_class: int | None = None
+    diversify: bool = True
+    target_name: str | None = None
+    mode: str = Field("symlink", pattern="^(symlink|copy|hardlink|list)$")
+
+
+@app.post("/api/filter/{job_id}/pick-best")
+def filter_pick_best(job_id: str, req: BestNRequest):
+    """Pick the N highest-quality images from a scan, optionally diversified
+    across classes (one bucket per class), and materialise as a new folder.
+    The user runs this when curating annotation candidates."""
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Filter job not found")
+    if not Path(j.output_path).is_file():
+        raise HTTPException(400, "Filter scan hasn't produced a DB yet.")
+
+    conn = _sqlite3.connect(j.output_path)
+    conn.row_factory = _sqlite3.Row
+
+    candidates: list[tuple[str, float, int]] = []
+    try:
+        if req.require_class is not None:
+            rows = conn.execute(
+                "SELECT i.path, i.quality, i.n_dets FROM images i "
+                "JOIN detections d ON d.path = i.path "
+                "WHERE i.quality >= ? AND d.class_id = ? "
+                "ORDER BY i.quality DESC",
+                (req.min_quality, req.require_class),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT path, quality, n_dets FROM images "
+                "WHERE quality >= ? ORDER BY quality DESC",
+                (req.min_quality,),
+            ).fetchall()
+        candidates = [(r["path"], r["quality"], r["n_dets"]) for r in rows]
+
+        if req.diversify and not req.require_class:
+            # Group by dominant class, pick top-quality from each group round-robin
+            groups: dict[int, list[tuple[str, float, int]]] = {}
+            for r in conn.execute(
+                "SELECT i.path, i.quality, i.n_dets, "
+                "(SELECT class_id FROM detections d WHERE d.path = i.path "
+                " ORDER BY count DESC, max_conf DESC LIMIT 1) AS dom "
+                "FROM images i WHERE i.quality >= ? ORDER BY i.quality DESC",
+                (req.min_quality,),
+            ):
+                groups.setdefault(r["dom"] or -1, []).append(
+                    (r["path"], r["quality"], r["n_dets"])
+                )
+            picked: list[tuple[str, float, int]] = []
+            while len(picked) < req.n and any(groups.values()):
+                for k in list(groups):
+                    if not groups[k]:
+                        continue
+                    picked.append(groups[k].pop(0))
+                    if len(picked) >= req.n:
+                        break
+            candidates = picked
+    finally:
+        conn.close()
+
+    candidates = candidates[:req.n]
+    if not candidates:
+        raise HTTPException(400, f"No images meet quality >= {req.min_quality}")
+
+    # Materialise in a background thread so the request returns instantly
+    target_dirname = req.target_name or f"annotation_pick_{j.id}_{int(time.time())}"
+    target = OUTPUTS / target_dirname
+    target.mkdir(parents=True, exist_ok=True)
+
+    def _materialise():
+        for i, (src, q, _) in enumerate(candidates):
+            sp = Path(src)
+            dst = target / f"{i:04d}_q{int(q*100):02d}_{sp.name}"
+            if dst.exists():
+                continue
+            try:
+                if req.mode == "symlink":
+                    try: dst.symlink_to(sp)
+                    except OSError: shutil.copy2(sp, dst)
+                elif req.mode == "hardlink":
+                    try: dst.hardlink_to(sp)
+                    except OSError: shutil.copy2(sp, dst)
+                elif req.mode == "list":
+                    pass  # write filtered.txt below
+                else:
+                    shutil.copy2(sp, dst)
+            except Exception:
+                pass
+        if req.mode == "list":
+            (target / "best.txt").write_text(
+                "\n".join(p for (p, _q, _n) in candidates), encoding="utf-8"
+            )
+
+    threading.Thread(target=_materialise, daemon=True).start()
+
+    return {
+        "ok": True,
+        "picked": len(candidates),
+        "min_quality": req.min_quality,
+        "target": str(target),
+        "target_url": f"/files/outputs/{target_dirname}",
+        "preview": [
+            {"path": p, "quality": q, "n_dets": n}
+            for (p, q, n) in candidates[:12]
+        ],
+    }
+
+
+class FilterExportRequest(BaseModel):
+    classes: list[int] = Field(default_factory=list)
+    logic: str = Field("any", pattern="^(any|all|none)$")
+    min_conf: float = 0.0
+    min_count: int = 1
+    mode: str = Field("symlink", pattern="^(symlink|copy|hardlink|list)$")
+    target_name: str | None = None
+
+
+@app.post("/api/filter/{job_id}/export")
+def filter_export(job_id: str, req: FilterExportRequest):
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Filter job not found")
+    if not Path(j.output_path).is_file():
+        raise HTTPException(400, "Filter scan hasn't produced a DB yet.")
+
+    target_dirname = req.target_name or f"filtered_{j.id}_{int(time.time())}"
+    target = OUTPUTS / target_dirname
+
+    # Build a /child/ job that runs filter_index.py export. We can't enqueue
+    # because we want a synchronous count back; export is fast (just copies/
+    # symlinks). Instead run the SQL inline here for the count, and trigger
+    # the materialisation via a background thread.
+    classes_arg = ",".join(str(c) for c in req.classes)
+    cmd = [
+        PYTHON, "filter_index.py", "export",
+        "--db", j.output_path,
+        "--target", str(target),
+        "--logic", req.logic,
+        "--min-conf", f"{req.min_conf:.3f}",
+        "--min-count", str(int(req.min_count)),
+        "--mode", req.mode,
+    ]
+    if classes_arg:
+        cmd += ["--classes", classes_arg]
+
+    # Spawn fire-and-forget so the request returns instantly
+    proc = subprocess.Popen(
+        cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    def _drain():
+        try:
+            for line in proc.stdout:
+                pass
+        finally:
+            proc.wait()
+    threading.Thread(target=_drain, daemon=True).start()
+
+    return {
+        "ok": True,
+        "target": str(target),
+        "target_url": f"/files/outputs/{target_dirname}",
+        "command_argv": cmd,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return FileResponse(STATIC / "index.html")

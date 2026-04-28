@@ -448,7 +448,7 @@ $('btn-clear-log').addEventListener('click', () => { $('log-output').textContent
 // Multi-page navigation
 // =============================================================================
 
-const PAGES = ['dashboard', 'wizard', 'models', 'train', 'live', 'history', 'projects'];
+const PAGES = ['dashboard', 'wizard', 'models', 'train', 'live', 'filter', 'history', 'projects'];
 
 function showPage(name) {
   PAGES.forEach(p => {
@@ -465,6 +465,7 @@ function showPage(name) {
   if (name === 'projects') { refreshProjects(); }
   if (name === 'live') { /* nothing to fetch up-front */ }
   if (name === 'train') { /* nothing to fetch up-front */ }
+  if (name === 'filter') refreshFilterScans();
 }
 
 document.querySelectorAll('.topnav-btn').forEach(b => {
@@ -1251,6 +1252,269 @@ function escapeHtml(s) {
 
 // Apply locale on load
 applyLocale();
+
+// =============================================================================
+// Filter tab — bulk image scan + class-by-class export
+// =============================================================================
+
+let activeFilterScanId = null;
+let activeFilterSummary = null;
+let filterScanEventSource = null;
+
+function bindRange(rangeId, valueId, fmt = v => (v / 100).toFixed(2)) {
+  const r = $(rangeId);
+  if (!r) return;
+  r.addEventListener('input', () => $(valueId).textContent = fmt(r.value));
+}
+bindRange('filter-conf', 'filter-conf-value');
+bindRange('export-conf', 'export-conf-value');
+
+if ($('btn-filter-scan')) {
+  $('btn-filter-scan').addEventListener('click', async () => {
+    const source = $('filter-source').value.trim();
+    if (!source) { toast('Enter a source folder path first', 'error'); return; }
+    const body = {
+      source_path: source,
+      label: $('filter-label').value.trim() || null,
+      model: $('filter-model').value,
+      conf: parseInt($('filter-conf').value) / 100,
+      every: parseInt($('filter-every').value) || 1,
+      recurse: $('filter-recurse').checked,
+    };
+    $('btn-filter-scan').classList.add('loading');
+    try {
+      const r = await fetch('/api/filter/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const err = await r.json();
+        throw new Error(err.detail || `HTTP ${r.status}`);
+      }
+      const data = await r.json();
+      toast(`Scan job ${data.job_id} queued`, 'success');
+      $('filter-progress-card').classList.remove('hidden');
+      $('filter-log').textContent = '';
+      streamFilterScan(data.job_id);
+    } catch (err) {
+      toast('Scan failed to start: ' + err.message, 'error');
+    } finally {
+      $('btn-filter-scan').classList.remove('loading');
+    }
+  });
+}
+
+function streamFilterScan(jobId) {
+  if (filterScanEventSource) filterScanEventSource.close();
+  filterScanEventSource = new EventSource(`/api/jobs/${jobId}/stream`);
+  const out = $('filter-log');
+  filterScanEventSource.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'log') {
+      out.textContent += m.line + '\n';
+      out.scrollTop = out.scrollHeight;
+    } else if (m.type === 'end') {
+      filterScanEventSource.close();
+      filterScanEventSource = null;
+      if (m.status === 'done') {
+        toast('Scan finished', 'success');
+        refreshFilterScans();
+      } else {
+        toast(`Scan ${m.status} (exit ${m.returncode})`, 'error');
+      }
+    }
+  };
+  filterScanEventSource.onerror = () => {
+    if (filterScanEventSource) filterScanEventSource.close();
+    filterScanEventSource = null;
+  };
+}
+
+async function refreshFilterScans() {
+  try {
+    const scans = await fetch('/api/filter/scans').then(r => r.json());
+    const sel = $('filter-scan-select');
+    if (!scans.length) {
+      sel.innerHTML = '<option value="">No scans yet — index a folder above first.</option>';
+      return;
+    }
+    sel.innerHTML = scans.map(s => {
+      const when = s.finished_at
+        ? new Date(s.finished_at * 1000).toLocaleString()
+        : '(in progress)';
+      const label = s.label || s.source.split(/[\\\/]/).pop();
+      return `<option value="${s.job_id}" ${s.status !== 'done' ? 'disabled' : ''}>
+                ${escapeHtml(label)} · ${s.status} · ${when}
+              </option>`;
+    }).join('');
+    if (activeFilterScanId) {
+      sel.value = activeFilterScanId;
+    }
+  } catch (e) { /* silent */ }
+}
+
+if ($('filter-scan-select')) {
+  $('filter-scan-select').addEventListener('change', async () => {
+    const jobId = $('filter-scan-select').value;
+    if (!jobId) {
+      $('filter-summary').classList.add('hidden');
+      activeFilterScanId = null;
+      return;
+    }
+    activeFilterScanId = jobId;
+    await loadFilterSummary(jobId);
+  });
+}
+
+async function loadFilterSummary(jobId) {
+  try {
+    const data = await fetch(`/api/filter/${jobId}/summary`).then(r => r.json());
+    if (!data.ready) {
+      toast('Scan still in progress', 'warn');
+      return;
+    }
+    activeFilterSummary = data;
+    $('filter-summary').classList.remove('hidden');
+    $('filter-summary-label').textContent =
+      `${data.label} · ${data.source} · ${data.total_images.toLocaleString()} images indexed.`;
+    loadFilterCharts(jobId);
+
+    const max = Math.max(1, ...data.rows.map(r => r.n_images));
+    $('filter-class-list').innerHTML = data.rows.map(r => {
+      const pct = (100 * r.n_images / data.total_images).toFixed(1);
+      const barW = (100 * r.n_images / max).toFixed(1);
+      return `
+        <label class="filter-class-row">
+          <input type="checkbox" data-class-id="${r.class_id}" />
+          <div class="filter-class-info">
+            <strong>${escapeHtml(r.class_name) || ('class ' + r.class_id)}</strong>
+            <span class="muted small">id ${r.class_id} · ${r.n_images.toLocaleString()} images (${pct}%) · ${r.total_dets.toLocaleString()} detections · avg conf ${(r.avg_conf || 0).toFixed(2)}</span>
+          </div>
+          <div class="filter-class-bar"><span style="width:${barW}%"></span></div>
+        </label>`;
+    }).join('');
+  } catch (e) {
+    toast('Could not load summary: ' + e.message, 'error');
+  }
+}
+
+// Engineering charts on the Filter tab
+const filterCharts = {};
+
+async function loadFilterCharts(jobId) {
+  let data;
+  try {
+    data = await fetch(`/api/filter/${jobId}/charts`).then(r => r.json());
+  } catch (e) { return; }
+  if (!data || !data.ready) return;
+
+  const c = chartColors();
+  const renderHist = (canvasId, hist, color) => {
+    const ctx = $(canvasId);
+    if (!ctx) return;
+    if (filterCharts[canvasId]) filterCharts[canvasId].destroy();
+    const labels = hist.edges.slice(0, -1).map(v =>
+      v < 1 ? v.toFixed(2) : Math.round(v).toString()
+    );
+    filterCharts[canvasId] = new Chart(ctx.getContext('2d'), {
+      type: 'bar',
+      data: { labels, datasets: [{ data: hist.counts, backgroundColor: color, borderWidth: 0 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: c.tickColor, maxTicksLimit: 8 }, grid: { display: false } },
+          y: { ticks: { color: c.tickColor }, grid: { color: c.gridColor } },
+        },
+      },
+    });
+  };
+  renderHist('chart-quality',    data.quality_hist,    c.barColor);
+  renderHist('chart-brightness', data.brightness_hist, 'rgba(245,158,11,0.85)');
+  renderHist('chart-sharpness',  data.sharpness_hist,  'rgba(34,197,94,0.85)');
+  renderHist('chart-dets',       data.detections_hist, 'rgba(229,33,60,0.85)');
+
+  const s = data.stats || {};
+  $('filter-stats').innerHTML = `
+    <div class="stat-pill"><dt>Avg quality</dt><dd>${(s.avg_quality || 0).toFixed(2)}</dd></div>
+    <div class="stat-pill"><dt>Avg brightness</dt><dd>${(s.avg_brightness || 0).toFixed(0)}</dd></div>
+    <div class="stat-pill"><dt>Avg sharpness</dt><dd>${(s.avg_sharpness || 0).toFixed(0)}</dd></div>
+    <div class="stat-pill"><dt>Avg detections</dt><dd>${(s.avg_detections || 0).toFixed(1)}</dd></div>
+    <div class="stat-pill warn"><dt>Dark frames</dt><dd>${(s.dark_count || 0).toLocaleString()}</dd></div>
+    <div class="stat-pill warn"><dt>Blurry frames</dt><dd>${(s.blurry_count || 0).toLocaleString()}</dd></div>
+    <div class="stat-pill warn"><dt>Empty frames</dt><dd>${(s.empty_count || 0).toLocaleString()}</dd></div>`;
+}
+
+bindRange('best-quality', 'best-quality-value');
+
+if ($('btn-pick-best')) {
+  $('btn-pick-best').addEventListener('click', async () => {
+    if (!activeFilterScanId) { toast('Pick a scan first', 'error'); return; }
+    const body = {
+      n: parseInt($('best-n').value) || 200,
+      min_quality: parseInt($('best-quality').value) / 100,
+      diversify: $('best-diversify').value === 'true',
+      target_name: $('best-target').value.trim() || null,
+      mode: 'symlink',
+    };
+    $('btn-pick-best').classList.add('loading');
+    try {
+      const r = await fetch(`/api/filter/${activeFilterScanId}/pick-best`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const err = await r.json();
+        throw new Error(err.detail || `HTTP ${r.status}`);
+      }
+      const data = await r.json();
+      $('best-status').textContent =
+        `Picked ${data.picked} → ${data.target}`;
+      toast(`Picked ${data.picked} candidates for annotation`, 'success');
+    } catch (e) {
+      toast('Pick failed: ' + e.message, 'error');
+    } finally {
+      $('btn-pick-best').classList.remove('loading');
+    }
+  });
+}
+
+if ($('btn-filter-export')) {
+  $('btn-filter-export').addEventListener('click', async () => {
+    if (!activeFilterScanId) { toast('Pick a scan first', 'error'); return; }
+    const picked = Array.from(document.querySelectorAll('#filter-class-list input:checked'))
+      .map(el => parseInt(el.dataset.classId));
+    const body = {
+      classes: picked,
+      logic: $('filter-logic').value,
+      min_conf: parseInt($('export-conf').value) / 100,
+      min_count: parseInt($('export-count').value) || 1,
+      mode: $('export-mode').value,
+      target_name: $('export-target').value.trim() || null,
+    };
+    $('btn-filter-export').classList.add('loading');
+    try {
+      const r = await fetch(`/api/filter/${activeFilterScanId}/export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const err = await r.json();
+        throw new Error(err.detail || `HTTP ${r.status}`);
+      }
+      const data = await r.json();
+      $('filter-export-status').textContent = `Exporting → ${data.target}`;
+      toast(`Export started: ${data.target}`, 'success');
+    } catch (e) {
+      toast('Export failed: ' + e.message, 'error');
+    } finally {
+      $('btn-filter-export').classList.remove('loading');
+    }
+  });
+}
 
 // =============================================================================
 // Dashboard renderer
