@@ -4,6 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Arclap Vision Suite</title>
+<link rel="icon" type="image/svg+xml" href="/static/icon.svg" />
+<link rel="apple-touch-icon" href="/static/icon.svg" />
+<meta name="theme-color" content="#E5213C" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -14,7 +17,7 @@
 
 <header class="topbar">
   <div class="brand">
-    <div class="logo">A</div>
+    <img class="logo-img" src="/static/icon.svg" alt="Arclap" width="38" height="38" />
     <div>
       <h1>Arclap Vision Suite</h1>
       <p class="subtitle">Local computer-vision workbench — timelapse cleanup, YOLO playground, live RTSP, PPE, analytics</p>
@@ -22,8 +25,8 @@
   </div>
   <nav class="topnav">
     <button class="topnav-btn active" data-page="dashboard">Home</button>
-    <button class="topnav-btn" data-page="wizard">Wizard</button>
-    <button class="topnav-btn" data-page="models">Models</button>
+    <button class="topnav-btn" data-page="wizard">Timelapse Editor</button>
+    <button class="topnav-btn" data-page="models">Playground</button>
     <button class="topnav-btn" data-page="train">Train</button>
     <button class="topnav-btn" data-page="live">Live RTSP</button>
     <button class="topnav-btn" data-page="history">History</button>
@@ -54,7 +57,7 @@
   <section class="hero-card">
     <div class="hero-text">
       <h1 class="hero-title">Welcome to Arclap Vision Suite</h1>
-      <p class="hero-sub">Local computer-vision workbench — pick a tool below, or jump straight into the wizard.</p>
+      <p class="hero-sub">Local computer-vision workbench — pick a tool below, or jump straight into the Timelapse Editor.</p>
     </div>
     <div class="hero-actions">
       <button class="btn btn-primary btn-lg" data-quick-page="wizard">Process a video</button>
@@ -114,7 +117,7 @@
     </div>
     <div class="tool-grid">
       <div class="tool-tile" data-quick-page="wizard">
-        <h3>Wizard</h3><p>Step-by-step: upload → choose goal → preview → run.</p>
+        <h3>Timelapse Editor</h3><p>Step-by-step: upload → choose goal → preview → run.</p>
       </div>
       <div class="tool-tile" data-quick-page="models">
         <h3>Model Playground</h3><p>Drop any YOLO <code>.pt</code>, test it on an image.</p>
@@ -175,6 +178,18 @@
         <div class="folder-row">
           <input type="text" id="folder-path" placeholder="C:\path\to\images  or  /home/user/timelapse" />
           <button class="btn btn-secondary" id="btn-folder-use">Use folder</button>
+        </div>
+      </details>
+      <details>
+        <summary>… or pick specific pictures (multi-select)</summary>
+        <p class="muted small">
+          Hold Cmd/Ctrl while clicking files in your OS picker to select many at once.
+          They're processed in the order you picked them.
+        </p>
+        <div class="folder-row">
+          <input type="file" id="multi-image-input" accept="image/*" multiple hidden />
+          <button class="btn btn-secondary" id="btn-pick-images">Pick images…</button>
+          <span class="muted small" id="multi-image-count"></span>
         </div>
       </details>
       <details>
@@ -417,12 +432,62 @@
 
 </main>
 
-<!-- ====== Models Page ====== -->
+<!-- ====== Models / Playground Page ====== -->
 <main class="container hidden" id="page-models">
   <section class="card">
     <div class="card-header">
-      <h2>YOLO Model Playground</h2>
-      <p>Upload any YOLOv8 / YOLOv11 <code>.pt</code> file (detection, segmentation, pose, OBB, classification). Test it locally on a sample image and see annotated detections.</p>
+      <h2>Try it — drop an image, see what the model finds</h2>
+      <p>The Roboflow-style instant-test panel. Pick a registered model, drop an image (or video — first frame is used), tweak confidence + IoU, and the result re-renders with bounding boxes / masks / keypoints drawn on top.</p>
+    </div>
+    <div class="playground-grid">
+      <div>
+        <label class="text-row">
+          <span>Model</span>
+          <select id="quick-model-select">
+            <option value="">Loading…</option>
+          </select>
+        </label>
+        <div class="dropzone" id="quick-test-dropzone" style="margin-top:14px">
+          <input type="file" id="quick-test-input" accept="image/*,video/*" hidden />
+          <div class="dropzone-content">
+            <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <polyline points="21 15 16 10 5 21"/>
+            </svg>
+            <p class="dropzone-title">Drop an image or <span class="link">browse</span></p>
+            <p class="dropzone-hint">JPG · PNG · MP4 (first frame)</p>
+          </div>
+        </div>
+        <div class="test-controls">
+          <label>Confidence
+            <input type="range" id="quick-conf" min="5" max="95" step="1" value="25"/>
+            <span id="quick-conf-value">0.25</span>
+          </label>
+          <label>IoU
+            <input type="range" id="quick-iou" min="10" max="95" step="1" value="45"/>
+            <span id="quick-iou-value">0.45</span>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" id="quick-draw-masks" checked/> Draw masks
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" id="quick-draw-keypoints" checked/> Draw keypoints
+          </label>
+        </div>
+      </div>
+      <div>
+        <h4>Result</h4>
+        <img id="quick-result-image" class="test-result" alt="Annotated detections will appear here" />
+        <div id="quick-result-table" class="muted small"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h2>Add a model</h2>
+      <p>Upload any YOLOv8 / YOLOv11 <code>.pt</code> file (detection, segmentation, pose, OBB, classification). The Suite auto-detects the task and class names.</p>
     </div>
     <div class="dropzone" id="model-dropzone">
       <input type="file" id="model-file-input" accept=".pt,.pth" hidden />
@@ -684,14 +749,14 @@
   <section class="card">
     <div class="card-header">
       <h2>Recipe import / export</h2>
-      <p>Save your wizard settings as a JSON recipe and share with the team.</p>
+      <p>Save your editor settings as a JSON recipe and share with the team.</p>
     </div>
     <div class="recipe-row">
       <button class="btn btn-secondary" id="btn-export-recipe"
-              title="Download a JSON file with the current wizard settings">Export current settings</button>
+              title="Download a JSON file with the current editor settings">Export current settings</button>
       <input type="file" id="recipe-import-input" accept=".json" hidden />
       <button class="btn btn-secondary" id="btn-import-recipe"
-              title="Load wizard settings from a previously-exported JSON">Import recipe…</button>
+              title="Load editor settings from a previously-exported JSON">Import recipe…</button>
     </div>
     <pre id="recipe-output" class="recipe-output muted small hidden"></pre>
   </section>
@@ -740,7 +805,7 @@
     <div class="modal-body">
       <h3>Tools</h3>
       <ul>
-        <li><strong>Wizard</strong> — drag a video / pick a folder / paste a URL, choose a cleanup goal, preview, run.</li>
+        <li><strong>Timelapse Editor</strong> — drag a video / pick a folder / paste a URL, choose a cleanup goal, preview, run.</li>
         <li><strong>Models</strong> — upload any YOLOv8 / YOLOv11 <code>.pt</code> file or one-click install a suggested model.</li>
         <li><strong>Train</strong> — fine-tune a YOLO model on a CVAT export.</li>
         <li><strong>Live RTSP</strong> — connect to any IP camera and run YOLO live.</li>
@@ -749,7 +814,7 @@
       </ul>
       <h3>Keyboard shortcuts</h3>
       <ul>
-        <li><kbd>Cmd/Ctrl</kbd> + <kbd>Enter</kbd> — run the wizard's full job</li>
+        <li><kbd>Cmd/Ctrl</kbd> + <kbd>Enter</kbd> — run the editor's full job</li>
         <li><kbd>?</kbd> — open this help</li>
         <li><kbd>Esc</kbd> — close this dialog</li>
       </ul>
@@ -772,7 +837,7 @@
     <div class="modal-body">
       <p>This is the Arclap Vision Suite — a local-first computer-vision workbench. There are seven tools tied together:</p>
       <ol>
-        <li>Drop a video or pick a folder of frames in the <strong>Wizard</strong></li>
+        <li>Drop a video or pick a folder of frames in the <strong>Timelapse Editor</strong></li>
         <li>Or upload a YOLO <code>.pt</code> in <strong>Models</strong> and test it on a sample</li>
         <li>Train a custom model from a CVAT export in <strong>Train</strong></li>
         <li>Connect a live IP camera in <strong>Live RTSP</strong></li>
@@ -780,7 +845,7 @@
       <p>Everything runs on your machine — no cloud, no telemetry. The bell icon top-right will ping you when a job finishes.</p>
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px">
         <button class="btn btn-ghost" id="btn-skip-first-run">Skip</button>
-        <button class="btn btn-primary" id="btn-start-first-run">Start with the Wizard</button>
+        <button class="btn btn-primary" id="btn-start-first-run">Start with the Timelapse Editor</button>
       </div>
     </div>
   </div>

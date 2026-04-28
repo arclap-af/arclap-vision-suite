@@ -251,6 +251,12 @@ code { background: var(--bg-2); padding: 1px 6px; border-radius: 4px; font-famil
   font-weight: 700; font-size: 1.05rem; color: var(--color-text-onbrand);
   box-shadow: 0 4px 12px rgba(229,33,60,0.30);
 }
+.logo-img {
+  width: 38px; height: 38px;
+  border-radius: var(--radius-3);
+  display: block;
+  box-shadow: 0 4px 12px rgba(229,33,60,0.30);
+}
 .subtitle { font-size: 0.85rem; color: var(--text-3); margin-top: 2px; }
 
 .badge {

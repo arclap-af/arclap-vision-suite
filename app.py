@@ -671,6 +671,57 @@ async def upload(file: UploadFile = File(...)):
     return UPLOADED[file_id]
 
 
+@app.post("/api/images/batch-upload")
+async def upload_image_batch(files: list[UploadFile] = File(...)):
+    """Accept N hand-picked image files and register them as a virtual folder
+    so any pipeline that supports --input-folder can process them.
+
+    Use this when the user wants to pick specific frames rather than point
+    at a whole directory.
+    """
+    if not files:
+        raise HTTPException(400, "No files supplied.")
+
+    file_id = uuid.uuid4().hex[:12]
+    folder = UPLOADS / f"batch_{file_id}"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    saved = 0
+    total_bytes = 0
+    for i, file in enumerate(files):
+        suffix = Path(file.filename or f"img_{i}.jpg").suffix.lower() or ".jpg"
+        if suffix not in ALLOWED_IMAGE_EXTS:
+            continue
+        # zero-pad so the directory sorts in the order the user picked them
+        name = f"{i:06d}_{Path(file.filename or 'img.jpg').name}"
+        dest = folder / name
+        with open(dest, "wb") as f:
+            while chunk := await file.read(1 << 20):
+                total_bytes += len(chunk)
+                if total_bytes > 5 * 1024 * 1024 * 1024:  # 5 GB total batch cap
+                    f.close()
+                    shutil.rmtree(folder, ignore_errors=True)
+                    raise HTTPException(413, "Batch exceeds 5 GB total size.")
+                f.write(chunk)
+        saved += 1
+
+    if saved == 0:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise HTTPException(400, "None of the uploaded files were valid images.")
+
+    UPLOADED[file_id] = {
+        "id": file_id,
+        "kind": "folder",
+        "path": str(folder),
+        "name": f"{saved} selected images",
+        "size": total_bytes,
+        "frames": saved,
+        "fps": None, "duration": None,
+        "width": None, "height": None,
+    }
+    return UPLOADED[file_id]
+
+
 @app.post("/api/upload-image")
 async def upload_image(file: UploadFile = File(...)):
     """Upload a single image (for playground testing)."""

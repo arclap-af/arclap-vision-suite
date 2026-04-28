@@ -90,6 +90,34 @@ $('btn-folder-use').addEventListener('click', () => {
   const path = $('folder-path').value.trim();
   handleFolderPath(path);
 });
+if ($('btn-pick-images')) {
+  $('btn-pick-images').addEventListener('click', () => $('multi-image-input').click());
+  $('multi-image-input').addEventListener('change', async e => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+    $('multi-image-count').textContent = `Uploading ${files.length}…`;
+    const form = new FormData();
+    files.forEach(f => form.append('files', f));
+    try {
+      const r = await fetch('/api/images/batch-upload', { method: 'POST', body: form });
+      if (!r.ok) {
+        const err = await r.json();
+        throw new Error(err.detail || `HTTP ${r.status}`);
+      }
+      const data = await r.json();
+      state.fileId = data.id;
+      state.uploadKind = 'folder';
+      showFolderInfo(data);
+      await runScan(data.id);
+      $('multi-image-count').textContent = `${data.frames} images uploaded`;
+      toast(`${data.frames} images ready`, 'success');
+    } catch (err) {
+      toast('Upload failed: ' + err.message, 'error');
+      $('multi-image-count').textContent = '';
+    }
+  });
+}
+
 if ($('btn-url-use')) {
   $('btn-url-use').addEventListener('click', async () => {
     const url = $('url-input').value.trim();
@@ -453,13 +481,13 @@ document.addEventListener('click', (e) => {
 
 const STRINGS = {
   en: {
-    'wizard': 'Wizard', 'models': 'Models', 'history': 'History', 'projects': 'Projects',
+    'dashboard': 'Home', 'wizard': 'Timelapse Editor', 'models': 'Models', 'train': 'Train', 'live': 'Live RTSP', 'history': 'History', 'projects': 'Projects',
     'no_models': 'No models registered yet.',
     'no_projects': 'No projects yet.',
     'no_history': 'No jobs yet.',
   },
   de: {
-    'wizard': 'Assistent', 'models': 'Modelle', 'history': 'Verlauf', 'projects': 'Projekte',
+    'dashboard': 'Start', 'wizard': 'Zeitraffer-Editor', 'models': 'Modelle', 'train': 'Training', 'live': 'Live RTSP', 'history': 'Verlauf', 'projects': 'Projekte',
     'no_models': 'Noch keine Modelle registriert.',
     'no_projects': 'Noch keine Projekte.',
     'no_history': 'Noch keine Jobs.',
@@ -512,6 +540,104 @@ document.addEventListener('keydown', e => {
 
 let selectedTestModelId = null;
 let testImageId = null;
+
+// =============================================================================
+// Quick-test panel (Roboflow-style "drop & detect")
+// =============================================================================
+
+let quickTestImageId = null;
+
+async function refreshQuickModelSelect() {
+  try {
+    const models = await fetch('/api/models').then(r => r.json());
+    const sel = $('quick-model-select');
+    if (!models.length) {
+      sel.innerHTML = '<option value="">No models yet — install one below</option>';
+      return;
+    }
+    sel.innerHTML = models.map(m =>
+      `<option value="${m.id}">${escapeHtml(m.name)} · ${m.task} · ${m.n_classes} classes</option>`
+    ).join('');
+  } catch (e) { /* silent */ }
+}
+
+if ($('quick-test-dropzone')) {
+  const dz = $('quick-test-dropzone');
+  const inp = $('quick-test-input');
+  dz.addEventListener('click', () => inp.click());
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('dragover');
+    if (e.dataTransfer.files.length) handleQuickTestFile(e.dataTransfer.files[0]);
+  });
+  inp.addEventListener('change', e => {
+    if (e.target.files.length) handleQuickTestFile(e.target.files[0]);
+  });
+
+  $('quick-conf').addEventListener('input', () => {
+    $('quick-conf-value').textContent = ($('quick-conf').value / 100).toFixed(2);
+    if (quickTestImageId) runQuickTest();  // re-render live like Roboflow
+  });
+  $('quick-iou').addEventListener('input', () => {
+    $('quick-iou-value').textContent = ($('quick-iou').value / 100).toFixed(2);
+    if (quickTestImageId) runQuickTest();
+  });
+  $('quick-draw-masks').addEventListener('change', () => quickTestImageId && runQuickTest());
+  $('quick-draw-keypoints').addEventListener('change', () => quickTestImageId && runQuickTest());
+  $('quick-model-select').addEventListener('change', () => quickTestImageId && runQuickTest());
+}
+
+async function handleQuickTestFile(file) {
+  const isVideo = file.type.startsWith('video/');
+  const endpoint = isVideo ? '/api/upload' : '/api/upload-image';
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const r = await fetch(endpoint, { method: 'POST', body: form });
+    if (!r.ok) throw new Error('upload failed');
+    const data = await r.json();
+    quickTestImageId = data.id;
+    runQuickTest();
+  } catch (err) {
+    toast('Upload failed: ' + err.message, 'error');
+  }
+}
+
+let quickTestPending = false;
+async function runQuickTest() {
+  const modelId = $('quick-model-select').value;
+  if (!modelId || !quickTestImageId) return;
+  if (quickTestPending) return;  // cheap debounce
+  quickTestPending = true;
+  try {
+    const r = await fetch('/api/playground/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model_id: modelId,
+        image_id: quickTestImageId,
+        conf: parseInt($('quick-conf').value) / 100,
+        iou: parseInt($('quick-iou').value) / 100,
+        draw_masks: $('quick-draw-masks').checked,
+        draw_keypoints: $('quick-draw-keypoints').checked,
+      }),
+    });
+    if (!r.ok) throw new Error('inference failed');
+    const data = await r.json();
+    $('quick-result-image').src = data.annotated_url + '?t=' + Date.now();
+    $('quick-result-table').innerHTML = `
+      <strong>${data.n_detections} detection${data.n_detections === 1 ? '' : 's'}</strong>
+      ${data.detections.length ? '· ' + data.detections.slice(0, 12).map(d =>
+        `${escapeHtml(d.label)} ${d.confidence.toFixed(2)}`).join(' · ') : ''}
+      ${data.detections.length > 12 ? ` …+${data.detections.length - 12}` : ''}
+    `;
+  } catch (err) {
+    toast('Inference failed: ' + err.message, 'error');
+  } finally {
+    quickTestPending = false;
+  }
+}
 
 async function refreshSuggested() {
   try {

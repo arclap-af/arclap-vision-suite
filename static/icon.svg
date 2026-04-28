@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Arclap">
+  <rect width="200" height="200" fill="#E5213C"/>
+  <!-- Stylised "A" with a chevron notch on the right leg, mirroring the brand mark.
+       Drop your original PNG at static/icon.png to override. -->
+  <path fill="#FFFFFF" d="
+    M 100 28
+    L 32 174
+    L 64 174
+    L 79 138
+    L 121 138
+    L 100 88
+    L 86 122
+    L 96 122
+    L 100 110
+    L 110 134
+    L 104 138
+    L 168 174
+    L 138 138
+    L 162 116
+    L 130 116
+    L 122 96
+    L 152 96
+    L 144 78
+    L 124 78
+    L 110 48
+    Z"/>
+</svg>
