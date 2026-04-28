@@ -9,11 +9,14 @@ so multiple submissions don't fight over the GPU.
 """
 
 import asyncio
+import io
 import json
+import re
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
 import webbrowser
 from pathlib import Path
@@ -1495,6 +1498,306 @@ def filter_summary(job_id: str):
             "label": j.settings.get("label") or Path(j.input_ref).name,
             "source": j.input_ref,
             "rows": [dict(r) for r in rows],
+        }
+    finally:
+        conn.close()
+
+
+def _filter_db(job_id: str) -> tuple[JobRow, str]:
+    """Resolve a filter-scan job + its sidecar DB path. Raises 404/400 as needed."""
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Filter job not found")
+    if not Path(j.output_path).is_file():
+        raise HTTPException(400, "Filter scan hasn't produced a DB yet.")
+    return j, j.output_path
+
+
+def _path_in_scan(db_path: str, image_path: str) -> bool:
+    """Security: only return a thumbnail if the path is in the scan DB."""
+    conn = _sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM images WHERE path = ?", (image_path,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return row is not None
+
+
+@app.get("/api/filter/{job_id}/thumb")
+def filter_thumb(job_id: str, path: str, size: int = 320):
+    """Serve a small JPEG thumbnail of one image from a scan.
+    The path must be in the scan DB — prevents reading arbitrary files."""
+    _, db_path = _filter_db(job_id)
+    if not _path_in_scan(db_path, path):
+        raise HTTPException(403, "Path not in this scan.")
+    img = cv2.imread(path)
+    if img is None:
+        raise HTTPException(404, "Image unreadable")
+    h, w = img.shape[:2]
+    scale = size / max(h, w)
+    if scale < 1:
+        img = cv2.resize(img, (int(w * scale), int(h * scale)),
+                         interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    if not ok:
+        raise HTTPException(500, "Encode failed")
+    headers = {"Cache-Control": "public, max-age=3600"}
+    return StreamingResponse(io.BytesIO(buf.tobytes()),
+                             media_type="image/jpeg", headers=headers)
+
+
+# --- Filter rule -> SQL ---------------------------------------------------
+
+class FilterRule(BaseModel):
+    classes: list[int] = Field(default_factory=list)
+    logic: str = Field("any", pattern="^(any|all|none)$")
+    min_conf: float = 0.0
+    min_count: int = 1
+    min_quality: float = 0.0
+    max_quality: float = 1.0
+    min_brightness: float = 0.0
+    max_brightness: float = 255.0
+    min_sharpness: float = 0.0
+    hours: list[int] | None = None  # 0-23, hour-of-day window from filenames
+    min_dets: int = 0
+    max_dets: int = 100000
+
+
+_TIMESTAMP_RE = re.compile(
+    r'(?:^|[_\-\.\\/])(\d{4})[-_]?(\d{2})[-_]?(\d{2})[_T\-\s]?(\d{2})[-_:]?(\d{2})'
+)
+
+
+def _parse_hour(path: str) -> int | None:
+    m = _TIMESTAMP_RE.search(Path(path).name)
+    if m:
+        try:
+            return int(m.group(4))
+        except (ValueError, IndexError):
+            pass
+    return None
+
+
+def _build_match_sql(rule: FilterRule) -> tuple[str, list]:
+    """Translate a FilterRule into a SQL fragment that returns matching paths."""
+    where: list[str] = ["1=1"]
+    params: list = []
+
+    # Quality / brightness / sharpness / detections — image-level
+    where.append("i.quality BETWEEN ? AND ?")
+    params += [rule.min_quality, rule.max_quality]
+    where.append("(i.brightness IS NULL OR i.brightness BETWEEN ? AND ?)")
+    params += [rule.min_brightness, rule.max_brightness]
+    where.append("(i.sharpness IS NULL OR i.sharpness >= ?)")
+    params += [rule.min_sharpness]
+    where.append("i.n_dets BETWEEN ? AND ?")
+    params += [rule.min_dets, rule.max_dets]
+
+    # Class-level filtering
+    cls = rule.classes
+    if cls and rule.logic == "any":
+        placeholders = ",".join("?" * len(cls))
+        where.append(
+            f"EXISTS (SELECT 1 FROM detections d WHERE d.path = i.path "
+            f"AND d.class_id IN ({placeholders}) "
+            f"AND d.max_conf >= ? AND d.count >= ?)"
+        )
+        params += [*cls, rule.min_conf, rule.min_count]
+    elif cls and rule.logic == "all":
+        for c in cls:
+            where.append(
+                "EXISTS (SELECT 1 FROM detections d WHERE d.path = i.path "
+                "AND d.class_id = ? AND d.max_conf >= ? AND d.count >= ?)"
+            )
+            params += [c, rule.min_conf, rule.min_count]
+    elif cls and rule.logic == "none":
+        placeholders = ",".join("?" * len(cls))
+        where.append(
+            f"NOT EXISTS (SELECT 1 FROM detections d WHERE d.path = i.path "
+            f"AND d.class_id IN ({placeholders}) AND d.max_conf >= ?)"
+        )
+        params += [*cls, rule.min_conf]
+
+    return f"FROM images i WHERE {' AND '.join(where)}", params
+
+
+@app.post("/api/filter/{job_id}/match-count")
+def filter_match_count(job_id: str, rule: FilterRule):
+    """Live count: how many images match the given rule. Hours are filtered
+    in Python because the path → hour function isn't trivially SQL."""
+    _, db_path = _filter_db(job_id)
+    sql_from, params = _build_match_sql(rule)
+    conn = _sqlite3.connect(db_path)
+    try:
+        if rule.hours:
+            allowed = set(rule.hours)
+            paths = [r[0] for r in conn.execute(
+                f"SELECT i.path {sql_from}", params
+            )]
+            n = sum(1 for p in paths if _parse_hour(p) in allowed)
+            total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+            return {"matches": n, "total": total, "rule_sql_count": len(paths)}
+        else:
+            n = conn.execute(f"SELECT COUNT(*) {sql_from}", params).fetchone()[0]
+            total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+            return {"matches": int(n), "total": int(total)}
+    finally:
+        conn.close()
+
+
+@app.post("/api/filter/{job_id}/match-preview")
+def filter_match_preview(job_id: str, rule: FilterRule, limit: int = 12,
+                          mode: str = "matches"):
+    """Return up to `limit` sample paths that match the rule, plus per-image
+    metadata, so the wizard can render a thumbnail grid.
+
+    mode='matches'    → matching frames
+    mode='nonmatches' → frames that fail the rule (sanity check)
+    """
+    _, db_path = _filter_db(job_id)
+    sql_from, params = _build_match_sql(rule)
+    conn = _sqlite3.connect(db_path)
+    conn.row_factory = _sqlite3.Row
+    try:
+        if mode == "nonmatches":
+            inner = f"SELECT i.path {sql_from}"
+            sql = (f"SELECT i.path, i.quality, i.brightness, i.sharpness, i.n_dets "
+                   f"FROM images i WHERE i.path NOT IN ({inner}) "
+                   f"ORDER BY RANDOM() LIMIT {int(limit)}")
+            sql_params = params
+        else:
+            sql = (f"SELECT i.path, i.quality, i.brightness, i.sharpness, i.n_dets "
+                   f"{sql_from} ORDER BY RANDOM() LIMIT {int(limit)}")
+            sql_params = params
+
+        rows = [dict(r) for r in conn.execute(sql, sql_params)]
+        # Hour filter is post-SQL (see match-count). Apply for matches only.
+        if rule.hours and mode == "matches":
+            allowed = set(rule.hours)
+            rows = [r for r in rows if _parse_hour(r["path"]) in allowed]
+
+        # Pull per-row classes for the metadata overlay
+        for r in rows:
+            cls_rows = conn.execute(
+                "SELECT class_id, COALESCE(class_name,'') AS class_name, count, max_conf "
+                "FROM detections WHERE path = ? ORDER BY count DESC LIMIT 5",
+                (r["path"],),
+            ).fetchall()
+            r["classes"] = [dict(cr) for cr in cls_rows]
+            r["thumb_url"] = (
+                f"/api/filter/{job_id}/thumb?path="
+                + urllib.parse.quote(r["path"], safe='')
+            )
+        return {"rows": rows, "mode": mode}
+    finally:
+        conn.close()
+
+
+@app.get("/api/filter/{job_id}/time-of-day")
+def filter_time_of_day(job_id: str):
+    """Parse hour-of-day from each image filename (where it's in a recognisable
+    timestamp pattern) and return per-hour counts of images + total detections."""
+    _, db_path = _filter_db(job_id)
+    conn = _sqlite3.connect(db_path)
+    conn.row_factory = _sqlite3.Row
+    try:
+        per_hour_imgs = [0] * 24
+        per_hour_dets = [0] * 24
+        unknown = 0
+        for r in conn.execute("SELECT path, n_dets FROM images"):
+            h = _parse_hour(r["path"])
+            if h is None:
+                unknown += 1
+                continue
+            per_hour_imgs[h] += 1
+            per_hour_dets[h] += int(r["n_dets"] or 0)
+        return {
+            "ready": True,
+            "labels": [f"{h:02d}:00" for h in range(24)],
+            "images": per_hour_imgs,
+            "detections": per_hour_dets,
+            "unparseable": unknown,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/filter/{job_id}/cooccurrence")
+def filter_cooccurrence(job_id: str, top_n: int = 12):
+    """Class co-occurrence — how often class A appears in the SAME frame as
+    class B. Top-N most-frequent classes only, so the matrix is readable."""
+    _, db_path = _filter_db(job_id)
+    conn = _sqlite3.connect(db_path)
+    conn.row_factory = _sqlite3.Row
+    try:
+        top = conn.execute(
+            "SELECT class_id, COALESCE(class_name,'') AS class_name "
+            "FROM detections GROUP BY class_id ORDER BY COUNT(DISTINCT path) DESC "
+            "LIMIT ?", (top_n,),
+        ).fetchall()
+        ids = [r["class_id"] for r in top]
+        if not ids:
+            return {"classes": [], "matrix": []}
+
+        matrix = [[0] * len(ids) for _ in ids]
+        # For each pair, count images that contain both
+        for i, a in enumerate(ids):
+            for j, b in enumerate(ids):
+                if j < i:
+                    continue
+                if a == b:
+                    n = conn.execute(
+                        "SELECT COUNT(DISTINCT path) FROM detections WHERE class_id = ?",
+                        (a,),
+                    ).fetchone()[0]
+                else:
+                    n = conn.execute(
+                        "SELECT COUNT(*) FROM ("
+                        "  SELECT path FROM detections WHERE class_id = ? "
+                        "  INTERSECT "
+                        "  SELECT path FROM detections WHERE class_id = ?)",
+                        (a, b),
+                    ).fetchone()[0]
+                matrix[i][j] = matrix[j][i] = int(n)
+        return {
+            "classes": [{"id": r["class_id"], "name": r["class_name"]} for r in top],
+            "matrix": matrix,
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/filter/{job_id}/source-info")
+def filter_source_info(job_id: str):
+    """Return source-folder stats + sample paths for the wizard's Step 1."""
+    j, db_path = _filter_db(job_id)
+    conn = _sqlite3.connect(db_path)
+    conn.row_factory = _sqlite3.Row
+    try:
+        total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+        first_paths = [
+            r[0] for r in conn.execute(
+                "SELECT path FROM images ORDER BY RANDOM() LIMIT 8"
+            )
+        ]
+        # date range from filenames (best-effort)
+        hours_seen = set()
+        for r in conn.execute("SELECT path FROM images LIMIT 5000"):
+            h = _parse_hour(r[0])
+            if h is not None:
+                hours_seen.add(h)
+        return {
+            "source": j.input_ref,
+            "label": j.settings.get("label") or Path(j.input_ref).name,
+            "total": total,
+            "sample_paths": first_paths,
+            "sample_thumb_urls": [
+                f"/api/filter/{job_id}/thumb?path=" + urllib.parse.quote(p, safe='')
+                for p in first_paths
+            ],
+            "hour_coverage": sorted(hours_seen),
         }
     finally:
         conn.close()

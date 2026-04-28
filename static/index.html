@@ -17,10 +17,10 @@
 
 <header class="topbar">
   <div class="brand">
-    <img class="logo-img" src="/static/icon.svg" alt="Arclap" width="38" height="38" />
-    <div>
-      <h1>Arclap Vision Suite</h1>
-      <p class="subtitle">Local computer-vision workbench — timelapse cleanup, YOLO playground, live RTSP, PPE, analytics</p>
+    <img class="logo-wordmark" src="/static/logo-horizontal.svg" alt="Arclap" />
+    <div class="brand-text">
+      <span class="brand-eyebrow">Vision Suite</span>
+      <p class="subtitle">Local computer-vision workbench — timelapse, YOLO playground, RTSP, analytics</p>
     </div>
   </div>
   <nav class="topnav">
@@ -712,124 +712,145 @@
   </section>
 </main>
 
-<!-- ====== Filter Page (bulk image picker) ====== -->
+<!-- ====== Filter Page — wizard ====== -->
 <main class="container hidden" id="page-filter">
   <section class="card">
     <div class="card-header">
       <h2>Bulk picture filter</h2>
-      <p>Point at a folder of <strong>50k–15M images</strong>. The Suite scans every one with YOLO, records what it finds, and lets you pull out a subset (e.g., "frames with people AND machines") into a new folder. Scan once, query as many ways as you want.</p>
+      <p>Point at a folder of <strong>50k–15M images</strong>. The Suite indexes every one with YOLO, computes quality metrics, and lets you build complex filters with live previews. Designed for curating annotation candidates and producing client-ready subsets.</p>
+    </div>
+    <nav class="wiz-stepper" id="filter-stepper">
+      <div class="wiz-step active" data-step="1"><span class="wiz-num">1</span><span class="wiz-label">Source</span></div>
+      <div class="wiz-step" data-step="2"><span class="wiz-num">2</span><span class="wiz-label">Index</span></div>
+      <div class="wiz-step" data-step="3"><span class="wiz-num">3</span><span class="wiz-label">Analyse</span></div>
+      <div class="wiz-step" data-step="4"><span class="wiz-num">4</span><span class="wiz-label">Rules</span></div>
+      <div class="wiz-step" data-step="5"><span class="wiz-num">5</span><span class="wiz-label">Preview</span></div>
+      <div class="wiz-step" data-step="6"><span class="wiz-num">6</span><span class="wiz-label">Export</span></div>
+    </nav>
+  </section>
+
+  <!-- ============= STEP 1: Source ============= -->
+  <section class="card wiz-pane" data-pane="1">
+    <div class="card-header">
+      <h2><span class="step-badge">1</span> Pick a source</h2>
+      <p>Either index a new folder, or re-open an existing scan to pick up where you left off.</p>
     </div>
 
-    <h3>1 · Index a folder</h3>
-    <div class="filter-form">
+    <h3>Option A — Index a new folder</h3>
+    <label class="text-row">
+      <span>Source folder (server-local absolute path)</span>
+      <input type="text" id="filter-source" placeholder="C:\path\to\images  or  /home/user/site_2024" />
+    </label>
+    <div class="filter-grid" style="margin-top:12px">
       <label class="text-row">
-        <span>Source folder (server-local absolute path)</span>
-        <input type="text" id="filter-source" placeholder="C:\path\to\images  or  /home/user/site_2024" />
+        <span>Label (for your reference)</span>
+        <input type="text" id="filter-label" placeholder="Site A · Q3 2025" />
       </label>
-      <div class="filter-grid">
-        <label class="text-row">
-          <span>Label (for your reference)</span>
-          <input type="text" id="filter-label" placeholder="Site A · Q3 2025" />
-        </label>
-        <label class="text-row">
-          <span>YOLO model</span>
-          <select id="filter-model">
-            <option value="yolov8x-seg.pt" selected>yolov8x-seg.pt — most accurate</option>
-            <option value="yolov8m-seg.pt">yolov8m-seg.pt — balanced</option>
-            <option value="yolov8n-seg.pt">yolov8n-seg.pt — fastest, less accurate</option>
-            <option value="yolov8x.pt">yolov8x.pt — detection only (no masks)</option>
-          </select>
-        </label>
-        <label class="text-row">
-          <span>Min confidence</span>
-          <input type="range" id="filter-conf" min="5" max="60" step="1" value="20" />
-          <span id="filter-conf-value" class="muted small">0.20</span>
-        </label>
-        <label class="text-row">
-          <span>Sample every Nth image</span>
-          <input type="number" id="filter-every" min="1" value="1" />
-          <span class="muted small">1 = every image · 10 = quick survey</span>
-        </label>
-        <label class="checkbox-row">
-          <input type="checkbox" id="filter-recurse" checked />
-          Walk subdirectories
-        </label>
-      </div>
-      <button class="btn btn-primary btn-lg" id="btn-filter-scan">Start scan</button>
-      <span class="muted small">Throughput on RTX 3090: ~20 img/s with x-seg, ~80 img/s with n-seg.</span>
-    </div>
-  </section>
-
-  <section class="card hidden" id="filter-progress-card">
-    <div class="card-header">
-      <h2>Scan progress</h2>
-      <p>Streaming live from the indexer.</p>
-    </div>
-    <pre id="filter-log" class="log-output">Waiting…</pre>
-  </section>
-
-  <section class="card">
-    <div class="card-header">
-      <h2>2 · Pick a scan, query, export</h2>
-      <p>Already-completed indexes show up here.</p>
-    </div>
-    <div class="filter-form">
       <label class="text-row">
-        <span>Choose a scan</span>
-        <select id="filter-scan-select">
-          <option value="">No scans yet — index a folder above first.</option>
+        <span>YOLO model</span>
+        <select id="filter-model">
+          <option value="yolov8x-seg.pt" selected>yolov8x-seg.pt — most accurate (~20 img/s on RTX 3090)</option>
+          <option value="yolov8m-seg.pt">yolov8m-seg.pt — balanced (~50 img/s)</option>
+          <option value="yolov8n-seg.pt">yolov8n-seg.pt — fastest (~100 img/s)</option>
+          <option value="yolov8x.pt">yolov8x.pt — detection only, no masks</option>
         </select>
       </label>
+      <label class="text-row">
+        <span>Min confidence (during scan)</span>
+        <input type="range" id="filter-conf" min="5" max="60" step="1" value="20" />
+        <span id="filter-conf-value" class="muted small">0.20</span>
+      </label>
+      <label class="text-row">
+        <span>Sample every Nth image</span>
+        <input type="number" id="filter-every" min="1" value="1" />
+        <span class="muted small">1 = every image · 10 = quick survey first pass</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="filter-recurse" checked />
+        Walk subdirectories
+      </label>
     </div>
-    <div id="filter-summary" class="hidden">
-      <p class="muted small" id="filter-summary-label"></p>
+    <button class="btn btn-primary btn-lg" id="btn-filter-scan" style="margin-top:14px">Start indexing</button>
 
-      <h3>Engineering charts</h3>
-      <div class="charts-row" id="filter-charts-row">
-        <div class="chart-card"><h4>Quality score</h4><canvas id="chart-quality"></canvas></div>
-        <div class="chart-card"><h4>Brightness</h4><canvas id="chart-brightness"></canvas></div>
-        <div class="chart-card"><h4>Sharpness (Laplacian var)</h4><canvas id="chart-sharpness"></canvas></div>
-        <div class="chart-card"><h4>Detections per frame</h4><canvas id="chart-dets"></canvas></div>
+    <hr style="margin:24px 0; border:none; border-top:1px solid var(--color-border)" />
+
+    <h3>Option B — Re-open an existing scan</h3>
+    <label class="text-row">
+      <span>Choose a scan</span>
+      <select id="filter-scan-select">
+        <option value="">No scans yet</option>
+      </select>
+    </label>
+    <div id="source-info" class="source-info hidden">
+      <div class="source-info-meta" id="source-info-meta"></div>
+      <h4 style="margin-top:14px">Sample frames</h4>
+      <div id="source-thumbs" class="thumb-grid small"></div>
+      <div class="actions" style="margin-top:14px">
+        <button class="btn btn-secondary" id="btn-source-continue">Continue → Analyse</button>
       </div>
-      <div class="filter-stats" id="filter-stats"></div>
+    </div>
+  </section>
 
-      <h3 style="margin-top:18px">Pick the best N for annotation</h3>
-      <p class="muted small">Composite score blends sharpness + brightness + contrast + detection diversity + confidence. Use this to curate annotation candidates from a 15M-frame archive.</p>
-      <div class="filter-grid">
-        <label class="text-row">
-          <span>How many?</span>
-          <input type="number" id="best-n" min="1" max="100000" value="200" />
-        </label>
-        <label class="text-row">
-          <span>Minimum quality (0–1)</span>
-          <input type="range" id="best-quality" min="10" max="90" step="1" value="40" />
-          <span id="best-quality-value" class="muted small">0.40</span>
-        </label>
-        <label class="text-row">
-          <span>Diversify across classes</span>
-          <select id="best-diversify">
-            <option value="true" selected>Yes — round-robin across detected classes</option>
-            <option value="false">No — pure top-quality</option>
-          </select>
-        </label>
-        <label class="text-row">
-          <span>Output folder name</span>
-          <input type="text" id="best-target" placeholder="e.g. annotation_batch_1" />
-        </label>
+  <!-- ============= STEP 2: Index progress ============= -->
+  <section class="card wiz-pane hidden" data-pane="2">
+    <div class="card-header">
+      <h2><span class="step-badge">2</span> Indexing</h2>
+      <p>Streaming live from the YOLO scanner. ETA is shown in the log.</p>
+    </div>
+    <pre id="filter-log" class="log-output">Waiting…</pre>
+    <div class="actions" style="margin-top:14px">
+      <button class="btn btn-secondary" id="btn-index-continue" disabled>Continue → Analyse</button>
+      <span class="muted small" id="filter-index-status"></span>
+    </div>
+  </section>
+
+  <!-- ============= STEP 3: Analyse ============= -->
+  <section class="card wiz-pane hidden" data-pane="3">
+    <div class="card-header">
+      <h2><span class="step-badge">3</span> Engineering analysis</h2>
+      <p id="filter-summary-label"></p>
+    </div>
+
+    <div class="charts-row">
+      <div class="chart-card"><h4>Quality score (composite)</h4><canvas id="chart-quality"></canvas></div>
+      <div class="chart-card"><h4>Brightness</h4><canvas id="chart-brightness"></canvas></div>
+      <div class="chart-card"><h4>Sharpness (Laplacian var)</h4><canvas id="chart-sharpness"></canvas></div>
+      <div class="chart-card"><h4>Detections per frame</h4><canvas id="chart-dets"></canvas></div>
+    </div>
+
+    <div class="charts-row">
+      <div class="chart-card wide">
+        <h4>People activity by hour-of-day (parsed from filenames)</h4>
+        <canvas id="chart-time"></canvas>
       </div>
-      <div class="actions">
-        <button class="btn btn-primary btn-lg" id="btn-pick-best">Pick best for annotation</button>
-        <span class="muted small" id="best-status"></span>
-      </div>
+    </div>
 
-      <h3 style="margin-top:18px">Class breakdown</h3>
-      <div id="filter-class-list" class="filter-class-list"></div>
+    <div class="filter-stats" id="filter-stats"></div>
 
-      <h3 style="margin-top:18px">3 · Export the filtered subset</h3>
-      <div class="filter-grid">
+    <h3 style="margin-top:18px">Class co-occurrence — which objects appear together?</h3>
+    <p class="muted small">Reads as a heatmap: bigger / redder cells mean those two classes show up in the same frame more often. Useful for spotting context (people often near machines, etc.).</p>
+    <div id="cooc-wrap" class="cooc-wrap"></div>
+
+    <h3 style="margin-top:18px">Class breakdown</h3>
+    <div id="filter-class-list" class="filter-class-list"></div>
+
+    <div class="actions" style="margin-top:18px">
+      <button class="btn btn-primary btn-lg" id="btn-analyse-continue">Continue → Build filter rules</button>
+    </div>
+  </section>
+
+  <!-- ============= STEP 4: Rules ============= -->
+  <section class="card wiz-pane hidden" data-pane="4">
+    <div class="card-header">
+      <h2><span class="step-badge">4</span> Build filter rules</h2>
+      <p>Tick which classes you want. Use the sliders to gate on quality / brightness / sharpness / detection density. Live count updates as you change anything.</p>
+    </div>
+    <div class="rule-grid">
+      <div class="rule-col">
+        <h4>Class gate</h4>
         <label class="text-row">
           <span>Logic</span>
-          <select id="filter-logic">
+          <select id="rule-logic">
             <option value="any" selected>ANY of the picked classes (union)</option>
             <option value="all">ALL of the picked classes (intersection)</option>
             <option value="none">NONE of the picked classes (negation)</option>
@@ -837,31 +858,133 @@
         </label>
         <label class="text-row">
           <span>Min detection confidence</span>
-          <input type="range" id="export-conf" min="0" max="95" step="1" value="30" />
-          <span id="export-conf-value" class="muted small">0.30</span>
+          <input type="range" id="rule-conf" min="0" max="95" step="1" value="30" />
+          <span id="rule-conf-value" class="muted small">0.30</span>
         </label>
         <label class="text-row">
           <span>Min count per class</span>
-          <input type="number" id="export-count" min="1" value="1" />
+          <input type="number" id="rule-count" min="1" value="1" />
         </label>
-        <label class="text-row">
-          <span>Materialise as</span>
-          <select id="export-mode">
-            <option value="symlink" selected>Symlink — fastest, zero extra disk</option>
-            <option value="hardlink">Hardlink — same drive only, zero extra disk</option>
-            <option value="copy">Copy — independent files</option>
-            <option value="list">List file (filtered.txt)</option>
-          </select>
-        </label>
-        <label class="text-row">
-          <span>Target folder name</span>
-          <input type="text" id="export-target" placeholder="e.g. people_or_machines" />
-        </label>
+        <div id="rule-class-checks" class="rule-class-checks"></div>
       </div>
+
+      <div class="rule-col">
+        <h4>Image-quality gate</h4>
+        <label class="text-row">
+          <span>Min quality score</span>
+          <input type="range" id="rule-min-quality" min="0" max="100" step="1" value="0" />
+          <span id="rule-min-quality-value" class="muted small">0.00</span>
+        </label>
+        <label class="text-row">
+          <span>Min brightness</span>
+          <input type="range" id="rule-min-brightness" min="0" max="255" step="1" value="0" />
+          <span id="rule-min-brightness-value" class="muted small">0</span>
+        </label>
+        <label class="text-row">
+          <span>Max brightness (drop overexposed)</span>
+          <input type="range" id="rule-max-brightness" min="0" max="255" step="1" value="255" />
+          <span id="rule-max-brightness-value" class="muted small">255</span>
+        </label>
+        <label class="text-row">
+          <span>Min sharpness (drop blurry)</span>
+          <input type="range" id="rule-min-sharpness" min="0" max="800" step="10" value="0" />
+          <span id="rule-min-sharpness-value" class="muted small">0</span>
+        </label>
+        <label class="text-row">
+          <span>Min detections / frame</span>
+          <input type="number" id="rule-min-dets" min="0" value="0" />
+        </label>
+
+        <h4 style="margin-top:14px">Time-of-day window</h4>
+        <p class="muted small">Tick hours to keep. Filenames must contain a parseable timestamp.</p>
+        <div id="hour-toggle" class="hour-toggle"></div>
+      </div>
+    </div>
+
+    <div class="match-strip">
+      <div class="match-bignum">
+        <span id="rule-match-count">—</span>
+        <small>frames match</small>
+      </div>
+      <div class="match-progress"><span id="rule-match-bar"></span></div>
+      <div class="match-meta" id="rule-match-meta">—</div>
       <div class="actions">
-        <button class="btn btn-primary btn-lg" id="btn-filter-export">Create filtered folder</button>
-        <span class="muted small" id="filter-export-status"></span>
+        <button class="btn btn-primary btn-lg" id="btn-rule-preview">Preview matches →</button>
       </div>
+    </div>
+  </section>
+
+  <!-- ============= STEP 5: Preview ============= -->
+  <section class="card wiz-pane hidden" data-pane="5">
+    <div class="card-header">
+      <h2><span class="step-badge">5</span> Preview matches</h2>
+      <p>Random sample of 12 frames matching your rules. Click "show non-matches" to spot-check what's being excluded.</p>
+    </div>
+    <div class="actions" style="margin-bottom:14px">
+      <button class="btn btn-secondary" id="btn-preview-matches">Matches</button>
+      <button class="btn btn-ghost" id="btn-preview-nonmatches">Non-matches</button>
+      <button class="btn btn-ghost" id="btn-preview-reroll">Different sample</button>
+      <span class="muted small" id="preview-status"></span>
+    </div>
+    <div id="preview-grid" class="thumb-grid"></div>
+    <div class="actions" style="margin-top:18px">
+      <button class="btn btn-primary btn-lg" id="btn-preview-continue">Looks good → Export</button>
+    </div>
+  </section>
+
+  <!-- ============= STEP 6: Export ============= -->
+  <section class="card wiz-pane hidden" data-pane="6">
+    <div class="card-header">
+      <h2><span class="step-badge">6</span> Export the filtered subset</h2>
+      <p>Materialise the result as a folder. Symlinks are recommended for big sets — zero extra disk, instant.</p>
+    </div>
+    <div class="filter-grid">
+      <label class="text-row">
+        <span>Materialise as</span>
+        <select id="export-mode">
+          <option value="symlink" selected>Symlink — fastest, zero disk overhead</option>
+          <option value="hardlink">Hardlink — same drive only, zero disk overhead</option>
+          <option value="copy">Copy — independent files</option>
+          <option value="list">List file (filtered.txt only)</option>
+        </select>
+      </label>
+      <label class="text-row">
+        <span>Output folder name</span>
+        <input type="text" id="export-target" placeholder="e.g. people_or_machines" />
+      </label>
+    </div>
+
+    <hr style="margin:18px 0; border:none; border-top:1px solid var(--color-border)" />
+
+    <h3>Or: pick best N for annotation</h3>
+    <p class="muted small">A second export mode that uses the rule as a candidate pool, then sorts by composite quality and (optionally) round-robins across classes so the final set is diverse.</p>
+    <div class="filter-grid">
+      <label class="text-row">
+        <span>How many candidates</span>
+        <input type="number" id="best-n" min="1" max="100000" value="200" />
+      </label>
+      <label class="text-row">
+        <span>Min quality</span>
+        <input type="range" id="best-quality" min="10" max="90" step="1" value="40" />
+        <span id="best-quality-value" class="muted small">0.40</span>
+      </label>
+      <label class="text-row">
+        <span>Diversify across classes</span>
+        <select id="best-diversify">
+          <option value="true" selected>Yes — round-robin</option>
+          <option value="false">No — pure top quality</option>
+        </select>
+      </label>
+      <label class="text-row">
+        <span>Output folder name</span>
+        <input type="text" id="best-target" placeholder="e.g. annotation_batch_1" />
+      </label>
+    </div>
+
+    <div class="actions" style="margin-top:18px">
+      <button class="btn btn-primary btn-lg" id="btn-filter-export">Create filtered folder</button>
+      <button class="btn btn-secondary btn-lg" id="btn-pick-best">Pick best N</button>
+      <span class="muted small" id="filter-export-status"></span>
     </div>
   </section>
 </main>

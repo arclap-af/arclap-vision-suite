@@ -1254,12 +1254,40 @@ function escapeHtml(s) {
 applyLocale();
 
 // =============================================================================
-// Filter tab — bulk image scan + class-by-class export
+// Filter wizard — bulk image scan + live rule preview + export
 // =============================================================================
 
 let activeFilterScanId = null;
 let activeFilterSummary = null;
 let filterScanEventSource = null;
+let filterClassMeta = [];      // [{class_id, class_name, n_images}, …]
+let filterHourCoverage = new Set();  // hours present in filenames
+
+function showFilterStep(n) {
+  document.querySelectorAll('#filter-stepper .wiz-step').forEach(el => {
+    const k = parseInt(el.dataset.step);
+    el.classList.toggle('active', k === n);
+    el.classList.toggle('done', k < n);
+  });
+  document.querySelectorAll('.wiz-pane').forEach(el => {
+    el.classList.toggle('hidden', parseInt(el.dataset.pane) !== n);
+  });
+}
+
+document.querySelectorAll('#filter-stepper .wiz-step').forEach(el => {
+  el.addEventListener('click', () => {
+    // Block forward jumps unless a scan is active
+    const k = parseInt(el.dataset.step);
+    if (k > 1 && !activeFilterScanId) {
+      toast('Pick or create a scan first', 'warn');
+      return;
+    }
+    showFilterStep(k);
+    if (k === 3) loadFilterAnalyse(activeFilterScanId);
+    if (k === 4) buildRuleUI();
+    if (k === 5) loadPreview('matches');
+  });
+});
 
 function bindRange(rangeId, valueId, fmt = v => (v / 100).toFixed(2)) {
   const r = $(rangeId);
@@ -1293,9 +1321,12 @@ if ($('btn-filter-scan')) {
         throw new Error(err.detail || `HTTP ${r.status}`);
       }
       const data = await r.json();
+      activeFilterScanId = data.job_id;
       toast(`Scan job ${data.job_id} queued`, 'success');
-      $('filter-progress-card').classList.remove('hidden');
+      showFilterStep(2);
       $('filter-log').textContent = '';
+      $('btn-index-continue').disabled = true;
+      $('filter-index-status').textContent = 'Running…';
       streamFilterScan(data.job_id);
     } catch (err) {
       toast('Scan failed to start: ' + err.message, 'error');
@@ -1317,6 +1348,9 @@ function streamFilterScan(jobId) {
     } else if (m.type === 'end') {
       filterScanEventSource.close();
       filterScanEventSource = null;
+      $('btn-index-continue').disabled = (m.status !== 'done');
+      $('filter-index-status').textContent =
+        m.status === 'done' ? 'Done' : `${m.status} (exit ${m.returncode})`;
       if (m.status === 'done') {
         toast('Scan finished', 'success');
         refreshFilterScans();
@@ -1329,6 +1363,28 @@ function streamFilterScan(jobId) {
     if (filterScanEventSource) filterScanEventSource.close();
     filterScanEventSource = null;
   };
+}
+
+if ($('btn-index-continue')) {
+  $('btn-index-continue').addEventListener('click', () => {
+    showFilterStep(3);
+    loadFilterAnalyse(activeFilterScanId);
+  });
+}
+if ($('btn-source-continue')) {
+  $('btn-source-continue').addEventListener('click', () => {
+    showFilterStep(3);
+    loadFilterAnalyse(activeFilterScanId);
+  });
+}
+if ($('btn-analyse-continue')) {
+  $('btn-analyse-continue').addEventListener('click', () => {
+    showFilterStep(4);
+    buildRuleUI();
+  });
+}
+if ($('btn-preview-continue')) {
+  $('btn-preview-continue').addEventListener('click', () => showFilterStep(6));
 }
 
 async function refreshFilterScans() {
@@ -1358,27 +1414,49 @@ if ($('filter-scan-select')) {
   $('filter-scan-select').addEventListener('change', async () => {
     const jobId = $('filter-scan-select').value;
     if (!jobId) {
-      $('filter-summary').classList.add('hidden');
+      $('source-info').classList.add('hidden');
       activeFilterScanId = null;
       return;
     }
     activeFilterScanId = jobId;
-    await loadFilterSummary(jobId);
+    await loadSourceInfo(jobId);
   });
 }
 
-async function loadFilterSummary(jobId) {
+async function loadSourceInfo(jobId) {
+  try {
+    const r = await fetch(`/api/filter/${jobId}/source-info`, { method: 'POST' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    $('source-info').classList.remove('hidden');
+    $('source-info-meta').innerHTML = `
+      <dl><dt>Label</dt><dd>${escapeHtml(data.label)}</dd></dl>
+      <dl><dt>Source</dt><dd style="max-width:380px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(data.source)}</dd></dl>
+      <dl><dt>Indexed</dt><dd>${data.total.toLocaleString()} images</dd></dl>
+      <dl><dt>Hours seen</dt><dd>${data.hour_coverage.length ? data.hour_coverage.length + '/24' : 'no timestamps in filenames'}</dd></dl>`;
+    const grid = $('source-thumbs');
+    grid.innerHTML = data.sample_thumb_urls.map((u, i) => `
+      <div class="thumb-tile">
+        <img src="${u}" alt="sample" loading="lazy" />
+        <div class="meta">${escapeHtml((data.sample_paths[i] || '').split(/[\\\/]/).pop())}</div>
+      </div>`).join('');
+  } catch (e) {
+    toast('Could not load scan info: ' + e.message, 'error');
+  }
+}
+
+async function loadFilterAnalyse(jobId) {
+  if (!jobId) return;
   try {
     const data = await fetch(`/api/filter/${jobId}/summary`).then(r => r.json());
-    if (!data.ready) {
-      toast('Scan still in progress', 'warn');
-      return;
-    }
+    if (!data.ready) { toast('Scan not ready yet', 'warn'); return; }
     activeFilterSummary = data;
-    $('filter-summary').classList.remove('hidden');
+    filterClassMeta = data.rows;
     $('filter-summary-label').textContent =
-      `${data.label} · ${data.source} · ${data.total_images.toLocaleString()} images indexed.`;
+      `${data.label} · ${data.total_images.toLocaleString()} images indexed.`;
     loadFilterCharts(jobId);
+    loadTimeOfDayChart(jobId);
+    loadCooccurrence(jobId);
 
     const max = Math.max(1, ...data.rows.map(r => r.n_images));
     $('filter-class-list').innerHTML = data.rows.map(r => {
@@ -1397,6 +1475,67 @@ async function loadFilterSummary(jobId) {
   } catch (e) {
     toast('Could not load summary: ' + e.message, 'error');
   }
+}
+
+// Time-of-day chart
+async function loadTimeOfDayChart(jobId) {
+  const ctx = $('chart-time'); if (!ctx) return;
+  try {
+    const r = await fetch(`/api/filter/${jobId}/time-of-day`);
+    if (!r.ok) return;
+    const d = await r.json();
+    filterHourCoverage = new Set(d.images.map((n, i) => n > 0 ? i : -1).filter(x => x >= 0));
+    const c = chartColors();
+    if (filterCharts['chart-time']) filterCharts['chart-time'].destroy();
+    filterCharts['chart-time'] = new Chart(ctx.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: d.labels,
+        datasets: [
+          { label: 'Images', data: d.images, backgroundColor: c.barColor, borderWidth: 0, yAxisID: 'y' },
+          { label: 'Detections', data: d.detections, backgroundColor: 'rgba(245,158,11,0.6)', borderWidth: 0, yAxisID: 'y2', type: 'line' },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: c.tickColor } } },
+        scales: {
+          x: { ticks: { color: c.tickColor, maxTicksLimit: 12 }, grid: { display: false } },
+          y: { ticks: { color: c.tickColor }, grid: { color: c.gridColor } },
+          y2: { position: 'right', ticks: { color: c.tickColor }, grid: { display: false } },
+        },
+      },
+    });
+  } catch {}
+}
+
+// Co-occurrence heatmap rendered as an HTML table
+async function loadCooccurrence(jobId) {
+  const wrap = $('cooc-wrap'); if (!wrap) return;
+  try {
+    const d = await fetch(`/api/filter/${jobId}/cooccurrence?top_n=10`).then(r => r.json());
+    if (!d.classes || !d.classes.length) {
+      wrap.innerHTML = '<p class="muted small">No detections to compare.</p>';
+      return;
+    }
+    const flat = d.matrix.flat();
+    const max = Math.max(1, ...flat);
+    const labels = d.classes.map(c => c.name || ('class ' + c.id));
+    let html = '<table class="cooc-table"><thead><tr><th></th>';
+    labels.forEach(l => html += `<th>${escapeHtml(l)}</th>`);
+    html += '</tr></thead><tbody>';
+    d.matrix.forEach((row, i) => {
+      html += `<tr><th class="row-label">${escapeHtml(labels[i])}</th>`;
+      row.forEach(v => {
+        const t = max > 0 ? v / max : 0;
+        const bg = `rgba(229,33,60, ${0.10 + 0.85 * t})`;
+        html += `<td style="background:${bg}">${v}</td>`;
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  } catch {}
 }
 
 // Engineering charts on the Filter tab
@@ -1447,6 +1586,162 @@ async function loadFilterCharts(jobId) {
 }
 
 bindRange('best-quality', 'best-quality-value');
+
+// =============================================================================
+// Rule builder + live match count
+// =============================================================================
+
+let ruleSelectedHours = new Set([...Array(24).keys()]);  // default: all hours
+let ruleMatchTimer = null;
+
+function buildRuleUI() {
+  if (!filterClassMeta || !filterClassMeta.length) {
+    $('rule-class-checks').innerHTML =
+      '<p class="muted small">No detections recorded — go back to Step 3 to verify.</p>';
+    return;
+  }
+  $('rule-class-checks').innerHTML = filterClassMeta.map(c => `
+    <label class="rule-class-row">
+      <input type="checkbox" data-rule-class="${c.class_id}" />
+      <span>${escapeHtml(c.class_name) || ('class ' + c.class_id)}</span>
+      <span class="n">${(c.n_images || 0).toLocaleString()}</span>
+    </label>
+  `).join('');
+
+  // Hour-toggle 24-button grid
+  const ht = $('hour-toggle');
+  ht.innerHTML = Array.from({ length: 24 }, (_, h) => {
+    const muted = filterHourCoverage.size && !filterHourCoverage.has(h) ? 'muted' : '';
+    return `<button data-hour="${h}" class="on ${muted}">${h.toString().padStart(2, '0')}</button>`;
+  }).join('');
+  ht.querySelectorAll('button').forEach(b => {
+    b.addEventListener('click', () => {
+      const h = parseInt(b.dataset.hour);
+      if (ruleSelectedHours.has(h)) {
+        ruleSelectedHours.delete(h);
+        b.classList.remove('on');
+      } else {
+        ruleSelectedHours.add(h);
+        b.classList.add('on');
+      }
+      scheduleRuleRecount();
+    });
+  });
+
+  // Reset rule defaults
+  ruleSelectedHours = new Set([...Array(24).keys()]);
+
+  // Wire all rule controls
+  ['rule-logic','rule-conf','rule-count','rule-min-quality','rule-min-brightness',
+   'rule-max-brightness','rule-min-sharpness','rule-min-dets'].forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    el.addEventListener('input', () => {
+      // Update inline value labels for ranges
+      if ($(id + '-value')) {
+        const v = parseFloat(el.value);
+        if (id === 'rule-conf' || id === 'rule-min-quality') {
+          $(id + '-value').textContent = (v / 100).toFixed(2);
+        } else {
+          $(id + '-value').textContent = Math.round(v);
+        }
+      }
+      scheduleRuleRecount();
+    });
+  });
+  // Class-checkbox changes
+  $('rule-class-checks').addEventListener('change', scheduleRuleRecount);
+
+  scheduleRuleRecount();
+}
+
+function currentRule() {
+  const classes = Array.from(document.querySelectorAll('#rule-class-checks input:checked'))
+    .map(el => parseInt(el.dataset.ruleClass));
+  return {
+    classes,
+    logic: $('rule-logic').value,
+    min_conf: parseInt($('rule-conf').value) / 100,
+    min_count: parseInt($('rule-count').value) || 1,
+    min_quality: parseInt($('rule-min-quality').value) / 100,
+    min_brightness: parseInt($('rule-min-brightness').value),
+    max_brightness: parseInt($('rule-max-brightness').value),
+    min_sharpness: parseInt($('rule-min-sharpness').value),
+    min_dets: parseInt($('rule-min-dets').value) || 0,
+    hours: ruleSelectedHours.size === 24 ? null : [...ruleSelectedHours],
+  };
+}
+
+function scheduleRuleRecount() {
+  if (ruleMatchTimer) clearTimeout(ruleMatchTimer);
+  ruleMatchTimer = setTimeout(runRuleRecount, 200);
+}
+
+async function runRuleRecount() {
+  if (!activeFilterScanId) return;
+  const rule = currentRule();
+  $('rule-match-count').textContent = '…';
+  try {
+    const r = await fetch(`/api/filter/${activeFilterScanId}/match-count`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rule),
+    });
+    if (!r.ok) throw new Error('count failed');
+    const d = await r.json();
+    $('rule-match-count').textContent = d.matches.toLocaleString();
+    const pct = d.total > 0 ? (100 * d.matches / d.total) : 0;
+    $('rule-match-bar').style.width = pct.toFixed(1) + '%';
+    $('rule-match-meta').textContent = `${pct.toFixed(1)}% of ${d.total.toLocaleString()}`;
+  } catch (e) {
+    $('rule-match-count').textContent = '?';
+  }
+}
+
+if ($('btn-rule-preview')) {
+  $('btn-rule-preview').addEventListener('click', () => {
+    showFilterStep(5);
+    loadPreview('matches');
+  });
+}
+
+// Preview step
+async function loadPreview(mode) {
+  if (!activeFilterScanId) return;
+  $('preview-status').textContent = 'Loading…';
+  try {
+    const r = await fetch(`/api/filter/${activeFilterScanId}/match-preview?mode=${mode}&limit=12`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentRule()),
+    });
+    if (!r.ok) throw new Error('preview failed');
+    const d = await r.json();
+    const grid = $('preview-grid');
+    if (!d.rows.length) {
+      grid.innerHTML = `<p class="muted">No frames ${mode === 'matches' ? 'match' : 'fail'} the rule.</p>`;
+    } else {
+      grid.innerHTML = d.rows.map(r => `
+        <div class="thumb-tile">
+          <img src="${r.thumb_url}" alt="" loading="lazy" />
+          <span class="badge-q">Q ${(r.quality || 0).toFixed(2)}</span>
+          ${r.classes.length ? `<span class="badge-cls">${escapeHtml(r.classes[0].class_name)}</span>` : ''}
+          <div class="meta">
+            <strong>${escapeHtml(r.path.split(/[\\\/]/).pop())}</strong><br>
+            n_dets ${r.n_dets} · b ${Math.round(r.brightness || 0)} · sh ${Math.round(r.sharpness || 0)}
+          </div>
+        </div>`).join('');
+    }
+    $('preview-status').textContent = `${d.rows.length} ${mode}`;
+  } catch (e) {
+    toast('Preview failed: ' + e.message, 'error');
+    $('preview-status').textContent = '';
+  }
+}
+
+if ($('btn-preview-matches'))     $('btn-preview-matches').addEventListener('click', () => loadPreview('matches'));
+if ($('btn-preview-nonmatches'))  $('btn-preview-nonmatches').addEventListener('click', () => loadPreview('nonmatches'));
+if ($('btn-preview-reroll'))      $('btn-preview-reroll').addEventListener('click', () => loadPreview('matches'));
 
 if ($('btn-pick-best')) {
   $('btn-pick-best').addEventListener('click', async () => {
