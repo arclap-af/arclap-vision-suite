@@ -344,8 +344,13 @@ def _burn_timestamp(frame: np.ndarray) -> None:
 # Alerts
 # ---------------------------------------------------------------------------
 
-def evaluate_alerts(state: dict, alerts_state: dict) -> list[dict]:
-    """Three hard-coded alerts. Returns a list of newly-fired alerts."""
+def evaluate_alerts(state: dict, alerts_state: dict,
+                     model_names: dict | None = None) -> list[dict]:
+    """Three hard-coded alerts. Returns a list of newly-fired alerts.
+
+    The helmet alert is automatically silenced when the running model has
+    no helmet class — otherwise it would fire forever (n_helmets always 0).
+    """
     fired: list[dict] = []
     now = time.time()
 
@@ -364,23 +369,40 @@ def evaluate_alerts(state: dict, alerts_state: dict) -> list[dict]:
     else:
         alerts_state["idle_active"] = False
 
-    # Alert 2: Worker without helmet — person bbox without overlapping helmet bbox
-    by_class = state.get("frame_classes", {})
-    n_workers = (by_class.get(11, 0)   # arbeiter / construction worker
-                 or by_class.get(0, 0))  # COCO person fallback
-    n_helmets = (by_class.get(32, 0)   # safety helmet
-                 or by_class.get(33, 0))  # hi-vis vest fallback
-    # Heuristic: if more workers than helmets in frame, raise once per minute
-    if n_workers > 0 and n_helmets < n_workers:
-        last_fired = alerts_state.get("ppe_last_fired", 0)
-        if now - last_fired > 60:
-            fired.append({
-                "kind": "worker_without_helmet",
-                "severity": "alert",
-                "msg": f"{n_workers} workers in frame but only {n_helmets} helmets detected",
-                "at": now,
-            })
-            alerts_state["ppe_last_fired"] = now
+    # Alert 2: Worker without helmet — only if the model can detect helmets
+    helmet_class_id = None
+    worker_class_id = None
+    if model_names:
+        # CSI uses Schutzhelm (class 32 in 40-taxonomy); fall back to COCO/CSI fallbacks
+        for cid, name in model_names.items():
+            n = (name or "").lower()
+            if helmet_class_id is None and ("schutzhelm" in n or "helmet" in n or "hardhat" in n):
+                helmet_class_id = int(cid)
+            if worker_class_id is None and (n in ("arbeiter", "worker", "person", "construction worker")):
+                worker_class_id = int(cid)
+    if helmet_class_id is not None and worker_class_id is not None:
+        by_class = state.get("frame_classes", {})
+        n_workers = by_class.get(worker_class_id, 0)
+        n_helmets = by_class.get(helmet_class_id, 0)
+        if n_workers > 0 and n_helmets < n_workers:
+            last_fired = alerts_state.get("ppe_last_fired", 0)
+            if now - last_fired > 60:
+                fired.append({
+                    "kind": "worker_without_helmet",
+                    "severity": "alert",
+                    "msg": f"{n_workers} workers in frame but only {n_helmets} helmets detected",
+                    "at": now,
+                })
+                alerts_state["ppe_last_fired"] = now
+    elif worker_class_id is not None and not alerts_state.get("ppe_skipped_warned"):
+        # Surface this once: model has no helmet class, alert disabled
+        fired.append({
+            "kind": "ppe_alert_disabled",
+            "severity": "info",
+            "msg": "PPE / helmet alert disabled — current model has no helmet class. Train CSI_V2 with class 32 (Schutzhelm) to enable.",
+            "at": now,
+        })
+        alerts_state["ppe_skipped_warned"] = True
 
     return fired
 
@@ -470,11 +492,24 @@ def main():
         names = getattr(model, "names", {}) or {}
         print(f"[live] YOLO {args.model} loaded ({len(names)} classes)", flush=True)
 
-    # MJPEG server
+    # MJPEG server — start before model load so the proxy gets a port asap
     mjpeg = None
+    actual_mjpeg_port = 0
     if args.mjpeg_port > 0:
         mjpeg = MJPEGServer(args.mjpeg_port)
         mjpeg.start()
+        actual_mjpeg_port = mjpeg.port if mjpeg._httpd else 0
+        # Write a starting status payload immediately so the UI can poll
+        # and discover the bound port before frames arrive
+        write_status(status_path, {
+            "state": "starting",
+            "url": args.url,
+            "mode": args.mode,
+            "model": args.model,
+            "tracker": args.tracker,
+            "mjpeg_port": actual_mjpeg_port,
+            "started_at": time.time(),
+        })
 
     # Live-tunable settings (mutable from control file)
     live_conf = float(args.conf)
@@ -750,8 +785,8 @@ def main():
             cutoff = time.time() - 5.0
             active_tracks = sum(1 for t, ts in track_last_seen.items() if ts >= cutoff)
 
-            # Run alerts
-            new_alerts = evaluate_alerts(state, alerts_state)
+            # Run alerts (helmet alert auto-silenced if model has no helmet class)
+            new_alerts = evaluate_alerts(state, alerts_state, model_names=names)
             for a in new_alerts:
                 fired_alerts.append(a)
                 recent_events.append({

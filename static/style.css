@@ -2366,6 +2366,21 @@ code { background: var(--bg-2); padding: 1px 6px; border-radius: 4px; font-famil
   padding: 12px 24px; border-radius: var(--radius-2);
 }
 .rtsp-video-overlay.hidden { display: none; }
+.rtsp-reload-btn {
+  position: absolute; bottom: 14px; left: 50%;
+  transform: translateX(-50%);
+}
+.rtsp-reload-btn.hidden { display: none; }
+.rtsp-active-model {
+  position: absolute; top: 8px; left: 8px;
+  background: rgba(0,0,0,0.75); color: white;
+  padding: 4px 10px;
+  border-radius: var(--radius-1);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  z-index: 3;
+}
+.rtsp-active-model.hidden { display: none; }
 
 .rtsp-side {
   display: flex; flex-direction: column; gap: 12px;

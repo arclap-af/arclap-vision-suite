@@ -654,11 +654,28 @@ def rtsp_start(req: RtspStartRequest):
 def rtsp_mjpeg_proxy(job_id: str):
     """Proxy the MJPEG stream from the live processor's localhost server.
     The browser hits this URL (relative to the Suite); we stream from
-    the script's MJPEG server."""
+    the script's MJPEG server.
+
+    The actual bound port may differ from the requested one (the script
+    auto-walks if the port is busy). We read the bound port from the
+    live status JSON, falling back to the requested port if absent.
+    """
     j = db.get_job(job_id)
     if not j:
         raise HTTPException(404, "Job not found")
     port = (j.settings or {}).get("mjpeg_port", 8765)
+    # Prefer the actual bound port from the live status file
+    status_path_str = (j.settings or {}).get("status_path")
+    if status_path_str:
+        sp = Path(status_path_str)
+        if sp.is_file():
+            try:
+                status = json.loads(sp.read_text(encoding="utf-8"))
+                actual = status.get("mjpeg_port")
+                if actual and int(actual) > 0:
+                    port = int(actual)
+            except Exception:
+                pass
     upstream_url = f"http://127.0.0.1:{port}/mjpeg"
     import urllib.request
     try:

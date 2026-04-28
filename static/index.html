@@ -821,6 +821,8 @@
         <div class="rtsp-video-wrap">
           <img id="rtsp-mjpeg" alt="Live preview will appear here once frames arrive…" />
           <div class="rtsp-video-overlay" id="rtsp-video-overlay">Connecting…</div>
+          <button class="btn btn-secondary btn-small rtsp-reload-btn hidden" id="btn-rtsp-reload-mjpeg" type="button">🔄 Reload stream</button>
+          <div class="rtsp-active-model" id="rtsp-active-model"></div>
         </div>
         <div class="rtsp-side">
           <div class="rtsp-class-counts">
@@ -2336,6 +2338,6 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-29-i-multi-camera"></script>
+<script src="/static/app.js?v=2026-04-30-a-tier0"></script>
 </body>
 </html>

@@ -3234,9 +3234,13 @@ if ($('btn-rtsp-browse-file')) {
     openFolderModal('rtsp-file-path', '.mp4,.mov,.avi,.mkv,.webm,.m4v,.mpg,.mpeg,.flv,.wmv'));
 }
 
-// Populate model dropdown from /api/models
+// Populate model dropdown from /api/models — gates Start until done
+let rtspModelsLoaded = false;
 async function rtspPopulateModels() {
   if (!$('rtsp-model')) return;
+  rtspModelsLoaded = false;
+  if ($('btn-rtsp-start')) $('btn-rtsp-start').disabled = true;
+  $('rtsp-model').innerHTML = '<option value="">(loading models…)</option>';
   try {
     const models = await fetch('/api/models').then(r => r.json());
     const detect = (models || []).filter(m => ['detect', 'segment', 'obb'].includes((m.task || '').toLowerCase()));
@@ -3244,17 +3248,21 @@ async function rtspPopulateModels() {
       $('rtsp-model').innerHTML = '<option value="">(no detection models registered)</option>';
       return;
     }
-    // Sort: CSI_V* on top
+    // Sort: CSI_V* on top, then by name
     detect.sort((a, b) => {
       const ac = a.name.startsWith('CSI_V') ? 0 : 1;
       const bc = b.name.startsWith('CSI_V') ? 0 : 1;
-      return ac - bc;
+      if (ac !== bc) return ac - bc;
+      return a.name.localeCompare(b.name);
     });
     $('rtsp-model').innerHTML = detect.map(m =>
       `<option value="${escapeHtml(m.path)}">${escapeHtml(m.name)} — ${m.task}, ${m.n_classes} cls (${m.size_mb} MB)</option>`
     ).join('');
+    rtspModelsLoaded = true;
+    if ($('btn-rtsp-start')) $('btn-rtsp-start').disabled = false;
   } catch {
     $('rtsp-model').innerHTML = '<option value="">(could not load)</option>';
+    if ($('btn-rtsp-start')) $('btn-rtsp-start').disabled = false;  // allow start with default
   }
 }
 
@@ -3364,21 +3372,65 @@ async function rtspStart() {
     $('rtsp-live-panel').classList.remove('hidden');
     // Wire export download links to this job
     $('btn-rtsp-events-csv').href = `/api/rtsp/${rtspJobId}/events.csv`;
-    // Start MJPEG (after a short delay to let the python script bind the port)
-    setTimeout(() => {
-      const img = $('rtsp-mjpeg');
-      if (img) {
-        img.src = `/api/rtsp/${rtspJobId}/mjpeg?t=${Date.now()}`;
-        img.onerror = () => { $('rtsp-video-overlay').textContent = 'MJPEG stream unavailable — first frames may take a few seconds.'; };
-        img.onload = () => { $('rtsp-video-overlay').classList.add('hidden'); };
-      }
-    }, 2500);
+    // Show active model name on the video overlay so user can confirm
+    const modelName = $('rtsp-model').selectedOptions[0]?.text || 'default model';
+    $('rtsp-active-model').innerHTML = `🤖 ${escapeHtml(modelName.split('—')[0].trim())}`;
+    $('rtsp-active-model').classList.remove('hidden');
+    // Poll status JSON until the script reports a bound MJPEG port,
+    // THEN load the image. This avoids the "first attempt failed and
+    // browser cached the failure" issue from before.
+    waitForMjpegThenLoad();
     pollRtsp();
   } catch (err) {
     toast('Could not start: ' + err.message, 'error');
   } finally {
     $('btn-rtsp-start').classList.remove('loading');
   }
+}
+
+async function waitForMjpegThenLoad(maxWaitMs = 20000) {
+  if (!rtspJobId) return;
+  $('rtsp-video-overlay').textContent = 'Loading model + connecting to source…';
+  $('rtsp-video-overlay').classList.remove('hidden');
+  $('btn-rtsp-reload-mjpeg').classList.add('hidden');
+  const start = Date.now();
+  let port = 0;
+  while (Date.now() - start < maxWaitMs) {
+    try {
+      const status = await fetch(`/api/rtsp/${rtspJobId}/live`).then(r => r.json());
+      if (status.mjpeg_port && status.mjpeg_port > 0) {
+        port = status.mjpeg_port;
+        break;
+      }
+      $('rtsp-video-overlay').textContent =
+        status.state === 'starting'
+          ? `Loading model + binding port… (${Math.round((Date.now() - start) / 1000)}s)`
+          : `Waiting for stream… state: ${status.state || 'unknown'}`;
+    } catch {}
+    await new Promise(r => setTimeout(r, 700));
+  }
+  if (!port) {
+    $('rtsp-video-overlay').textContent = 'Timed out waiting for stream. Click 🔄 Reload below to retry.';
+    $('btn-rtsp-reload-mjpeg').classList.remove('hidden');
+    return;
+  }
+  // Load the image
+  const img = $('rtsp-mjpeg');
+  if (!img) return;
+  img.onerror = () => {
+    $('rtsp-video-overlay').textContent = 'MJPEG stream connection failed. Click 🔄 Reload to retry.';
+    $('rtsp-video-overlay').classList.remove('hidden');
+    $('btn-rtsp-reload-mjpeg').classList.remove('hidden');
+  };
+  img.onload = () => {
+    $('rtsp-video-overlay').classList.add('hidden');
+    $('btn-rtsp-reload-mjpeg').classList.add('hidden');
+  };
+  img.src = `/api/rtsp/${rtspJobId}/mjpeg?t=${Date.now()}`;
+}
+
+if ($('btn-rtsp-reload-mjpeg')) {
+  $('btn-rtsp-reload-mjpeg').addEventListener('click', waitForMjpegThenLoad);
 }
 
 async function rtspStop() {
