@@ -90,6 +90,32 @@ $('btn-folder-use').addEventListener('click', () => {
   const path = $('folder-path').value.trim();
   handleFolderPath(path);
 });
+if ($('btn-url-use')) {
+  $('btn-url-use').addEventListener('click', async () => {
+    const url = $('url-input').value.trim();
+    if (!url) { toast('Enter a URL first', 'error'); return; }
+    toast(`Downloading from ${url}…`, '');
+    try {
+      const r = await fetch('/api/url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      if (!r.ok) {
+        const err = await r.json();
+        throw new Error(err.detail || `HTTP ${r.status}`);
+      }
+      const data = await r.json();
+      state.fileId = data.id;
+      state.uploadKind = 'video';
+      showUploadInfo(data);
+      await runScan(data.id);
+      toast(`Fetched via ${data.downloader}`, 'success');
+    } catch (err) {
+      toast('Fetch failed: ' + err.message, 'error');
+    }
+  });
+}
 
 async function handleFile(file) {
   const form = new FormData();
@@ -394,7 +420,7 @@ $('btn-clear-log').addEventListener('click', () => { $('log-output').textContent
 // Multi-page navigation
 // =============================================================================
 
-const PAGES = ['wizard', 'models', 'live', 'history', 'projects'];
+const PAGES = ['wizard', 'models', 'train', 'live', 'history', 'projects'];
 
 function showPage(name) {
   PAGES.forEach(p => {
@@ -408,6 +434,7 @@ function showPage(name) {
   if (name === 'history') refreshHistory();
   if (name === 'projects') { refreshProjects(); }
   if (name === 'live') { /* nothing to fetch up-front */ }
+  if (name === 'train') { /* nothing to fetch up-front */ }
 }
 
 document.querySelectorAll('.topnav-btn').forEach(b => {
@@ -731,6 +758,7 @@ async function refreshHistory() {
           <div class="mode">${dur}</div>
           <div class="actions">
             ${j.output_url ? `<a class="btn btn-secondary" href="${j.output_url}" target="_blank">Open</a>` : ''}
+            ${j.status === 'done' && (j.mode === 'blur' || j.mode === 'remove' || j.mode === 'darkonly') ? `<button class="btn btn-ghost" data-verify-job="${j.id}">Verify</button>` : ''}
             <button class="btn btn-ghost" data-view-job="${j.id}">Log</button>
           </div>
         </div>
@@ -741,6 +769,27 @@ async function refreshHistory() {
         const j = await fetch(`/api/jobs/${b.dataset.viewJob}`).then(r => r.json());
         const w = window.open('', '_blank');
         w.document.write(`<pre style="background:#0b0e14;color:#eef2f7;padding:20px;font-family:monospace">${escapeHtml(j.log || '(no log)')}</pre>`);
+      });
+    });
+    list.querySelectorAll('[data-verify-job]').forEach(b => {
+      b.addEventListener('click', async () => {
+        if (!confirm('Run verification? Re-runs YOLO over the output and produces an annotated audit copy.')) return;
+        try {
+          const r = await fetch(`/api/jobs/${b.dataset.verifyJob}/verify`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: 'yolov8x-seg.pt', conf: 0.25 }),
+          });
+          if (!r.ok) {
+            const err = await r.json();
+            throw new Error(err.detail || `HTTP ${r.status}`);
+          }
+          const data = await r.json();
+          toast(`Verification job ${data.job_id} queued`, 'success');
+          setTimeout(refreshHistory, 800);
+        } catch (e) {
+          toast('Verify failed: ' + e.message, 'error');
+        }
       });
     });
   } catch (err) {
@@ -834,6 +883,125 @@ $('btn-export-recipe').addEventListener('click', () => {
   URL.revokeObjectURL(url);
 });
 
+// =============================================================================
+// Train page (custom YOLO from CVAT export)
+// =============================================================================
+
+let activeDatasetId = null;
+let trainJobId = null;
+let trainEventSource = null;
+
+const dsDz = $('dataset-dropzone');
+const dsInput = $('dataset-input');
+if (dsDz) {
+  dsDz.addEventListener('click', () => dsInput.click());
+  dsDz.addEventListener('dragover', e => { e.preventDefault(); dsDz.classList.add('dragover'); });
+  dsDz.addEventListener('dragleave', () => dsDz.classList.remove('dragover'));
+  dsDz.addEventListener('drop', e => {
+    e.preventDefault();
+    dsDz.classList.remove('dragover');
+    if (e.dataTransfer.files.length) uploadDataset(e.dataTransfer.files[0]);
+  });
+  dsInput.addEventListener('change', e => {
+    if (e.target.files.length) uploadDataset(e.target.files[0]);
+  });
+}
+
+async function uploadDataset(file) {
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    toast('Please upload a .zip of your CVAT export', 'error');
+    return;
+  }
+  toast(`Uploading ${file.name}…`);
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const r = await fetch('/api/datasets/upload', { method: 'POST', body: form });
+    if (!r.ok) {
+      const err = await r.json();
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const data = await r.json();
+    activeDatasetId = data.id;
+    $('dataset-info').classList.remove('hidden');
+    $('dataset-info').innerHTML = `
+      <h4>Dataset ready</h4>
+      <dl class="model-card-meta">
+        <dt>Name</dt><dd>${escapeHtml(data.name)}</dd>
+        <dt>Classes</dt><dd>${data.n_classes}</dd>
+        <dt>Class labels</dt><dd style="font-family:monospace">${(data.classes || []).map(escapeHtml).join(', ') || '(none read)'}</dd>
+      </dl>
+    `;
+    $('train-config-card').classList.remove('hidden');
+    toast(`Dataset extracted (${data.n_classes} classes)`, 'success');
+  } catch (err) {
+    toast('Dataset upload failed: ' + err.message, 'error');
+  }
+}
+
+if ($('btn-train-start')) {
+  $('btn-train-start').addEventListener('click', async () => {
+    if (!activeDatasetId) { toast('Upload a dataset first', 'error'); return; }
+    const body = {
+      dataset_id: activeDatasetId,
+      output_name: $('train-output-name').value.trim() || 'custom_model',
+      base_model: $('train-base-model').value,
+      epochs: parseInt($('train-epochs').value) || 50,
+      imgsz: parseInt($('train-imgsz').value) || 640,
+      batch: parseInt($('train-batch').value) || 16,
+      patience: parseInt($('train-patience').value) || 20,
+    };
+    $('btn-train-start').classList.add('loading');
+    try {
+      const r = await fetch('/api/train', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const err = await r.json();
+        throw new Error(err.detail || `HTTP ${r.status}`);
+      }
+      const data = await r.json();
+      trainJobId = data.job_id;
+      toast(`Training job ${trainJobId} queued`, 'success');
+      $('train-status-card').classList.remove('hidden');
+      $('train-log').textContent = '';
+      streamTrainLog(trainJobId);
+    } catch (err) {
+      toast('Training failed to start: ' + err.message, 'error');
+    } finally {
+      $('btn-train-start').classList.remove('loading');
+    }
+  });
+}
+
+function streamTrainLog(jobId) {
+  if (trainEventSource) trainEventSource.close();
+  trainEventSource = new EventSource(`/api/jobs/${jobId}/stream`);
+  const out = $('train-log');
+  trainEventSource.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'log') {
+      out.textContent += m.line + '\n';
+      out.scrollTop = out.scrollHeight;
+    } else if (m.type === 'end') {
+      trainEventSource.close();
+      trainEventSource = null;
+      if (m.status === 'done') {
+        toast('Training complete — new model is in the Models tab', 'success');
+      } else {
+        toast(`Training ${m.status} (exit ${m.returncode})`, 'error');
+      }
+    }
+  };
+  trainEventSource.onerror = () => {
+    if (trainEventSource) trainEventSource.close();
+    trainEventSource = null;
+  };
+}
+
+// =============================================================================
 // Maintenance: cleanup old runs
 let cleanupPreviewData = null;
 

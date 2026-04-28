@@ -786,6 +786,45 @@ code { background: var(--bg-2); padding: 1px 6px; border-radius: 4px; font-famil
 .project-card .meta { font-size: 0.82rem; color: var(--text-3); }
 .project-card .actions { display: flex; gap: 6px; margin-top: 6px; }
 
+/* Train tab */
+.dataset-info {
+  margin-top: 14px;
+  padding: 14px 18px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-sm);
+}
+.dataset-info h4 { color: var(--text-1); margin-bottom: 10px; }
+.train-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px 18px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-sm);
+  padding: 16px 18px;
+}
+.train-grid input, .train-grid select {
+  background: var(--bg-3);
+  border: 1px solid var(--border-2);
+  color: var(--text-1);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font: inherit;
+}
+#train-log.log-output {
+  background: var(--bg-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-sm);
+  padding: 14px 18px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.82rem;
+  max-height: 380px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  color: var(--text-2);
+}
+
 /* Maintenance card */
 .maintenance-row {
   display: flex;

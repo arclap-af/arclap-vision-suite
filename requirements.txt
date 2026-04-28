@@ -1,5 +1,6 @@
 # Pipeline / ML
 ultralytics==8.4.41
+yt-dlp>=2024.4.0  # optional but recommended — enables YouTube/Vimeo URL ingest
 opencv-python>=4.10
 numpy>=2.0
 tqdm>=4.66

@@ -11,7 +11,8 @@ CTX = {"python": "/usr/bin/python", "gpu": True, "root": "/proj"}
 def test_registry_discovers_all_modes():
     modes = pipelines.discover()
     expected = {"blur", "remove", "darkonly", "stabilize",
-                "color_normalize", "ppe", "analytics", "rtsp"}
+                "color_normalize", "ppe", "analytics", "rtsp",
+                "train", "verify"}
     assert expected.issubset(set(modes))
 
 
@@ -30,6 +31,8 @@ def test_unknown_mode_raises(fake_job):
     ("ppe", "ppe_check.py"),
     ("analytics", "analytics.py"),
     ("rtsp", "rtsp_live.py"),
+    ("train", "train_custom.py"),
+    ("verify", "verify.py"),
 ])
 def test_each_mode_returns_correct_script(fake_job, mode, script):
     cmd = pipelines.build_command(fake_job(mode), CTX)
@@ -118,3 +121,34 @@ def test_list_modes_returns_descriptions():
     names = {m["name"] for m in modes}
     assert "rtsp" in names
     assert all(m["description"] for m in modes)
+
+
+def test_train_passes_dataset_path(fake_job):
+    """train mode treats input_ref as a dataset directory."""
+    cmd = pipelines.build_command(
+        fake_job("train", input_ref="/datasets/abc",
+                 epochs=20, base_model="yolov8s.pt",
+                 output_name="my_site"),
+        CTX,
+    )
+    assert "--dataset" in cmd
+    i = cmd.index("--dataset")
+    assert cmd[i + 1] == "/datasets/abc"
+    assert "--base" in cmd
+    assert cmd[cmd.index("--base") + 1] == "yolov8s.pt"
+    assert "--epochs" in cmd
+    assert cmd[cmd.index("--epochs") + 1] == "20"
+    assert "--output-name" in cmd
+    assert cmd[cmd.index("--output-name") + 1] == "my_site"
+
+
+def test_verify_uses_finished_video_as_input(fake_job):
+    cmd = pipelines.build_command(
+        fake_job("verify", input_ref="/outputs/cleaned.mp4",
+                 model="yolov8x-seg.pt", classes="0,2"),
+        CTX,
+    )
+    assert "--input" in cmd
+    assert cmd[cmd.index("--input") + 1] == "/outputs/cleaned.mp4"
+    assert "--classes" in cmd
+    assert cmd[cmd.index("--classes") + 1] == "0,2"

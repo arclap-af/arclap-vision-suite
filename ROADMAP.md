@@ -147,6 +147,25 @@ Simple `tar` of `_data/` + `_outputs/`. One-command script.
 
 ---
 
+## Done since the previous roadmap snapshot (now in main)
+
+- ✅ **Custom YOLO training** — upload a CVAT export (zip), fine-tune any
+  YOLOv8 base model, the result auto-registers in the Models tab.
+  See `train_custom.py` + `pipelines/train.py` + Train tab UI.
+- ✅ **Pipeline chaining** — settings.chain = [{mode, settings}, …] so a
+  job's output becomes the next job's input. Wire stabilize → colour →
+  blur as a single submission.
+- ✅ **URL input** — POST /api/url accepts YouTube/Vimeo (via yt-dlp when
+  available) or any direct HTTP video URL.
+- ✅ **Detection-overlay scrubber** — POST /api/jobs/{id}/verify produces
+  an annotated audit copy of any finished privacy run.
+- ✅ **Project analytics aggregation** — GET /api/projects/{id}/analytics
+  returns by-mode / by-day / duration stats.
+- ✅ **GPU memory in /api/system** — free / used / pct so the UI can warn
+  before a job blows up VRAM.
+- ✅ **Error message translation** — /api/jobs/{id}/error-hint maps common
+  ffmpeg / CUDA / network errors to friendly hints.
+
 ## Pinned for the next sprint
 
 If picking up the next round of work, the highest-leverage items I'd

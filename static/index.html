@@ -23,6 +23,7 @@
   <nav class="topnav">
     <button class="topnav-btn active" data-page="wizard">Wizard</button>
     <button class="topnav-btn" data-page="models">Models</button>
+    <button class="topnav-btn" data-page="train">Train</button>
     <button class="topnav-btn" data-page="live">Live RTSP</button>
     <button class="topnav-btn" data-page="history">History</button>
     <button class="topnav-btn" data-page="projects">Projects</button>
@@ -79,6 +80,17 @@
         <div class="folder-row">
           <input type="text" id="folder-path" placeholder="C:\path\to\images  or  /home/user/timelapse" />
           <button class="btn btn-secondary" id="btn-folder-use">Use folder</button>
+        </div>
+      </details>
+      <details>
+        <summary>… or fetch from a URL (YouTube / Vimeo / direct video link)</summary>
+        <p class="muted small">
+          The server downloads it locally before processing. yt-dlp is used
+          when available; falls back to plain HTTP for direct video URLs.
+        </p>
+        <div class="folder-row">
+          <input type="text" id="url-input" placeholder="https://youtu.be/...  or  https://example.com/video.mp4" />
+          <button class="btn btn-secondary" id="btn-url-use">Fetch URL</button>
         </div>
       </details>
     </div>
@@ -389,6 +401,80 @@
         <div id="test-result-table" class="muted small"></div>
       </div>
     </div>
+  </section>
+</main>
+
+<!-- ====== Train Page ====== -->
+<main class="container hidden" id="page-train">
+  <section class="card">
+    <div class="card-header">
+      <h2>Train a custom YOLO model</h2>
+      <p>Upload a CVAT export (zip) — the kind that comes out of CVAT's <strong>"Ultralytics YOLO"</strong> export option. The Suite extracts the dataset, fine-tunes a YOLO model on it, and registers the resulting <code>.pt</code> in the Models tab automatically.</p>
+    </div>
+    <div class="dropzone" id="dataset-dropzone">
+      <input type="file" id="dataset-input" accept=".zip" hidden />
+      <div class="dropzone-content">
+        <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        <p class="dropzone-title">Drop a CVAT export zip or <span class="link">browse</span></p>
+        <p class="dropzone-hint">Must contain a <code>data.yaml</code> with <code>names:</code> and <code>train:</code> / <code>val:</code> paths · max 5 GB</p>
+      </div>
+    </div>
+    <div id="dataset-info" class="dataset-info hidden"></div>
+  </section>
+
+  <section class="card hidden" id="train-config-card">
+    <div class="card-header">
+      <h2>Training configuration</h2>
+      <p>Sensible defaults for ~500 labelled frames. Bigger datasets benefit from more epochs.</p>
+    </div>
+    <div class="train-grid">
+      <label class="text-row">
+        <span>Output model name</span>
+        <input type="text" id="train-output-name" value="custom_yolo" />
+      </label>
+      <label class="text-row">
+        <span>Base weights</span>
+        <select id="train-base-model">
+          <option value="yolov8n.pt">yolov8n.pt — fastest, lower quality</option>
+          <option value="yolov8s.pt">yolov8s.pt — balanced</option>
+          <option value="yolov8m.pt" selected>yolov8m.pt — recommended</option>
+          <option value="yolov8l.pt">yolov8l.pt — slower, better</option>
+          <option value="yolov8x.pt">yolov8x.pt — best, slowest</option>
+        </select>
+      </label>
+      <label class="text-row">
+        <span>Epochs</span>
+        <input type="number" id="train-epochs" min="1" value="50" />
+      </label>
+      <label class="text-row">
+        <span>Image size (px)</span>
+        <input type="number" id="train-imgsz" min="320" step="32" value="640" />
+      </label>
+      <label class="text-row">
+        <span>Batch size</span>
+        <input type="number" id="train-batch" min="1" value="16" />
+      </label>
+      <label class="text-row">
+        <span>Early-stop patience</span>
+        <input type="number" id="train-patience" min="0" value="20" />
+      </label>
+    </div>
+    <div class="actions" style="margin-top:14px">
+      <button class="btn btn-primary btn-lg" id="btn-train-start">Start training</button>
+      <span class="muted small">Training time scales with dataset size × epochs. Plan for minutes (small dataset, n model) to hours (large dataset, x model).</span>
+    </div>
+  </section>
+
+  <section class="card hidden" id="train-status-card">
+    <div class="card-header">
+      <h2>Training in progress</h2>
+      <p>Live log streamed from the Ultralytics trainer.</p>
+    </div>
+    <pre id="train-log" class="log-output">Waiting…</pre>
   </section>
 </main>
 

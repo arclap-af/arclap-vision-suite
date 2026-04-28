@@ -40,10 +40,12 @@ OUTPUTS = ROOT / "_outputs"
 STATIC = ROOT / "static"
 DATA = ROOT / "_data"
 MODELS_DIR = ROOT / "_models"
+DATASETS_DIR = ROOT / "_datasets"
 UPLOADS.mkdir(exist_ok=True)
 OUTPUTS.mkdir(exist_ok=True)
 DATA.mkdir(exist_ok=True)
 MODELS_DIR.mkdir(exist_ok=True)
+DATASETS_DIR.mkdir(exist_ok=True)
 
 GPU_AVAILABLE = torch.cuda.is_available()
 GPU_NAME = torch.cuda.get_device_name(0) if GPU_AVAILABLE else "CPU only"
@@ -106,13 +108,40 @@ def make_comparison(orig_video: str, processed_video: str, job_id: str) -> str |
 
 
 def on_job_success(job: JobRow) -> None:
-    """Build comparison image, audit report, fire notifications when a job finishes."""
+    """Build comparison image, audit report, fire notifications when a job finishes.
+    Also: chain into the next step if settings.chain is non-empty.
+    """
     output_url = f"/files/outputs/{Path(job.output_path).name}"
     updates = {"output_url": output_url}
     if job.settings.get("test") and job.kind == "video":
         cmp = make_comparison(job.input_ref, job.output_path, job.id)
         if cmp:
             updates["compare_url"] = f"/files/outputs/{Path(cmp).name}"
+
+    # Pipeline chaining: settings["chain"] = [{"mode": "...", "settings": {...}}, ...]
+    chain = job.settings.get("chain") or []
+    if isinstance(chain, list) and chain:
+        next_step = chain[0]
+        remaining = chain[1:]
+        next_mode = next_step.get("mode")
+        next_settings = dict(next_step.get("settings") or {})
+        if next_mode and next_mode != job.mode:
+            next_settings["chain"] = remaining
+            # Output of *this* job is the input of the next
+            next_out = OUTPUTS / (Path(job.output_path).stem + f"_{next_mode}.mp4")
+            try:
+                next_job = db.create_job(
+                    kind="video", mode=next_mode,
+                    input_ref=job.output_path,
+                    output_path=str(next_out),
+                    settings=next_settings,
+                    project_id=job.project_id,
+                )
+                queue.submit(next_job.id)
+                db.append_log(job.id,
+                              f"[chain] queued next step: {next_mode} -> {next_job.id}")
+            except Exception as e:
+                db.append_log(job.id, f"[chain] could not queue next step: {e}")
 
     # Always build the privacy/audit HTML report.
     try:
@@ -230,13 +259,102 @@ UPLOADED: dict[str, dict] = {}
 
 @app.get("/api/system")
 def system_info():
-    return {
+    info = {
         "gpu_available": GPU_AVAILABLE,
         "gpu_name": GPU_NAME,
         "queue_pending": queue.pending(),
         "current_job": runner.is_running(),
         "pipelines": pipeline_registry.list_modes(),
     }
+    if GPU_AVAILABLE:
+        try:
+            free, total = torch.cuda.mem_get_info()
+            info["gpu_memory_total_mb"] = round(total / (1024 ** 2))
+            info["gpu_memory_free_mb"] = round(free / (1024 ** 2))
+            info["gpu_memory_used_mb"] = round((total - free) / (1024 ** 2))
+            info["gpu_memory_pct_used"] = round(100 * (total - free) / total, 1)
+        except Exception:
+            pass
+    return info
+
+
+@app.get("/api/projects/{project_id}/analytics")
+def project_analytics(project_id: str):
+    """Aggregate every completed job in this project into longitudinal stats."""
+    proj = db.get_project(project_id)
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    jobs = db.list_jobs(project_id=project_id, limit=1000)
+
+    total = len(jobs)
+    by_status: dict[str, int] = {}
+    by_mode: dict[str, int] = {}
+    durations: list[float] = []
+    by_day: dict[str, int] = {}
+
+    from datetime import datetime
+    for j in jobs:
+        by_status[j.status] = by_status.get(j.status, 0) + 1
+        by_mode[j.mode] = by_mode.get(j.mode, 0) + 1
+        if j.started_at and j.finished_at:
+            durations.append(j.finished_at - j.started_at)
+        day = datetime.fromtimestamp(j.created_at).strftime("%Y-%m-%d")
+        by_day[day] = by_day.get(day, 0) + 1
+
+    return {
+        "project": {"id": proj.id, "name": proj.name},
+        "totals": {
+            "jobs": total,
+            "succeeded": by_status.get("done", 0),
+            "failed": by_status.get("failed", 0),
+            "stopped": by_status.get("stopped", 0),
+        },
+        "by_mode": by_mode,
+        "by_day": dict(sorted(by_day.items())),
+        "duration_seconds": {
+            "count": len(durations),
+            "total": round(sum(durations), 1),
+            "avg": round(sum(durations) / len(durations), 1) if durations else 0,
+            "min": round(min(durations), 1) if durations else 0,
+            "max": round(max(durations), 1) if durations else 0,
+        },
+    }
+
+
+# Friendlier mapping of common subprocess failures
+_ERROR_HINTS: list[tuple[str, str]] = [
+    ("CUDA out of memory",
+     "GPU ran out of memory. Try: lower --batch, smaller --model "
+     "(e.g. yolov8m-seg instead of yolov8x-seg), or close other GPU apps."),
+    ("No such file or directory",
+     "Input path wasn't found. Check the file/folder still exists."),
+    ("ffmpeg: command not found",
+     "ffmpeg isn't on PATH. Re-run install.bat or install.sh."),
+    ("Connection refused",
+     "RTSP connection refused. Verify the URL works in VLC and that the "
+     "camera is reachable (correct host:port, credentials)."),
+    ("HTTPSConnection",
+     "Network error reaching an external service (probably the YOLO "
+     "weights download). Check your internet."),
+    ("Permission denied",
+     "Permission denied. The app can't read/write a file the OS protects."),
+    ("Invalid data found when processing input",
+     "ffmpeg couldn't decode the input. The file may be corrupt or use a "
+     "codec ffmpeg doesn't support."),
+]
+
+
+@app.get("/api/jobs/{job_id}/error-hint")
+def job_error_hint(job_id: str):
+    """Translate the most recent error in a job's log into a friendly hint."""
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Job not found")
+    log = j.log_text or ""
+    for needle, hint in _ERROR_HINTS:
+        if needle in log:
+            return {"matched": needle, "hint": hint}
+    return {"matched": None, "hint": None}
 
 
 class RetentionRequest(BaseModel):
@@ -458,6 +576,73 @@ async def upload_image(file: UploadFile = File(...)):
     return UPLOADED[file_id]
 
 
+class UrlRef(BaseModel):
+    url: str
+
+
+@app.post("/api/url")
+def register_url(req: UrlRef):
+    """Download a video from any URL (HTTP, YouTube, Vimeo via yt-dlp)
+    and register it as an upload so the wizard can use it.
+
+    Falls back gracefully if yt-dlp is not installed: only direct HTTP
+    video URLs work in that case.
+    """
+    file_id = uuid.uuid4().hex[:12]
+    dest = UPLOADS / f"{file_id}.mp4"
+
+    # Try yt-dlp first (handles YouTube/Vimeo/etc.)
+    try:
+        import yt_dlp  # type: ignore
+    except ImportError:
+        yt_dlp = None
+
+    used_yt_dlp = False
+    if yt_dlp is not None:
+        try:
+            with yt_dlp.YoutubeDL({
+                "outtmpl": str(dest),
+                "format": "mp4/best",
+                "quiet": True,
+                "no_warnings": True,
+            }) as ydl:
+                ydl.download([req.url])
+            used_yt_dlp = dest.exists()
+        except Exception as e:
+            # Fall through to plain HTTP attempt
+            print(f"[url] yt-dlp failed: {e}; trying plain HTTP")
+
+    if not dest.exists():
+        # Plain HTTP fallback
+        import urllib.request
+        try:
+            urllib.request.urlretrieve(req.url, str(dest))
+        except Exception as e:
+            raise HTTPException(400, f"Could not fetch URL: {e}")
+
+    if not dest.exists() or dest.stat().st_size == 0:
+        raise HTTPException(400, "Download produced no data.")
+
+    cap = cv2.VideoCapture(str(dest))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+
+    UPLOADED[file_id] = {
+        "id": file_id, "kind": "video", "path": str(dest),
+        "name": req.url.split("/")[-1] or "url_video.mp4",
+        "size": dest.stat().st_size, "fps": fps, "frames": n,
+        "duration": n / fps if fps > 0 else 0,
+        "width": w, "height": h,
+        "url": f"/files/uploads/{dest.name}",
+        "source_url": req.url,
+        "downloader": "yt-dlp" if used_yt_dlp else "http",
+    }
+    return UPLOADED[file_id]
+
+
 class FolderRef(BaseModel):
     path: str
 
@@ -660,6 +845,41 @@ def job_status(job_id: str):
     if not j:
         raise HTTPException(404, "Job not found")
     return _job_to_dict(j)
+
+
+class VerifyRequest(BaseModel):
+    model: str = "yolov8x-seg.pt"
+    conf: float = 0.25
+    classes: str | None = None  # comma-separated class IDs
+
+
+@app.post("/api/jobs/{job_id}/verify")
+def verify_job(job_id: str, req: VerifyRequest):
+    """Queue a 'verify' job that runs YOLO over a finished output and
+    produces an annotated copy showing what the detector would have caught."""
+    src = db.get_job(job_id)
+    if not src:
+        raise HTTPException(404, "Source job not found")
+    if src.status != "done":
+        raise HTTPException(400, "Source job did not complete successfully.")
+    if not Path(src.output_path).is_file():
+        raise HTTPException(400, "Source output file is gone.")
+
+    out_path = Path(src.output_path).with_name(
+        Path(src.output_path).stem + ".verified.mp4"
+    )
+    settings = {"model": req.model, "conf": req.conf}
+    if req.classes:
+        settings["classes"] = req.classes
+    new_job = db.create_job(
+        kind="video", mode="verify",
+        input_ref=src.output_path,
+        output_path=str(out_path),
+        settings=settings,
+        project_id=src.project_id,
+    )
+    queue.submit(new_job.id)
+    return {"job_id": new_job.id}
 
 
 @app.post("/api/jobs/{job_id}/stop")
@@ -895,6 +1115,123 @@ def playground_test(req: PlaygroundRequest):
         "detections": detections,
         "n_detections": len(detections),
     }
+
+
+# ----------------------------------------------------------------------------
+# Custom training (CVAT datasets)
+# ----------------------------------------------------------------------------
+
+import zipfile
+
+DATASETS: dict[str, dict] = {}  # in-memory metadata for uploaded datasets
+
+
+@app.post("/api/datasets/upload")
+async def upload_dataset(file: UploadFile = File(...)):
+    """Accept a ZIP of a CVAT (Ultralytics-format) dataset export.
+    Extracts into _datasets/<id>/ and validates that data.yaml exists.
+    """
+    if not (file.filename or "").lower().endswith(".zip"):
+        raise HTTPException(415, "Please upload a .zip of your CVAT export.")
+
+    dataset_id = uuid.uuid4().hex[:12]
+    dataset_dir = DATASETS_DIR / dataset_id
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = dataset_dir / "_upload.zip"
+
+    written = 0
+    with open(zip_path, "wb") as f:
+        while chunk := await file.read(1 << 20):
+            written += len(chunk)
+            if written > 5 * 1024 * 1024 * 1024:  # 5 GB cap on datasets
+                f.close()
+                shutil.rmtree(dataset_dir, ignore_errors=True)
+                raise HTTPException(413, "Dataset exceeds 5 GB limit.")
+            f.write(chunk)
+
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(dataset_dir)
+    except zipfile.BadZipFile:
+        shutil.rmtree(dataset_dir, ignore_errors=True)
+        raise HTTPException(400, "Could not unzip the upload.")
+    finally:
+        zip_path.unlink(missing_ok=True)
+
+    # Find data.yaml — sometimes it sits in a nested folder after unzipping
+    yaml_files = list(dataset_dir.rglob("data.yaml")) + list(dataset_dir.rglob("*.yaml"))
+    yaml_files = [p for p in yaml_files if p.is_file()]
+    if not yaml_files:
+        shutil.rmtree(dataset_dir, ignore_errors=True)
+        raise HTTPException(400,
+            "No data.yaml found in the upload. Make sure the CVAT export "
+            "uses the 'Ultralytics YOLO' format.")
+    yaml_path = yaml_files[0]
+    # Effective dataset root = the dir containing data.yaml
+    effective_root = yaml_path.parent
+
+    # Read class info from the YAML
+    classes: list[str] = []
+    try:
+        import yaml as _yaml  # PyYAML is already a transitive dep via ultralytics
+        with open(yaml_path) as f:
+            d = _yaml.safe_load(f) or {}
+        names = d.get("names")
+        if isinstance(names, dict):
+            classes = [names[k] for k in sorted(names)]
+        elif isinstance(names, list):
+            classes = list(names)
+    except Exception:
+        pass
+
+    DATASETS[dataset_id] = {
+        "id": dataset_id,
+        "name": file.filename or dataset_id,
+        "root": str(effective_root),
+        "yaml": str(yaml_path),
+        "classes": classes,
+        "n_classes": len(classes),
+    }
+    return DATASETS[dataset_id]
+
+
+@app.get("/api/datasets")
+def list_datasets():
+    return list(DATASETS.values())
+
+
+class TrainRequest(BaseModel):
+    dataset_id: str
+    output_name: str = "custom_model"
+    base_model: str = "yolov8n.pt"
+    epochs: int = 50
+    imgsz: int = 640
+    batch: int = 16
+    patience: int = 20
+
+
+@app.post("/api/train")
+def start_training(req: TrainRequest):
+    ds = DATASETS.get(req.dataset_id)
+    if not ds:
+        raise HTTPException(404, "Dataset not found")
+    out_path = MODELS_DIR / f"{req.output_name}.pt"
+    job = db.create_job(
+        kind="dataset",
+        mode="train",
+        input_ref=ds["root"],
+        output_path=str(out_path),
+        settings={
+            "output_name": req.output_name,
+            "base_model": req.base_model,
+            "epochs": req.epochs,
+            "imgsz": req.imgsz,
+            "batch": req.batch,
+            "patience": req.patience,
+        },
+    )
+    queue.submit(job.id)
+    return {"job_id": job.id}
 
 
 @app.get("/", response_class=HTMLResponse)
