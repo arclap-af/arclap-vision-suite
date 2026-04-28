@@ -330,8 +330,18 @@
 
   <section class="card">
     <div class="card-header">
+      <h2>Suggested models — one-click install</h2>
+      <p>Standard YOLOv8 weights from Ultralytics. Click <strong>Install</strong> to download and register; it's saved into <code>_models/</code> and stays available offline thereafter.</p>
+    </div>
+    <div id="suggested-list" class="model-grid">
+      <p class="muted">Loading suggested models…</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
       <h2>Registered models</h2>
-      <p>All your uploaded models. Click "Test" to run inference on a sample image.</p>
+      <p>Models on disk and ready to use. Auto-discovered from <code>./</code> and <code>_models/</code> at every server startup, so dropping a <code>.pt</code> file there registers it automatically. Click "Test" to run inference on a sample image.</p>
     </div>
     <div id="model-list" class="model-grid">
       <p class="muted">No models registered yet.</p>

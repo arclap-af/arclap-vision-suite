@@ -393,7 +393,7 @@ function showPage(name) {
   document.querySelectorAll('.topnav-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.page === name);
   });
-  if (name === 'models') refreshModels();
+  if (name === 'models') { refreshSuggested(); refreshModels(); }
   if (name === 'history') refreshHistory();
   if (name === 'projects') { refreshProjects(); }
 }
@@ -463,6 +463,68 @@ document.addEventListener('keydown', e => {
 
 let selectedTestModelId = null;
 let testImageId = null;
+
+async function refreshSuggested() {
+  try {
+    const items = await fetch('/api/models/suggested').then(r => r.json());
+    const list = $('suggested-list');
+    list.innerHTML = items.map(s => `
+      <div class="model-card${s.installed ? ' installed' : ''}">
+        <div class="model-card-header">
+          <h3>${escapeHtml(s.name)}</h3>
+          <span class="model-card-task">${s.task}</span>
+        </div>
+        <p class="muted small">${escapeHtml(s.description)}</p>
+        <dl class="model-card-meta">
+          <dt>Size</dt><dd>${s.size_label}</dd>
+          <dt>Family</dt><dd>${s.family}</dd>
+          <dt>Approx</dt><dd>${s.approx_mb} MB</dd>
+          <dt>Status</dt><dd>${s.installed ? '<span style="color:var(--success)">installed</span>' : 'not installed'}</dd>
+        </dl>
+        <div class="model-card-actions">
+          ${s.installed
+            ? '<button class="btn btn-ghost" disabled>Already installed</button>'
+            : `<button class="btn btn-primary" data-install="${s.name}">Install</button>`}
+        </div>
+      </div>
+    `).join('');
+    list.querySelectorAll('[data-install]').forEach(b => {
+      b.addEventListener('click', () => installSuggested(b.dataset.install, b));
+    });
+  } catch (err) {
+    $('suggested-list').innerHTML =
+      `<p class="muted">Could not load suggested models: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+async function installSuggested(name, btn) {
+  btn.classList.add('loading');
+  btn.disabled = true;
+  toast(`Downloading ${name}… (Ultralytics handles the download; first one of a family takes ~30 s)`);
+  try {
+    const r = await fetch('/api/models/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (!r.ok) {
+      const err = await r.json();
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const data = await r.json();
+    if (data.already_registered) {
+      toast(`${name} was already registered`, 'success');
+    } else {
+      toast(`Installed ${name} (${data.task}, ${data.n_classes} classes)`, 'success');
+    }
+    refreshSuggested();
+    refreshModels();
+  } catch (err) {
+    toast('Install failed: ' + err.message, 'error');
+    btn.classList.remove('loading');
+    btn.disabled = false;
+  }
+}
 
 async function refreshModels() {
   try {

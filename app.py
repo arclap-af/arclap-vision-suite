@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from core import DB, JobQueue, JobRow, JobRunner, ModelRow, ProjectRow
 from core.notify import build_audit_report, send_email, send_webhook
 from core.playground import inspect_model, predict_on_image
+from core.seed import SUGGESTED, install_suggested, seed_existing_models
 
 PYTHON = sys.executable
 ROOT = Path(__file__).parent.resolve()
@@ -244,6 +245,16 @@ def _startup() -> None:
     n = db.reset_running_to_failed()
     if n:
         print(f"Cleaned up {n} orphaned job(s) from previous run.")
+
+    # Auto-register any .pt files already on disk so the user doesn't have
+    # to re-upload models that were downloaded in earlier runs.
+    try:
+        added = seed_existing_models(db, ROOT, MODELS_DIR)
+        if added:
+            print(f"Auto-registered {added} model(s) from disk.")
+    except Exception as e:
+        print(f"[warn] model auto-registration failed: {e}")
+
     runner.start()
 
 
@@ -699,6 +710,40 @@ def delete_model(model_id: str):
     except Exception:
         pass
     return {"ok": True}
+
+
+@app.get("/api/models/suggested")
+def list_suggested():
+    """Curated set of standard YOLO weights the user can one-click install."""
+    registered_paths = {Path(m.path).name for m in db.list_models()}
+    out = []
+    for s in SUGGESTED:
+        out.append({
+            "name": s.name,
+            "task": s.task,
+            "family": s.family,
+            "size_label": s.size_label,
+            "approx_mb": s.approx_mb,
+            "description": s.description,
+            "installed": s.name in registered_paths,
+        })
+    return out
+
+
+class InstallRequest(BaseModel):
+    name: str  # e.g. "yolov8n.pt"
+
+
+@app.post("/api/models/install")
+def install_model(req: InstallRequest):
+    """Download (via Ultralytics) and register a suggested model."""
+    try:
+        info = install_suggested(db, req.name, MODELS_DIR)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Install failed: {e}")
+    return info
 
 
 def _model_to_dict(m: ModelRow, n_params: int = 0) -> dict:
