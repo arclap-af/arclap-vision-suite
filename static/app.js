@@ -465,7 +465,7 @@ function showPage(name) {
   if (name === 'projects') { refreshProjects(); }
   if (name === 'live') { /* nothing to fetch up-front */ }
   if (name === 'train') { /* nothing to fetch up-front */ }
-  if (name === 'filter') refreshFilterScans();
+  if (name === 'filter') { refreshFilterScans(); populateFilterModelPicker(); }
 }
 
 document.querySelectorAll('.topnav-btn').forEach(b => {
@@ -1388,6 +1388,181 @@ let activeFilterSummary = null;
 let filterScanEventSource = null;
 let filterClassMeta = [];      // [{class_id, class_name, n_images}, …]
 let filterHourCoverage = new Set();  // hours present in filenames
+let ruleSelectedDow = new Set([1, 2, 3, 4, 5, 6, 7]);  // 1=Mon … 7=Sun
+let filterConditionMeta = [];  // [{tag, n_images, avg_confidence}, …]
+let filterCameraBaselines = [];  // [{camera_id, n_frames, brightness:{p10,p50,p90}, sharpness:{...}}]
+let folderModalCurrentPath = null;
+let folderModalTargetInput = null;  // which <input> the picker fills
+
+// =============================================================================
+// Folder browser modal — replaces typing absolute paths
+// =============================================================================
+
+function openFolderModal(targetInputId) {
+  folderModalTargetInput = $(targetInputId);
+  $('folder-modal').classList.remove('hidden');
+  loadFolderRoots();
+  // Open at the target's existing value (so they can edit a typed path) or at home
+  const seed = folderModalTargetInput?.value?.trim();
+  if (seed) navigateFolder(seed);
+  else navigateFolder('~');  // server resolves to home
+}
+
+function closeFolderModal() {
+  $('folder-modal').classList.add('hidden');
+  folderModalCurrentPath = null;
+  folderModalTargetInput = null;
+}
+
+async function loadFolderRoots() {
+  try {
+    const d = await fetch('/api/browse/roots').then(r => r.json());
+    $('folder-roots').innerHTML = (d.roots || []).map(r => `
+      <button type="button" class="root-btn" data-path="${escapeHtml(r.path)}">
+        ${escapeHtml(r.label)}
+      </button>`).join('');
+    $('folder-roots').querySelectorAll('.root-btn').forEach(b => {
+      b.addEventListener('click', () => navigateFolder(b.dataset.path));
+    });
+  } catch (e) {
+    $('folder-roots').innerHTML = `<p class="muted small">Couldn't load roots: ${e.message}</p>`;
+  }
+}
+
+async function navigateFolder(path) {
+  try {
+    const d = await fetch(`/api/browse?path=${encodeURIComponent(path)}`).then(r => {
+      if (!r.ok) return r.json().then(e => Promise.reject(new Error(e.detail || 'Browse failed')));
+      return r.json();
+    });
+    folderModalCurrentPath = d.path;
+
+    // Breadcrumb
+    const crumbs = [];
+    let walker = d.path;
+    const sep = walker.includes('\\') ? '\\' : '/';
+    const parts = walker.split(sep).filter(Boolean);
+    if (sep === '\\') {
+      crumbs.push({ label: parts[0] || walker, path: parts[0] + sep });
+      let cur = parts[0] + sep;
+      for (let i = 1; i < parts.length; i++) {
+        cur = cur + parts[i] + sep;
+        crumbs.push({ label: parts[i], path: cur.replace(/\\$/, '') });
+      }
+    } else {
+      let cur = '';
+      crumbs.push({ label: '/', path: '/' });
+      for (const p of parts) {
+        cur = cur + '/' + p;
+        crumbs.push({ label: p, path: cur });
+      }
+    }
+    $('folder-breadcrumb').innerHTML = crumbs.map((c, i) => `
+      ${i ? '<span class="crumb-sep">›</span>' : ''}
+      <span class="crumb" data-path="${escapeHtml(c.path)}">${escapeHtml(c.label)}</span>
+    `).join('');
+    $('folder-breadcrumb').querySelectorAll('.crumb').forEach(el => {
+      el.addEventListener('click', () => navigateFolder(el.dataset.path));
+    });
+
+    // Folder list. Add "⬆ parent" row when applicable.
+    const rows = [];
+    if (d.parent) {
+      rows.push(`
+        <div class="folder-row" data-path="${escapeHtml(d.parent)}">
+          <span class="icon">⬆</span>
+          <span class="name"><em>up one level</em></span>
+          <span class="stat"></span>
+          <span class="chevron"></span>
+        </div>`);
+    }
+    if (d.folders.length === 0) {
+      rows.push('<p class="muted small" style="padding:14px">No subfolders here.</p>');
+    } else {
+      for (const f of d.folders) {
+        const empty = f.n_images_shallow === 0 && !f.has_subfolders;
+        const stat = f.n_images_shallow > 0
+          ? `${f.n_images_shallow.toLocaleString()} image${f.n_images_shallow === 1 ? '' : 's'}`
+          : (f.has_subfolders ? '— subfolders —' : 'empty');
+        rows.push(`
+          <div class="folder-row ${empty ? 'empty' : ''}" data-path="${escapeHtml(f.path)}">
+            <span class="icon">📁</span>
+            <span class="name">${escapeHtml(f.name)}</span>
+            <span class="stat">${stat}</span>
+            <span class="chevron">›</span>
+          </div>`);
+      }
+    }
+    $('folder-list').innerHTML = rows.join('');
+    $('folder-list').querySelectorAll('.folder-row').forEach(r => {
+      r.addEventListener('click', () => navigateFolder(r.dataset.path));
+    });
+
+    // Footer
+    $('folder-current-path').textContent = d.path;
+    const cnt = d.image_count || 0;
+    const cntEl = $('folder-image-count');
+    cntEl.textContent = cnt > 0 ? `${cnt.toLocaleString()} images directly here` : 'no images at this level (subfolders may have them)';
+    cntEl.classList.toggle('has-images', cnt > 0);
+    $('folder-modal-pick').disabled = false;  // any folder is pickable; user toggles "recurse"
+  } catch (e) {
+    toast('Browse failed: ' + e.message, 'error');
+  }
+}
+
+function pickCurrentFolder() {
+  if (!folderModalCurrentPath || !folderModalTargetInput) return;
+  folderModalTargetInput.value = folderModalCurrentPath;
+  rememberRecentPath(folderModalCurrentPath);
+  closeFolderModal();
+  // Trigger an input event so any listeners react
+  folderModalTargetInput.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+// Recent paths in localStorage (max 5, MRU)
+function rememberRecentPath(path) {
+  let arr = JSON.parse(localStorage.getItem('arclap_recent_source_paths') || '[]');
+  arr = [path, ...arr.filter(p => p !== path)].slice(0, 5);
+  localStorage.setItem('arclap_recent_source_paths', JSON.stringify(arr));
+  renderRecentPaths();
+}
+function renderRecentPaths() {
+  const el = $('recent-source-paths');
+  if (!el) return;
+  const arr = JSON.parse(localStorage.getItem('arclap_recent_source_paths') || '[]');
+  if (!arr.length) { el.textContent = '(none yet)'; return; }
+  el.innerHTML = arr.map(p => {
+    const short = p.length > 50 ? '…' + p.slice(-48) : p;
+    return `<a data-path="${escapeHtml(p)}" title="${escapeHtml(p)}">${escapeHtml(short)}</a>`;
+  }).join(' ');
+  el.querySelectorAll('a').forEach(a => {
+    a.addEventListener('click', () => {
+      $('filter-source').value = a.dataset.path;
+      $('filter-source').dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  });
+}
+
+if ($('btn-browse-source')) {
+  $('btn-browse-source').addEventListener('click', () => openFolderModal('filter-source'));
+}
+if ($('folder-modal-close')) {
+  $('folder-modal-close').addEventListener('click', closeFolderModal);
+}
+if ($('folder-modal-pick')) {
+  $('folder-modal-pick').addEventListener('click', pickCurrentFolder);
+}
+if ($('folder-modal')) {
+  // Click backdrop to close
+  $('folder-modal').addEventListener('click', e => {
+    if (e.target === $('folder-modal')) closeFolderModal();
+  });
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$('folder-modal').classList.contains('hidden')) closeFolderModal();
+});
+// Initial render of recent-paths inline list
+renderRecentPaths();
 
 function showFilterStep(n) {
   document.querySelectorAll('#filter-stepper .wiz-step').forEach(el => {
@@ -1511,6 +1686,32 @@ if ($('btn-analyse-continue')) {
 }
 if ($('btn-preview-continue')) {
   $('btn-preview-continue').addEventListener('click', () => showFilterStep(6));
+}
+
+async function populateFilterModelPicker() {
+  const optgroup = $('filter-model-mine');
+  if (!optgroup) return;
+  try {
+    const models = await fetch('/api/models').then(r => r.json());
+    const detectable = (models || []).filter(m =>
+      ['detect', 'segment', 'obb'].includes((m.task || '').toLowerCase())
+    );
+    if (!detectable.length) {
+      optgroup.innerHTML = '<option disabled>(none yet — train one in the Train tab)</option>';
+      return;
+    }
+    const sel = $('filter-model');
+    const previous = sel ? sel.value : null;
+    optgroup.innerHTML = detectable.map(m => {
+      const label = `${escapeHtml(m.name)} — ${m.task}, ${m.n_classes} class${m.n_classes === 1 ? '' : 'es'} (${m.size_mb} MB)`;
+      return `<option value="${escapeHtml(m.path)}">${label}</option>`;
+    }).join('');
+    if (previous && sel && [...sel.options].some(o => o.value === previous)) {
+      sel.value = previous;
+    }
+  } catch (e) {
+    optgroup.innerHTML = '';
+  }
 }
 
 async function refreshFilterScans() {
@@ -1639,6 +1840,8 @@ async function loadFilterAnalyse(jobId) {
     loadCooccurrence(jobId);
     loadPresetList();
     loadDateRange(jobId);
+    loadConditionMeta(jobId);
+    loadCameraBaselines(jobId);
     if ($('preset-select').value) loadPresetSummary(jobId, $('preset-select').value);
 
     const max = Math.max(1, ...data.rows.map(r => r.n_images));
@@ -1891,6 +2094,37 @@ function buildRuleUI() {
   // Reset rule defaults
   ruleSelectedHours = new Set([...Array(24).keys()]);
 
+  // Day-of-week pill toggles
+  document.querySelectorAll('#dow-pills button').forEach(b => {
+    b.addEventListener('click', () => {
+      const d = parseInt(b.dataset.dow);
+      if (ruleSelectedDow.has(d)) {
+        ruleSelectedDow.delete(d);
+        b.classList.remove('on');
+      } else {
+        ruleSelectedDow.add(d);
+        b.classList.add('on');
+      }
+      scheduleRuleRecount();
+    });
+  });
+  // DoW shortcuts
+  if ($('dow-weekdays')) $('dow-weekdays').addEventListener('click', () => setDow([1,2,3,4,5]));
+  if ($('dow-weekends')) $('dow-weekends').addEventListener('click', () => setDow([6,7]));
+  if ($('dow-all'))      $('dow-all').addEventListener('click', () => setDow([1,2,3,4,5,6,7]));
+
+  // Daily window from / until pickers — sync into ruleSelectedHours + grid
+  ['rule-day-start', 'rule-day-end'].forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    el.addEventListener('input', () => { applyDailyWindowToHours(); scheduleRuleRecount(); });
+  });
+
+  // Quick-preset buttons
+  document.querySelectorAll('.rule-preset-row button[data-preset]').forEach(b => {
+    b.addEventListener('click', () => applyRulePreset(b.dataset.preset));
+  });
+
   // Wire all rule controls (incl. date-range pickers)
   ['rule-logic','rule-conf','rule-count','rule-min-quality','rule-min-brightness',
    'rule-max-brightness','rule-min-sharpness','rule-min-dets',
@@ -1912,6 +2146,47 @@ function buildRuleUI() {
   });
   // Class-checkbox changes
   $('rule-class-checks').addEventListener('change', scheduleRuleRecount);
+
+  // Section D — condition controls
+  if ($('cond-class-checks')) {
+    $('cond-class-checks').addEventListener('change', scheduleRuleRecount);
+  }
+  if ($('cond-logic')) {
+    $('cond-logic').addEventListener('change', scheduleRuleRecount);
+  }
+  if ($('cond-min-confidence')) {
+    $('cond-min-confidence').addEventListener('input', () => {
+      const v = parseInt($('cond-min-confidence').value) / 100;
+      $('cond-min-confidence-value').textContent = v.toFixed(2);
+      scheduleRuleRecount();
+    });
+  }
+  if ($('cond-quick-clean')) {
+    $('cond-quick-clean').addEventListener('click', () => {
+      setConditionLogic('none');
+      setConditionTicks(CLEAN_BAD_TAGS);
+      toast('Excluding night/fog/rain/blur/lens issues/overexposed', 'info');
+    });
+  }
+  if ($('cond-quick-good')) {
+    $('cond-quick-good').addEventListener('click', () => {
+      setConditionLogic('any');
+      setConditionTicks(['good']);
+      toast('Keeping only frames tagged as Good', 'info');
+    });
+  }
+  if ($('cond-quick-clear')) {
+    $('cond-quick-clear').addEventListener('click', () => {
+      setConditionLogic('any');
+      setConditionTicks([]);
+    });
+  }
+  if ($('btn-labels-import')) {
+    $('btn-labels-import').addEventListener('click', importLabelsJson);
+  }
+  if ($('btn-refine-clip')) {
+    $('btn-refine-clip').addEventListener('click', triggerClipRefinement);
+  }
 
   // "Clear" button on the date range
   if ($('btn-rule-date-reset')) {
@@ -1940,6 +2215,251 @@ function localDatetimeToEpoch(value) {
   return Number.isNaN(ts) ? null : ts / 1000;
 }
 
+function setDow(days) {
+  ruleSelectedDow = new Set(days);
+  document.querySelectorAll('#dow-pills button').forEach(b => {
+    b.classList.toggle('on', ruleSelectedDow.has(parseInt(b.dataset.dow)));
+  });
+  scheduleRuleRecount();
+}
+
+const CONDITION_LABELS = {
+  good: { emoji: '✅', label: 'Good (no issues)' },
+  night: { emoji: '🌙', label: 'Night' },
+  dusk_dawn: { emoji: '🌆', label: 'Dusk / Dawn' },
+  fog: { emoji: '🌫️', label: 'Fog' },
+  overcast: { emoji: '☁️', label: 'Overcast' },
+  rain: { emoji: '🌧️', label: 'Rain / wet lens' },
+  snow: { emoji: '❄️', label: 'Snow / glare' },
+  blur: { emoji: '🌀', label: 'Blurry / out of focus' },
+  lens_drops: { emoji: '💧', label: 'Lens drops' },
+  lens_smudge: { emoji: '🫥', label: 'Lens smudge' },
+  overexposed: { emoji: '☀️', label: 'Overexposed' },
+};
+
+async function loadConditionMeta(jobId) {
+  if (!jobId) return;
+  try {
+    const d = await fetch(`/api/filter/${jobId}/conditions`).then(r => r.json());
+    filterConditionMeta = d.available ? (d.rows || []) : [];
+    renderConditionList(d.total_images || 0);
+  } catch {
+    filterConditionMeta = [];
+  }
+}
+
+function renderConditionList(totalImages) {
+  const el = $('cond-class-checks');
+  if (!el) return;
+  if (!filterConditionMeta.length) {
+    el.innerHTML = '<p class="muted small" style="padding:14px">No condition tags in this scan. Re-scan with the latest version to populate this section.</p>';
+    return;
+  }
+  const max = Math.max(1, ...filterConditionMeta.map(r => r.n_images));
+  el.innerHTML = filterConditionMeta.map(r => {
+    const meta = CONDITION_LABELS[r.tag] || { emoji: '❓', label: r.tag };
+    const pct = (100 * r.n_images / Math.max(1, totalImages)).toFixed(1);
+    return `
+      <label class="rule-class-row">
+        <input type="checkbox" data-cond-tag="${escapeHtml(r.tag)}" />
+        <span>${meta.emoji} ${escapeHtml(meta.label)}
+          <span class="cond-conf">conf ${r.avg_confidence.toFixed(2)}</span>
+        </span>
+        <span class="n">${r.n_images.toLocaleString()} (${pct}%)</span>
+      </label>`;
+  }).join('');
+}
+
+async function loadCameraBaselines(jobId) {
+  if (!jobId) return;
+  try {
+    const d = await fetch(`/api/filter/${jobId}/baselines`).then(r => r.json());
+    filterCameraBaselines = d.available ? (d.cameras || []) : [];
+  } catch {
+    filterCameraBaselines = [];
+  }
+}
+
+function setConditionTicks(tags) {
+  document.querySelectorAll('#cond-class-checks input').forEach(cb => {
+    cb.checked = tags.includes(cb.dataset.condTag);
+  });
+  scheduleRuleRecount();
+}
+
+function setConditionLogic(value) {
+  const sel = $('cond-logic');
+  if (sel) sel.value = value;
+}
+
+const CLEAN_BAD_TAGS = ['night', 'fog', 'rain', 'blur', 'lens_drops', 'lens_smudge', 'overexposed'];
+
+async function submitFrameFeedback(path, verdict, btn) {
+  if (!activeFilterScanId) return;
+  try {
+    const r = await fetch(`/api/filter/${activeFilterScanId}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, verdict }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    // Visual feedback — green/red glow on the tile
+    const tile = btn.closest('.thumb-tile');
+    if (tile) {
+      tile.classList.add(verdict === 'good' ? 'fb-good' : 'fb-bad');
+    }
+    toast(verdict === 'good' ? 'Marked as Good' : 'Marked as Bad', 'success');
+  } catch (e) {
+    toast('Feedback failed: ' + e.message, 'error');
+  }
+}
+
+async function triggerClipRefinement() {
+  if (!activeFilterScanId) { toast('Open a scan first', 'error'); return; }
+  const onlyUncertain = $('clip-only-uncertain') ? $('clip-only-uncertain').checked : true;
+  const btn = $('btn-refine-clip');
+  const status = $('clip-refine-status');
+  btn.disabled = true;
+  btn.classList.add('loading');
+  status.textContent = 'Starting CLIP refinement (first run downloads ~890 MB)…';
+  try {
+    const r = await fetch(`/api/filter/${activeFilterScanId}/refine-clip?only_uncertain=${onlyUncertain}`, {
+      method: 'POST',
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    status.textContent = 'CLIP refinement running in the background. Reload Section D in a few minutes to see refined tags.';
+    toast('CLIP refinement started', 'success');
+    // Periodically refresh the conditions list so the user sees CLIP rows arrive
+    let polls = 0;
+    const interval = setInterval(async () => {
+      polls++;
+      await loadConditionMeta(activeFilterScanId);
+      if (polls > 60) clearInterval(interval);  // give up after ~10 min of polling
+    }, 10000);
+  } catch (e) {
+    status.textContent = '';
+    toast('CLIP refinement failed to start: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('loading');
+  }
+}
+
+async function importLabelsJson() {
+  if (!activeFilterScanId) { toast('Open a scan first', 'error'); return; }
+  const path = $('labels-import-path').value.trim();
+  if (!path) { toast('Enter the path to labels.json', 'error'); return; }
+  const status = $('labels-import-status');
+  status.textContent = 'Importing…';
+  try {
+    const r = await fetch(`/api/filter/${activeFilterScanId}/labels-import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    status.textContent = `Imported ${d.imported.toLocaleString()} of ${d.total_mapping_entries.toLocaleString()} entries (${d.skipped_unknown.toLocaleString()} files not in this scan).`;
+    toast(`Imported ${d.imported} manual labels`, 'success');
+    // Refresh the conditions list — manual rows now in the DB
+    loadConditionMeta(activeFilterScanId);
+    scheduleRuleRecount();
+  } catch (e) {
+    status.textContent = '';
+    toast('Import failed: ' + e.message, 'error');
+  }
+}
+
+const RULE_PRESETS = {
+  daylight: {
+    title: 'Daylight site activity',
+    apply: () => {
+      $('rule-day-start').value = 7;  $('rule-day-end').value = 19;
+      applyDailyWindowToHours();
+      setDow([1, 2, 3, 4, 5]);
+      $('rule-min-brightness').value = 80; bumpRangeLabel('rule-min-brightness');
+      $('rule-max-brightness').value = 230; bumpRangeLabel('rule-max-brightness');
+      $('rule-conf').value = 30; bumpRangeLabel('rule-conf');
+    },
+  },
+  annotation: {
+    title: 'Annotation candidates',
+    apply: () => {
+      $('rule-min-quality').value = 60; bumpRangeLabel('rule-min-quality');
+      $('rule-min-brightness').value = 60; bumpRangeLabel('rule-min-brightness');
+      $('rule-max-brightness').value = 200; bumpRangeLabel('rule-max-brightness');
+      $('rule-min-sharpness').value = 200; bumpRangeLabel('rule-min-sharpness');
+      $('rule-min-dets').value = 1;
+      $('rule-conf').value = 40; bumpRangeLabel('rule-conf');
+    },
+  },
+  night: {
+    title: 'Night-time only',
+    apply: () => {
+      $('rule-day-start').value = 20; $('rule-day-end').value = 6;
+      applyDailyWindowToHours();
+      $('rule-max-brightness').value = 80; bumpRangeLabel('rule-max-brightness');
+    },
+  },
+  busy: {
+    title: 'Busy frames only',
+    apply: () => {
+      $('rule-min-dets').value = 3;
+      $('rule-day-start').value = 7; $('rule-day-end').value = 19;
+      applyDailyWindowToHours();
+      $('rule-conf').value = 30; bumpRangeLabel('rule-conf');
+    },
+  },
+  reset: {
+    title: 'Reset all',
+    apply: () => {
+      $('rule-conf').value = 30; bumpRangeLabel('rule-conf');
+      $('rule-count').value = 1;
+      $('rule-min-quality').value = 0; bumpRangeLabel('rule-min-quality');
+      $('rule-min-brightness').value = 0; bumpRangeLabel('rule-min-brightness');
+      $('rule-max-brightness').value = 255; bumpRangeLabel('rule-max-brightness');
+      $('rule-min-sharpness').value = 0; bumpRangeLabel('rule-min-sharpness');
+      $('rule-min-dets').value = 0;
+      $('rule-day-start').value = 0; $('rule-day-end').value = 23;
+      applyDailyWindowToHours();
+      setDow([1, 2, 3, 4, 5, 6, 7]);
+      document.querySelectorAll('#rule-class-checks input:checked').forEach(el => el.checked = false);
+      $('rule-logic').value = 'any';
+      if ($('btn-rule-date-reset')) $('btn-rule-date-reset').click();
+    },
+  },
+};
+
+function applyRulePreset(name) {
+  const preset = RULE_PRESETS[name];
+  if (!preset) return;
+  preset.apply();
+  toast(`Applied preset: ${preset.title}`, 'info');
+  scheduleRuleRecount();
+}
+
+/* Update inline value labels for a slider after programmatic value change. */
+function bumpRangeLabel(id) {
+  const el = $(id);
+  const lbl = $(id + '-value');
+  if (!el || !lbl) return;
+  const v = parseFloat(el.value);
+  if (id === 'rule-conf' || id === 'rule-min-quality') {
+    lbl.textContent = (v / 100).toFixed(2);
+  } else {
+    lbl.textContent = Math.round(v);
+  }
+}
+
 function currentRule() {
   const classes = Array.from(document.querySelectorAll('#rule-class-checks input:checked'))
     .map(el => parseInt(el.dataset.ruleClass));
@@ -1950,6 +2470,18 @@ function currentRule() {
     if (min_date != null && Math.abs(min_date - activeDateRange.min) < 60) min_date = null;
     if (max_date != null && Math.abs(max_date - activeDateRange.max) < 60) max_date = null;
   }
+
+  // Daily-window: combine the "from / until hour" pickers with the advanced
+  // 24-button grid. Both edited the same `ruleSelectedHours` set.
+  const hours = ruleSelectedHours.size === 24 ? null : [...ruleSelectedHours];
+  // Day-of-week: omit when all 7 are on
+  const dow = ruleSelectedDow.size === 7 ? null : [...ruleSelectedDow];
+
+  // Section D — frame-condition tags
+  const conditions = Array.from(document.querySelectorAll('#cond-class-checks input:checked'))
+    .map(el => el.dataset.condTag);
+  const condMin = $('cond-min-confidence');
+
   return {
     classes,
     logic: $('rule-logic').value,
@@ -1960,9 +2492,32 @@ function currentRule() {
     max_brightness: parseInt($('rule-max-brightness').value),
     min_sharpness: parseInt($('rule-min-sharpness').value),
     min_dets: parseInt($('rule-min-dets').value) || 0,
-    hours: ruleSelectedHours.size === 24 ? null : [...ruleSelectedHours],
-    min_date, max_date,
+    hours, dow, min_date, max_date,
+    conditions,
+    cond_logic: $('cond-logic') ? $('cond-logic').value : 'any',
+    cond_min_confidence: condMin ? parseInt(condMin.value) / 100 : 0,
   };
+}
+
+/* Reconcile the daily-window number pair with the 24-hour grid.
+ * "From hour / Until hour" -> tick exactly hours in [from..until] (inclusive).
+ * Wrap-around supported (e.g. from=20 until=6 -> 20,21,22,23,0,1,2,3,4,5,6). */
+function applyDailyWindowToHours() {
+  const start = parseInt($('rule-day-start')?.value);
+  const end = parseInt($('rule-day-end')?.value);
+  if (Number.isNaN(start) || Number.isNaN(end)) return;
+  ruleSelectedHours = new Set();
+  if (start <= end) {
+    for (let h = start; h <= end; h++) ruleSelectedHours.add(h);
+  } else {
+    for (let h = start; h <= 23; h++) ruleSelectedHours.add(h);
+    for (let h = 0; h <= end; h++) ruleSelectedHours.add(h);
+  }
+  // Reflect into the advanced 24-button grid
+  document.querySelectorAll('#hour-toggle button').forEach(b => {
+    const h = parseInt(b.dataset.hour);
+    b.classList.toggle('on', ruleSelectedHours.has(h));
+  });
 }
 
 function scheduleRuleRecount() {
@@ -2011,21 +2566,44 @@ async function loadPreview(mode) {
     if (!r.ok) throw new Error('preview failed');
     const d = await r.json();
     const grid = $('preview-grid');
+    grid.classList.remove('hidden');  // unrelated reset elsewhere may have hidden it
     if (!d.rows.length) {
-      grid.innerHTML = `<p class="muted">No frames ${mode === 'matches' ? 'match' : 'fail'} the rule.</p>`;
+      grid.innerHTML = `<p class="muted" style="padding:18px">No frames ${mode === 'matches' ? 'match' : 'fail'} the rule. Go back to Step 4 and loosen the filter.</p>`;
     } else {
-      grid.innerHTML = d.rows.map(r => `
-        <div class="thumb-tile">
-          <img src="${r.thumb_url}" alt="" loading="lazy" />
-          <span class="badge-q">Q ${(r.quality || 0).toFixed(2)}</span>
+      grid.innerHTML = d.rows.map(r => {
+        const cls = r.classes.length
+          ? `${escapeHtml(r.classes[0].class_name)} (${(r.classes[0].max_conf || 0).toFixed(2)})`
+          : '<em>no detections</em>';
+        const safePath = encodeURIComponent(r.path);
+        return `
+        <div class="thumb-tile" data-path="${escapeHtml(r.path)}">
+          <img src="${r.thumb_url}" alt="" loading="lazy"
+               onerror="this.style.background='var(--color-surface)';this.alt='(image unavailable)'" />
+          <span class="badge-q">★ ${(r.quality || 0).toFixed(2)}</span>
           ${r.classes.length ? `<span class="badge-cls">${escapeHtml(r.classes[0].class_name)}</span>` : ''}
+          <div class="thumb-feedback">
+            <button type="button" class="thumb-fb thumb-fb-up" data-verdict="good"
+                    title="Mark this picture as Good — write a manual override"
+                    data-path="${escapeHtml(r.path)}">👍</button>
+            <button type="button" class="thumb-fb thumb-fb-down" data-verdict="bad"
+                    title="Mark this picture as Bad — write a manual override"
+                    data-path="${escapeHtml(r.path)}">👎</button>
+          </div>
           <div class="meta">
             <strong>${escapeHtml(r.path.split(/[\\\/]/).pop())}</strong><br>
-            n_dets ${r.n_dets} · b ${Math.round(r.brightness || 0)} · sh ${Math.round(r.sharpness || 0)}
+            ${cls} · brightness ${Math.round(r.brightness || 0)} · sharpness ${Math.round(r.sharpness || 0)}
           </div>
-        </div>`).join('');
+        </div>`;
+      }).join('');
+      // Wire feedback buttons
+      grid.querySelectorAll('.thumb-fb').forEach(btn => {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          submitFrameFeedback(btn.dataset.path, btn.dataset.verdict, btn);
+        });
+      });
     }
-    $('preview-status').textContent = `${d.rows.length} ${mode}`;
+    $('preview-status').textContent = `${d.rows.length} ${mode === 'matches' ? 'matching pictures shown' : 'rejected pictures shown'}`;
   } catch (e) {
     toast('Preview failed: ' + e.message, 'error');
     $('preview-status').textContent = '';
@@ -2091,7 +2669,14 @@ if ($('btn-save')) {
     if (!activeFilterScanId) { toast('Pick a scan first', 'error'); return; }
     const mode = document.querySelector('input[name="save-mode"]:checked').value;
     const target = $('save-target').value.trim() || `filtered_${Date.now()}`;
-    const method = $('save-method').value;
+    let method = $('save-method').value;
+    const annotated = !!($('save-annotated') && $('save-annotated').checked);
+    // Annotated mode requires real copies (we draw boxes onto a new file)
+    if (annotated && method !== 'copy') {
+      method = 'copy';
+      $('save-method').value = 'copy';
+      toast('Switched to "Real copies" — annotated export needs new files.', 'info');
+    }
     $('btn-save').classList.add('loading');
     try {
       let url, body;
@@ -2099,12 +2684,10 @@ if ($('btn-save')) {
         const rule = currentRule();
         url = `/api/filter/${activeFilterScanId}/export`;
         body = {
-          classes: rule.classes,
-          logic: rule.logic,
-          min_conf: rule.min_conf,
-          min_count: rule.min_count,
+          ...rule,
           mode: method,
           target_name: target,
+          annotated,
         };
       } else {
         url = `/api/filter/${activeFilterScanId}/pick-best`;
@@ -2114,6 +2697,7 @@ if ($('btn-save')) {
           diversify: $('best-diversify').value === 'true',
           target_name: target,
           mode: method,
+          annotated,
         };
       }
       const r = await fetch(url, {

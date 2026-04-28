@@ -856,6 +856,101 @@ def register_folder(req: FolderRef):
 
 
 # ----------------------------------------------------------------------------
+# Server-side folder browser — lets the UI show a "Browse…" picker instead of
+# making the user type paths. Returns common roots + folder listings.
+# ----------------------------------------------------------------------------
+
+@app.get("/api/browse/roots")
+def browse_roots():
+    """Common starting points: drives (Windows), home, Desktop, Downloads,
+    Documents, OneDrive folders."""
+    import string, os
+    roots: list[dict] = []
+
+    if sys.platform == "win32":
+        for letter in string.ascii_uppercase:
+            p = Path(f"{letter}:/")
+            try:
+                if not p.exists():
+                    continue
+                next(p.iterdir())
+                roots.append({"label": f"{letter}:\\ (drive)", "path": str(p)})
+            except (PermissionError, StopIteration, OSError):
+                # BitLocker-locked, no media (DVD), inaccessible — skip silently
+                continue
+
+    home = Path.home()
+    if home.is_dir():
+        roots.append({"label": f"🏠 {home.name} (Home)", "path": str(home)})
+        for sub in ("Desktop", "Downloads", "Documents", "Pictures", "Videos"):
+            p = home / sub
+            if p.is_dir():
+                roots.append({"label": f"📁 {sub}", "path": str(p)})
+        # OneDrive (Personal + business) — common Arclap path
+        for entry in home.iterdir():
+            if entry.is_dir() and entry.name.lower().startswith("onedrive"):
+                roots.append({"label": f"☁️ {entry.name}", "path": str(entry)})
+
+    cwd = Path.cwd()
+    roots.append({"label": f"📂 {cwd.name} (Suite working dir)", "path": str(cwd)})
+    return {"roots": roots}
+
+
+@app.get("/api/browse")
+def browse_folder(path: str):
+    """List immediate subfolders + image count for one folder. Used by the
+    folder-browser modal in the Filter wizard."""
+    p = Path(path).expanduser()
+    try:
+        p = p.resolve()
+    except OSError as e:
+        raise HTTPException(400, f"Cannot resolve {path}: {e}")
+    if not p.is_dir():
+        raise HTTPException(400, f"Not a directory: {p}")
+
+    folders = []
+    image_here = 0
+    try:
+        for entry in p.iterdir():
+            try:
+                if entry.is_dir():
+                    has_sub = False
+                    n_imgs = 0
+                    try:
+                        for sub in entry.iterdir():
+                            if sub.is_dir() and not sub.name.startswith("."):
+                                has_sub = True
+                            elif sub.is_file() and sub.suffix.lower() in ALLOWED_IMAGE_EXTS:
+                                n_imgs += 1
+                                if has_sub and n_imgs >= 1:
+                                    break
+                    except (PermissionError, OSError):
+                        pass
+                    if not entry.name.startswith("$") and not entry.name.startswith("."):
+                        folders.append({
+                            "name": entry.name,
+                            "path": str(entry),
+                            "n_images_shallow": n_imgs,
+                            "has_subfolders": has_sub,
+                        })
+                elif entry.is_file() and entry.suffix.lower() in ALLOWED_IMAGE_EXTS:
+                    image_here += 1
+            except (PermissionError, OSError):
+                continue
+    except (PermissionError, OSError) as e:
+        raise HTTPException(403, f"Permission denied: {e}")
+
+    folders.sort(key=lambda f: f["name"].lower())
+    parent = str(p.parent) if p.parent != p else None
+    return {
+        "path": str(p),
+        "parent": parent,
+        "folders": folders,
+        "image_count": image_here,
+    }
+
+
+# ----------------------------------------------------------------------------
 # Brightness scan
 # ----------------------------------------------------------------------------
 
@@ -1232,6 +1327,7 @@ def _model_to_dict(m: ModelRow, n_params: int = 0) -> dict:
     return {
         "id": m.id,
         "name": m.name,
+        "path": m.path,
         "task": m.task,
         "classes": m.classes,
         "n_classes": m.n_classes,
@@ -1585,10 +1681,17 @@ class FilterRule(BaseModel):
     max_brightness: float = 255.0
     min_sharpness: float = 0.0
     hours: list[int] | None = None  # 0-23, hour-of-day window from filenames
+    dow: list[int] | None = None    # 1=Mon … 7=Sun, day-of-week from filename timestamp
     min_dets: int = 0
     max_dets: int = 100000
     min_date: float | None = None  # epoch seconds — earliest taken_at
     max_date: float | None = None  # epoch seconds — latest taken_at
+    # Frame-condition tags (Section D) — same logic as classes but on the
+    # `conditions` table. Tags: night, fog, rain, blur, lens_drops,
+    # lens_smudge, overcast, snow, dusk_dawn, overexposed, good.
+    conditions: list[str] = Field(default_factory=list)
+    cond_logic: str = Field("any", pattern="^(any|all|none)$")
+    cond_min_confidence: float = 0.0
 
 
 _TIMESTAMP_RE = re.compile(
@@ -1620,6 +1723,19 @@ def _parse_hour(path: str) -> int | None:
         except (ValueError, IndexError):
             pass
     return None
+
+
+def _parse_dow(path: str) -> int | None:
+    """Day-of-week from filename timestamp. 1=Mon … 7=Sun (ISO)."""
+    from datetime import datetime
+    m = _TIMESTAMP_RE.search(Path(path).name)
+    if not m:
+        return None
+    try:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        return datetime(y, mo, d).isoweekday()
+    except (ValueError, OSError, OverflowError):
+        return None
 
 
 def _ensure_taken_at_column(conn: _sqlite3.Connection) -> None:
@@ -1689,25 +1805,66 @@ def _build_match_sql(rule: FilterRule) -> tuple[str, list]:
         )
         params += [*cls, rule.min_conf]
 
+    # Condition-tag filtering (Section D) — mirrors class logic but on the
+    # `conditions` table. Conditions table may be absent on legacy scans;
+    # guarded by EXISTS-clause coalesce.
+    cond = rule.conditions
+    if cond and rule.cond_logic == "any":
+        placeholders = ",".join("?" * len(cond))
+        where.append(
+            f"EXISTS (SELECT 1 FROM conditions c WHERE c.path = i.path "
+            f"AND c.tag IN ({placeholders}) AND c.confidence >= ?)"
+        )
+        params += [*cond, rule.cond_min_confidence]
+    elif cond and rule.cond_logic == "all":
+        for t in cond:
+            where.append(
+                "EXISTS (SELECT 1 FROM conditions c WHERE c.path = i.path "
+                "AND c.tag = ? AND c.confidence >= ?)"
+            )
+            params += [t, rule.cond_min_confidence]
+    elif cond and rule.cond_logic == "none":
+        placeholders = ",".join("?" * len(cond))
+        where.append(
+            f"NOT EXISTS (SELECT 1 FROM conditions c WHERE c.path = i.path "
+            f"AND c.tag IN ({placeholders}) AND c.confidence >= ?)"
+        )
+        params += [*cond, rule.cond_min_confidence]
+
     return f"FROM images i WHERE {' AND '.join(where)}", params
+
+
+def _hour_dow_filter(rule: FilterRule, paths: list[str]) -> list[str]:
+    """Apply the hour-of-day and day-of-week filename filters in Python.
+    SQL can't easily parse the path; doing it post-SQL is simpler and still
+    fast (a few µs per path)."""
+    allowed_h = set(rule.hours) if rule.hours else None
+    allowed_d = set(rule.dow) if rule.dow else None
+    if allowed_h is None and allowed_d is None:
+        return paths
+    out = []
+    for p in paths:
+        if allowed_h is not None and _parse_hour(p) not in allowed_h:
+            continue
+        if allowed_d is not None and _parse_dow(p) not in allowed_d:
+            continue
+        out.append(p)
+    return out
 
 
 @app.post("/api/filter/{job_id}/match-count")
 def filter_match_count(job_id: str, rule: FilterRule):
-    """Live count: how many images match the given rule. Hours are filtered
-    in Python because the path → hour function isn't trivially SQL."""
+    """Live count: how many images match the given rule. Hour-of-day and
+    day-of-week are filtered in Python (filename parse), the rest in SQL."""
     _, db_path = _filter_db(job_id)
     sql_from, params = _build_match_sql(rule)
     conn = _sqlite3.connect(db_path)
     try:
-        if rule.hours:
-            allowed = set(rule.hours)
-            paths = [r[0] for r in conn.execute(
-                f"SELECT i.path {sql_from}", params
-            )]
-            n = sum(1 for p in paths if _parse_hour(p) in allowed)
+        if rule.hours or rule.dow:
+            paths = [r[0] for r in conn.execute(f"SELECT i.path {sql_from}", params)]
+            filtered = _hour_dow_filter(rule, paths)
             total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
-            return {"matches": n, "total": total, "rule_sql_count": len(paths)}
+            return {"matches": len(filtered), "total": total, "rule_sql_count": len(paths)}
         else:
             n = conn.execute(f"SELECT COUNT(*) {sql_from}", params).fetchone()[0]
             total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
@@ -1742,10 +1899,11 @@ def filter_match_preview(job_id: str, rule: FilterRule, limit: int = 12,
             sql_params = params
 
         rows = [dict(r) for r in conn.execute(sql, sql_params)]
-        # Hour filter is post-SQL (see match-count). Apply for matches only.
-        if rule.hours and mode == "matches":
-            allowed = set(rule.hours)
-            rows = [r for r in rows if _parse_hour(r["path"]) in allowed]
+        # Hour-of-day + day-of-week filters live in Python (see match-count).
+        # Apply only for matches (non-matches set is the SQL inverse already).
+        if (rule.hours or rule.dow) and mode == "matches":
+            keep_paths = set(_hour_dow_filter(rule, [r["path"] for r in rows]))
+            rows = [r for r in rows if r["path"] in keep_paths]
 
         # Pull per-row classes for the metadata overlay
         for r in rows:
@@ -1760,6 +1918,135 @@ def filter_match_preview(job_id: str, rule: FilterRule, limit: int = 12,
                 + urllib.parse.quote(r["path"], safe='')
             )
         return {"rows": rows, "mode": mode}
+    finally:
+        conn.close()
+
+
+class FrameFeedbackRequest(BaseModel):
+    path: str
+    verdict: str = Field(pattern="^(good|bad)$")  # 👍 or 👎
+    note: str | None = None
+
+
+@app.post("/api/filter/{job_id}/feedback")
+def filter_frame_feedback(job_id: str, req: FrameFeedbackRequest):
+    """Step 5 preview thumbs up/down. 👍 writes a manual 'good' tag,
+    👎 writes a generic 'bad' tag (which we map to 'blur' since most
+    rejections-by-eye are 'this looks wrong/unusable'). Manual rows
+    override heuristic + CLIP downstream."""
+    _, db_path = _filter_db(job_id)
+    canonical = "good" if req.verdict == "good" else "blur"
+    conn = _sqlite3.connect(db_path)
+    try:
+        # Verify the path actually exists in this scan
+        existing = conn.execute(
+            "SELECT 1 FROM images WHERE path = ?", (req.path,)
+        ).fetchone()
+        if not existing:
+            raise HTTPException(404, f"Path not in this scan: {req.path}")
+        conn.execute(
+            "INSERT OR REPLACE INTO conditions(path, tag, confidence, source, reason) "
+            "VALUES (?, ?, 1.0, 'manual', ?)",
+            (req.path, canonical, req.note or "user_feedback"),
+        )
+        conn.commit()
+        return {"ok": True, "verdict": req.verdict, "tag": canonical}
+    finally:
+        conn.close()
+
+
+@app.post("/api/filter/{job_id}/refine-clip")
+def filter_refine_clip(job_id: str, only_uncertain: bool = True):
+    """Launch the CLIP refinement pass in the background. Returns once
+    the subprocess is started; the user polls the conditions endpoint to
+    see refined tags appear (`source` = 'clip')."""
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Filter job not found")
+    db_path = j.output_path
+    if not Path(db_path).is_file():
+        raise HTTPException(400, "Scan DB missing — run the scan first.")
+    cmd = [
+        PYTHON, "filter_index.py", "refine-clip",
+        "--db", db_path,
+        "--device", "auto",
+    ]
+    if only_uncertain:
+        cmd += ["--only-uncertain"]
+    proc = subprocess.Popen(
+        cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    def _drain():
+        try:
+            for _ in proc.stdout:
+                pass
+        finally:
+            proc.wait()
+    threading.Thread(target=_drain, daemon=True).start()
+
+    return {"ok": True, "pid": proc.pid, "command_argv": cmd}
+
+
+@app.get("/api/filter/{job_id}/conditions")
+def filter_conditions_summary(job_id: str):
+    """Per-tag counts of frame-conditions detected by the scan's heuristics.
+    Powers Section D (Weather & lens) checkbox list with image counts."""
+    _, db_path = _filter_db(job_id)
+    conn = _sqlite3.connect(db_path)
+    try:
+        # Guard against legacy scans (no conditions table)
+        try:
+            rows = conn.execute(
+                "SELECT tag, COUNT(DISTINCT path) AS n_images, "
+                "       AVG(confidence) AS avg_conf "
+                "FROM conditions GROUP BY tag ORDER BY n_images DESC"
+            ).fetchall()
+        except _sqlite3.OperationalError:
+            return {"available": False, "rows": [], "total_images": 0}
+        total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+        return {
+            "available": True,
+            "total_images": int(total),
+            "rows": [
+                {"tag": r[0], "n_images": int(r[1]),
+                 "avg_confidence": round(float(r[2] or 0), 3)}
+                for r in rows
+            ],
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/filter/{job_id}/baselines")
+def filter_camera_baselines(job_id: str):
+    """Per-camera percentile baselines for brightness + sharpness, computed
+    post-scan from filename camera-id prefix. UI uses these to show
+    'dark for THIS camera' rather than a global threshold."""
+    _, db_path = _filter_db(job_id)
+    conn = _sqlite3.connect(db_path)
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT camera_id, n_frames, p10_brightness, p50_brightness, "
+                "       p90_brightness, p10_sharpness, p50_sharpness, p90_sharpness "
+                "FROM camera_baselines ORDER BY n_frames DESC"
+            ).fetchall()
+        except _sqlite3.OperationalError:
+            return {"available": False, "cameras": []}
+        return {
+            "available": True,
+            "cameras": [
+                {
+                    "camera_id": r[0],
+                    "n_frames": int(r[1]),
+                    "brightness": {"p10": r[2], "p50": r[3], "p90": r[4]},
+                    "sharpness":  {"p10": r[5], "p50": r[6], "p90": r[7]},
+                }
+                for r in rows
+            ],
+        }
     finally:
         conn.close()
 
@@ -2074,13 +2361,93 @@ def filter_pick_best(job_id: str, req: BestNRequest):
     }
 
 
-class FilterExportRequest(BaseModel):
-    classes: list[int] = Field(default_factory=list)
-    logic: str = Field("any", pattern="^(any|all|none)$")
-    min_conf: float = 0.0
-    min_count: int = 1
+class FilterExportRequest(FilterRule):
+    """Full rule + materialisation options. Inherits every filter field from
+    FilterRule so the export uses the *exact* rule the user previewed."""
     mode: str = Field("symlink", pattern="^(symlink|copy|hardlink|list)$")
     target_name: str | None = None
+    annotated: bool = False  # if True, draws boxes onto exported JPEGs
+
+
+class LabelsImportRequest(BaseModel):
+    """Either inline mapping {"file.jpg": "good", ...} or a server-local
+    JSON path that the backend reads. The mapping values can be either
+    "good"/"bad" (binary) or condition tag names (night/fog/...)."""
+    inline: dict[str, str] | None = None
+    path: str | None = None
+
+
+@app.post("/api/filter/{job_id}/labels-import")
+def filter_labels_import(job_id: str, req: LabelsImportRequest):
+    """Import a labels.json mapping (filename -> tag) as immutable manual
+    overrides in the conditions table. Manual rows beat heuristic rows in
+    UI (filtered with source priority). Use this for hand-labelled gold
+    data like F:\\timelapse\\labels.json."""
+    _, db_path = _filter_db(job_id)
+    mapping: dict[str, str] = {}
+    if req.inline:
+        mapping = {str(k): str(v).strip().lower() for k, v in req.inline.items()}
+    elif req.path:
+        p = Path(req.path).expanduser()
+        if not p.is_file():
+            raise HTTPException(400, f"labels file not found: {p}")
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception as e:
+            raise HTTPException(400, f"failed to read labels JSON: {e}")
+        # Accept {filename: label} or {"images": [...]} or list-of-objects
+        if isinstance(data, dict) and "images" in data:
+            data = data["images"]
+        if isinstance(data, list):
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                fn = entry.get("file") or entry.get("filename") or entry.get("name")
+                lbl = entry.get("category") or entry.get("label") or entry.get("tag")
+                if fn and lbl:
+                    mapping[str(fn)] = str(lbl).strip().lower()
+        elif isinstance(data, dict):
+            for k, v in data.items():
+                if isinstance(v, str):
+                    mapping[str(k)] = v.strip().lower()
+                elif isinstance(v, dict) and ("label" in v or "category" in v):
+                    mapping[str(k)] = str(v.get("category") or v.get("label")).strip().lower()
+    if not mapping:
+        raise HTTPException(400, "No usable filename → label entries found.")
+
+    # Map binary good/bad to canonical tags
+    BINARY = {"good": "good", "bad": "blur"}  # 'bad' → blur tag (most common bad reason)
+
+    conn = _sqlite3.connect(db_path)
+    try:
+        all_paths = {Path(r[0]).name: r[0] for r in conn.execute("SELECT path FROM images")}
+        if not all_paths:
+            raise HTTPException(400, "Scan has no images yet — run the scan first.")
+
+        rows = []
+        matched = 0
+        for fname, tag in mapping.items():
+            base = Path(fname).name  # in case fname is full path
+            full = all_paths.get(base)
+            if not full:
+                continue
+            canonical = BINARY.get(tag, tag)
+            rows.append((full, canonical, 1.0, "manual", "labels.json import"))
+            matched += 1
+        if rows:
+            conn.executemany(
+                "INSERT OR REPLACE INTO conditions(path, tag, confidence, source, reason) "
+                "VALUES (?, ?, ?, ?, ?)", rows,
+            )
+            conn.commit()
+        return {
+            "ok": True,
+            "imported": matched,
+            "skipped_unknown": len(mapping) - matched,
+            "total_mapping_entries": len(mapping),
+        }
+    finally:
+        conn.close()
 
 
 @app.post("/api/filter/{job_id}/export")
@@ -2094,24 +2461,38 @@ def filter_export(job_id: str, req: FilterExportRequest):
     target_dirname = req.target_name or f"filtered_{j.id}_{int(time.time())}"
     target = OUTPUTS / target_dirname
 
-    # Build a /child/ job that runs filter_index.py export. We can't enqueue
-    # because we want a synchronous count back; export is fast (just copies/
-    # symlinks). Instead run the SQL inline here for the count, and trigger
-    # the materialisation via a background thread.
-    classes_arg = ",".join(str(c) for c in req.classes)
+    # Resolve match paths in-process so the rule (incl. hours / dow / quality
+    # / brightness / date) is honoured exactly. Then write to a tiny list
+    # file that filter_index.py reads via --from-list.
+    rule_for_sql = FilterRule(**req.model_dump(exclude={"mode", "target_name", "annotated"}))
+    sql_from, params = _build_match_sql(rule_for_sql)
+    _, db_path = _filter_db(job_id)
+    conn = _sqlite3.connect(db_path)
+    try:
+        paths = [r[0] for r in conn.execute(f"SELECT i.path {sql_from}", params)]
+    finally:
+        conn.close()
+    paths = _hour_dow_filter(rule_for_sql, paths)
+
+    target.mkdir(parents=True, exist_ok=True)
+    list_file = target / "_filter_match_paths.txt"
+    list_file.write_text("\n".join(paths), encoding="utf-8")
+
+    # The model used during the scan — we'll re-run it for annotation.
+    scan_model = j.settings.get("model") if j.settings else None
+
     cmd = [
         PYTHON, "filter_index.py", "export",
         "--db", j.output_path,
         "--target", str(target),
-        "--logic", req.logic,
-        "--min-conf", f"{req.min_conf:.3f}",
-        "--min-count", str(int(req.min_count)),
-        "--mode", req.mode,
+        "--mode", "copy" if req.annotated else req.mode,
+        "--from-list", str(list_file),
     ]
-    if classes_arg:
-        cmd += ["--classes", classes_arg]
+    if req.annotated:
+        cmd += ["--annotated"]
+        if scan_model:
+            cmd += ["--model", scan_model]
 
-    # Spawn fire-and-forget so the request returns instantly
     proc = subprocess.Popen(
         cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True,
@@ -2129,6 +2510,8 @@ def filter_export(job_id: str, req: FilterExportRequest):
         "ok": True,
         "target": str(target),
         "target_url": f"/files/outputs/{target_dirname}",
+        "matches": len(paths),
+        "annotated": req.annotated,
         "command_argv": cmd,
     }
 

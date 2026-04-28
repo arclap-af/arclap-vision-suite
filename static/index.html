@@ -792,14 +792,29 @@
   <!-- ============= STEP 1: Source ============= -->
   <section class="card wiz-pane" data-pane="1">
     <div class="card-header">
-      <h2><span class="step-badge">1</span> Pick a source</h2>
+      <h2><span class="step-badge">1</span> Pick the pictures + the model that will look at them</h2>
       <p>Either index a new folder, or re-open an existing scan to pick up where you left off.</p>
+    </div>
+
+    <div class="step-explainer">
+      <strong>What's happening here?</strong>
+      <p>You're telling the Suite <em>which folder</em> to scan and <em>which YOLO model</em> should look at every picture. Once you click <em>Start indexing</em>, the model runs on every image and writes to a tiny database what it saw (which classes, how confidently, plus brightness/sharpness/timestamp). That database is the foundation everything else queries — it's a one-time cost per folder.</p>
+      <ul>
+        <li><strong>Scan time:</strong> ~5–15 minutes per 50k pictures on a 3090, assuming the folder is on a local SSD. OneDrive cloud-only files are 20× slower — set "Always keep on this device" first.</li>
+        <li><strong>Sample every Nth:</strong> set to 10 for a fast preview pass, then re-scan with 1 once you've validated your filter rules.</li>
+        <li><strong>Model choice:</strong> custom-trained = your project's classes; stock = generic COCO (people, cars, trucks…).</li>
+      </ul>
     </div>
 
     <h3>Option A — Index a new folder</h3>
     <label class="text-row">
-      <span>Source folder (server-local absolute path)</span>
-      <input type="text" id="filter-source" placeholder="C:\path\to\images  or  /home/user/site_2024" />
+      <span>Source folder</span>
+      <div class="folder-input-row">
+        <input type="text" id="filter-source" placeholder="C:\path\to\images  — or click Browse…" />
+        <button class="btn btn-secondary" id="btn-browse-source" type="button">📁 Browse…</button>
+      </div>
+      <span class="muted small">The Suite reads from this folder directly — no upload.
+        Recent: <span id="recent-source-paths"></span></span>
     </label>
     <div class="filter-grid" style="margin-top:12px">
       <label class="text-row">
@@ -809,11 +824,15 @@
       <label class="text-row">
         <span>YOLO model</span>
         <select id="filter-model">
-          <option value="yolov8x-seg.pt" selected>yolov8x-seg.pt — most accurate (~20 img/s on RTX 3090)</option>
-          <option value="yolov8m-seg.pt">yolov8m-seg.pt — balanced (~50 img/s)</option>
-          <option value="yolov8n-seg.pt">yolov8n-seg.pt — fastest (~100 img/s)</option>
-          <option value="yolov8x.pt">yolov8x.pt — detection only, no masks</option>
+          <optgroup label="— your registered models —" id="filter-model-mine"></optgroup>
+          <optgroup label="— stock Ultralytics —">
+            <option value="yolov8x-seg.pt">yolov8x-seg.pt — most accurate (~20 img/s on RTX 3090)</option>
+            <option value="yolov8m-seg.pt" selected>yolov8m-seg.pt — balanced (~50 img/s)</option>
+            <option value="yolov8n-seg.pt">yolov8n-seg.pt — fastest (~100 img/s)</option>
+            <option value="yolov8x.pt">yolov8x.pt — detection only, no masks</option>
+          </optgroup>
         </select>
+        <span class="muted small">Pick one of your custom-trained models to detect your project's classes (e.g. equipment), or a stock model for generic COCO classes.</span>
       </label>
       <label class="text-row">
         <span>Min confidence (during scan)</span>
@@ -854,9 +873,15 @@
   <!-- ============= STEP 2: Index progress ============= -->
   <section class="card wiz-pane hidden" data-pane="2">
     <div class="card-header">
-      <h2><span class="step-badge">2</span> Indexing</h2>
+      <h2><span class="step-badge">2</span> Scanning every picture</h2>
       <p>Streaming live from the YOLO scanner. ETA is shown in the log.</p>
     </div>
+
+    <div class="step-explainer">
+      <strong>What's happening here?</strong>
+      <p>For every picture, the model runs once on the GPU, the detections are written to the scan database (class, confidence, count, bounding box), and three quality numbers are computed from a downsampled grayscale copy: <em>brightness</em> (mean pixel value), <em>sharpness</em> (Laplacian variance — high = crisp edges), and <em>contrast</em> (pixel std-dev). The filename is also parsed for a timestamp like <code>YYYY-MM-DD_HH-MM-SS</code> so date/hour filtering works later. You can leave this tab — when the scan finishes a notification fires.</p>
+    </div>
+
     <pre id="filter-log" class="log-output">Waiting…</pre>
     <div class="actions" style="margin-top:14px">
       <button class="btn btn-secondary" id="btn-index-continue" disabled>Continue → Analyse</button>
@@ -867,8 +892,13 @@
   <!-- ============= STEP 3: Analyse ============= -->
   <section class="card wiz-pane hidden" data-pane="3">
     <div class="card-header">
-      <h2><span class="step-badge">3</span> Engineering analysis</h2>
+      <h2><span class="step-badge">3</span> What's in your archive — overview</h2>
       <p id="filter-summary-label"></p>
+    </div>
+
+    <div class="step-explainer">
+      <strong>What's happening here?</strong>
+      <p>Now that the scan is done, this is the bird's-eye view. The charts read the <em>quality</em>, <em>brightness</em>, <em>sharpness</em>, and <em>detection</em> distributions across your whole archive. The <em>hour-of-day</em> chart shows when activity happened (parsed from filenames). The <em>co-occurrence</em> heatmap shows which classes appear in the same frames — useful to discover patterns (e.g. "people are usually near machines"). Use this page to <strong>understand the shape of your data before filtering</strong> — the values you'll set in the next step (brightness threshold, quality bar, etc.) make a lot more sense once you've seen these distributions.</p>
     </div>
 
     <div class="charts-row">
@@ -920,64 +950,72 @@
     </div>
   </section>
 
-  <!-- ============= STEP 4: Rules ============= -->
+  <!-- ============= STEP 4: Rules (rebuilt) ============= -->
   <section class="card wiz-pane hidden" data-pane="4">
     <div class="card-header">
-      <h2><span class="step-badge">4</span> Build filter rules</h2>
-      <p>Tick which classes you want. Use the sliders to gate on quality / brightness / sharpness / detection density. Live count updates as you change anything.</p>
+      <h2><span class="step-badge">4</span> What do you want to keep?</h2>
+      <p>Build a filter from three angles: <strong>which objects</strong> must be in the frame, <strong>when</strong> the picture was taken, and <strong>what visual quality</strong> you'll accept. The match counter at the bottom updates live.</p>
     </div>
-    <div class="rule-grid">
-      <div class="rule-col">
-        <h4>Class gate</h4>
-        <label class="text-row">
-          <span>Logic</span>
-          <select id="rule-logic">
-            <option value="any" selected>ANY of the picked classes (union)</option>
-            <option value="all">ALL of the picked classes (intersection)</option>
-            <option value="none">NONE of the picked classes (negation)</option>
-          </select>
-        </label>
-        <label class="text-row">
-          <span>Min detection confidence</span>
-          <input type="range" id="rule-conf" min="0" max="95" step="1" value="30" />
-          <span id="rule-conf-value" class="muted small">0.30</span>
-        </label>
-        <label class="text-row">
-          <span>Min count per class</span>
-          <input type="number" id="rule-count" min="1" value="1" />
-        </label>
+
+    <div class="step-explainer">
+      <strong>How this works</strong>
+      <p>A picture is kept only if it passes <em>every</em> section below. Inside each section, the values combine sensibly (e.g. "min" + "max" form a range; checked classes combine via the logic dropdown). Start loose, then tighten — the live counter tells you immediately how many pictures survive.</p>
+    </div>
+
+    <!-- Quick-presets row -->
+    <div class="rule-presets">
+      <h4 style="margin:0 0 8px">⚡ Quick presets</h4>
+      <p class="muted small" style="margin:0 0 10px">One click loads a typical filter combo. Then tweak the sections below.</p>
+      <div class="rule-preset-row">
+        <button class="btn btn-ghost btn-small" data-preset="daylight"
+                title="Hours 7–19, weekdays, brightness ≥ 80">☀️ Daylight site activity</button>
+        <button class="btn btn-ghost btn-small" data-preset="annotation"
+                title="Min quality ≥ 4 stars, ≥ 1 detection, brightness 60–200">🎯 Annotation candidates</button>
+        <button class="btn btn-ghost btn-small" data-preset="night"
+                title="Hours 20–06, all classes">🌙 Night-time only</button>
+        <button class="btn btn-ghost btn-small" data-preset="busy"
+                title="≥ 3 detections per frame, daylight">🏗️ Busy frames only</button>
+        <button class="btn btn-ghost btn-small" data-preset="reset"
+                title="Clear all filters and start fresh">↺ Reset all</button>
+      </div>
+    </div>
+
+    <!-- Section A: Detected objects -->
+    <details class="rule-section" open>
+      <summary><span class="rule-num">A</span> 🎯 Detected objects</summary>
+      <div class="rule-section-body">
+        <p class="muted small">Tick the classes you care about. The logic dropdown decides how multiple ticks combine.</p>
+        <div class="rule-grid">
+          <label class="text-row">
+            <span>Logic</span>
+            <select id="rule-logic">
+              <option value="any" selected>ANY of the picked classes — frame must contain at least one</option>
+              <option value="all">ALL of the picked classes — frame must contain every one</option>
+              <option value="none">NONE of the picked classes — frame must contain none</option>
+            </select>
+          </label>
+          <label class="text-row">
+            <span>Min detection confidence</span>
+            <input type="range" id="rule-conf" min="0" max="95" step="1" value="30" />
+            <span id="rule-conf-value" class="muted small">0.30</span>
+          </label>
+          <label class="text-row">
+            <span>Min count per class</span>
+            <input type="number" id="rule-count" min="1" value="1" />
+            <span class="muted small">e.g. 3 = "must have at least 3 of that class in the frame"</span>
+          </label>
+        </div>
         <div id="rule-class-checks" class="rule-class-checks"></div>
       </div>
+    </details>
 
-      <div class="rule-col">
-        <h4>Image-quality gate</h4>
-        <label class="text-row">
-          <span>Min quality score</span>
-          <input type="range" id="rule-min-quality" min="0" max="100" step="1" value="0" />
-          <span id="rule-min-quality-value" class="muted small">0.00</span>
-        </label>
-        <label class="text-row">
-          <span>Min brightness</span>
-          <input type="range" id="rule-min-brightness" min="0" max="255" step="1" value="0" />
-          <span id="rule-min-brightness-value" class="muted small">0</span>
-        </label>
-        <label class="text-row">
-          <span>Max brightness (drop overexposed)</span>
-          <input type="range" id="rule-max-brightness" min="0" max="255" step="1" value="255" />
-          <span id="rule-max-brightness-value" class="muted small">255</span>
-        </label>
-        <label class="text-row">
-          <span>Min sharpness (drop blurry)</span>
-          <input type="range" id="rule-min-sharpness" min="0" max="800" step="10" value="0" />
-          <span id="rule-min-sharpness-value" class="muted small">0</span>
-        </label>
-        <label class="text-row">
-          <span>Min detections / frame</span>
-          <input type="number" id="rule-min-dets" min="0" value="0" />
-        </label>
+    <!-- Section B: Time window -->
+    <details class="rule-section" open>
+      <summary><span class="rule-num">B</span> 🕐 When the picture was taken</summary>
+      <div class="rule-section-body">
+        <p class="muted small" id="rule-date-help">Filenames must contain a parseable timestamp (e.g. <code>2025-04-15_14-32-08.jpg</code>) for time filters to work.</p>
 
-        <h4 style="margin-top:14px">Date range</h4>
-        <p class="muted small" id="rule-date-help">No timestamp data in filenames yet — date filter is disabled.</p>
+        <h5 style="margin-top:6px">Date range — calendar boundaries</h5>
         <div class="date-range-row">
           <label class="text-row">
             <span>From</span>
@@ -988,14 +1026,141 @@
             <input type="datetime-local" id="rule-max-date" />
           </label>
           <button class="btn btn-ghost btn-small" id="btn-rule-date-reset"
-                  title="Clear the date filter">Clear</button>
+                  title="Reset to the full scan range">Reset</button>
         </div>
 
-        <h4 style="margin-top:14px">Time-of-day window</h4>
-        <p class="muted small">Tick hours to keep. Filenames must contain a parseable timestamp.</p>
-        <div id="hour-toggle" class="hour-toggle"></div>
+        <h5 style="margin-top:14px">Daily time window — applied to <em>every</em> day in the range above</h5>
+        <p class="muted small">For example: from 09:00 until 17:00 keeps only mid-day pictures across the entire date range.</p>
+        <div class="daily-window-row">
+          <label class="text-row">
+            <span>From hour</span>
+            <input type="number" id="rule-day-start" min="0" max="23" value="0" />
+          </label>
+          <label class="text-row">
+            <span>Until hour</span>
+            <input type="number" id="rule-day-end" min="0" max="23" value="23" />
+          </label>
+          <span class="muted small">Both are 24-hour. Set to 0 / 23 to disable.</span>
+        </div>
+
+        <details class="hour-advanced">
+          <summary>Advanced — pick specific hours individually</summary>
+          <p class="muted small">Toggle individual hours (overrides the from/until pair above when used).</p>
+          <div id="hour-toggle" class="hour-toggle"></div>
+        </details>
+
+        <h5 style="margin-top:14px">Day of the week</h5>
+        <p class="muted small">Useful for sites: keep weekdays only, or only Saturdays for a weekly delivery check.</p>
+        <div class="dow-pills" id="dow-pills">
+          <button type="button" data-dow="1" class="on">Mon</button>
+          <button type="button" data-dow="2" class="on">Tue</button>
+          <button type="button" data-dow="3" class="on">Wed</button>
+          <button type="button" data-dow="4" class="on">Thu</button>
+          <button type="button" data-dow="5" class="on">Fri</button>
+          <button type="button" data-dow="6" class="on">Sat</button>
+          <button type="button" data-dow="7" class="on">Sun</button>
+        </div>
+        <div class="dow-shortcuts">
+          <button type="button" class="btn btn-ghost btn-small" id="dow-weekdays">Weekdays only</button>
+          <button type="button" class="btn btn-ghost btn-small" id="dow-weekends">Weekends only</button>
+          <button type="button" class="btn btn-ghost btn-small" id="dow-all">All days</button>
+        </div>
       </div>
-    </div>
+    </details>
+
+    <!-- Section D: Weather & lens conditions (heuristic-tagged in scan) -->
+    <details class="rule-section" open>
+      <summary><span class="rule-num">D</span> 🌤️ Weather &amp; lens conditions</summary>
+      <div class="rule-section-body">
+        <p class="muted small">During the scan, every picture is auto-tagged for these conditions (night, fog, rain, blur, lens drops, etc.) using the heuristic detector. Tick the conditions you want to keep — or use the logic dropdown to <em>exclude</em> bad ones.</p>
+        <div class="rule-grid">
+          <label class="text-row">
+            <span>Logic</span>
+            <select id="cond-logic">
+              <option value="any" selected>ANY of the ticked conditions — keep frames with at least one</option>
+              <option value="all">ALL of the ticked conditions — frame must have every one</option>
+              <option value="none">NONE of the ticked conditions — exclude these (best for "no fog, no rain, no night")</option>
+            </select>
+          </label>
+          <label class="text-row">
+            <span>Min tag confidence</span>
+            <input type="range" id="cond-min-confidence" min="0" max="100" step="5" value="0" />
+            <span id="cond-min-confidence-value" class="muted small">0.00</span>
+            <span class="muted small">Higher = only trust strong heuristic verdicts. 0 = include every tag.</span>
+          </label>
+        </div>
+        <div id="cond-class-checks" class="rule-class-checks">
+          <p class="muted small" style="padding:14px">No conditions detected yet — re-scan with the latest version to populate this section.</p>
+        </div>
+        <div class="cond-shortcuts">
+          <button type="button" class="btn btn-ghost btn-small" id="cond-quick-clean">☀️ Clean only (NONE of: night, fog, rain, blur, lens_drops, lens_smudge, overexposed)</button>
+          <button type="button" class="btn btn-ghost btn-small" id="cond-quick-good">✅ Tag = "good" only</button>
+          <button type="button" class="btn btn-ghost btn-small" id="cond-quick-clear">↺ Clear ticks</button>
+        </div>
+
+        <div class="cond-clip">
+          <h5 style="margin:14px 0 4px">Refine tags with CLIP (optional, for max accuracy)</h5>
+          <p class="muted small" style="margin:0 0 8px">Heuristics get the easy ~85% right. CLIP zero-shot re-checks ambiguous frames using a vision-language model — usually +10-15 pp accuracy on borderline cases. ~3-5 min per 50k frames on your GPU. <em>First run downloads ~890MB.</em></p>
+          <div class="folder-input-row" style="align-items:center">
+            <label class="checkbox-row" style="margin:0">
+              <input type="checkbox" id="clip-only-uncertain" checked />
+              Only re-check uncertain frames (heuristic confidence &lt; 0.85) — faster
+            </label>
+            <button class="btn btn-secondary" id="btn-refine-clip" type="button">🔬 Run CLIP refinement</button>
+          </div>
+          <span class="muted small" id="clip-refine-status"></span>
+        </div>
+
+        <div class="cond-import">
+          <h5 style="margin:14px 0 4px">Import hand-labelled ground truth (optional)</h5>
+          <p class="muted small" style="margin:0 0 8px">Have a <code>labels.json</code> mapping <em>filename → good/bad</em> (or named tags)? Import it to override the heuristic for those exact frames. Manual labels win — heuristic and CLIP can't override them.</p>
+          <div class="folder-input-row">
+            <input type="text" id="labels-import-path" placeholder="C:\path\to\labels.json" />
+            <button class="btn btn-secondary" id="btn-labels-import" type="button">📥 Import labels</button>
+          </div>
+          <span class="muted small" id="labels-import-status"></span>
+        </div>
+      </div>
+    </details>
+
+    <!-- Section C: Image quality -->
+    <details class="rule-section" open>
+      <summary><span class="rule-num">C</span> 🌅 Visual quality</summary>
+      <div class="rule-section-body">
+        <p class="muted small">Drop pictures that won't be useful — too dark, too washed out, too blurry, or empty of detections.</p>
+        <div class="rule-grid">
+          <label class="text-row">
+            <span>Min quality score (composite)</span>
+            <input type="range" id="rule-min-quality" min="0" max="100" step="1" value="0" />
+            <span id="rule-min-quality-value" class="muted small">0.00</span>
+            <span class="muted small">Combines sharpness, brightness, contrast and detection diversity. 0 = anything goes; 0.6 = "annotation-grade".</span>
+          </label>
+          <label class="text-row">
+            <span>Brightness range (drop too dark <em>and</em> too washed out)</span>
+            <div class="dual-range">
+              <input type="range" id="rule-min-brightness" min="0" max="255" step="1" value="0" />
+              <input type="range" id="rule-max-brightness" min="0" max="255" step="1" value="255" />
+            </div>
+            <span class="muted small">
+              Min: <span id="rule-min-brightness-value">0</span>
+              · Max: <span id="rule-max-brightness-value">255</span>
+              — typical daylight is 80–180, sunsets 60–110, night under 50.
+            </span>
+          </label>
+          <label class="text-row">
+            <span>Min sharpness (drop blurry)</span>
+            <input type="range" id="rule-min-sharpness" min="0" max="800" step="10" value="0" />
+            <span id="rule-min-sharpness-value" class="muted small">0</span>
+            <span class="muted small">Laplacian variance. Crisp construction shots typically &gt; 200, motion blur &lt; 80.</span>
+          </label>
+          <label class="text-row">
+            <span>Min detections per frame</span>
+            <input type="number" id="rule-min-dets" min="0" value="0" />
+            <span class="muted small">0 = include empty frames; 1+ = "must contain at least one detection of any class".</span>
+          </label>
+        </div>
+      </div>
+    </details>
 
     <div class="match-strip">
       <div class="match-bignum">
@@ -1013,9 +1178,15 @@
   <!-- ============= STEP 5: Preview ============= -->
   <section class="card wiz-pane hidden" data-pane="5">
     <div class="card-header">
-      <h2><span class="step-badge">5</span> Preview matches</h2>
-      <p>Random sample of 12 frames matching your rules. Click "show non-matches" to spot-check what's being excluded.</p>
+      <h2><span class="step-badge">5</span> Sanity check — preview a sample</h2>
+      <p>A random selection of 12 frames matching your rules. Click <em>Non-matches</em> to spot-check what's being excluded.</p>
     </div>
+
+    <div class="step-explainer">
+      <strong>What's happening here?</strong>
+      <p>Before you commit to materialising thousands of files, look at <em>actual</em> matches. If the sample contains pictures you don't want, go back to Step 4 and tighten the rule (raise min confidence, restrict hours, drop a class). If the <em>non-matches</em> contain pictures you <em>do</em> want, your rule is too tight — relax it. Re-roll a few times to feel confident.</p>
+    </div>
+
     <div class="actions" style="margin-bottom:14px">
       <button class="btn btn-secondary" id="btn-preview-matches">Matches</button>
       <button class="btn btn-ghost" id="btn-preview-nonmatches">Non-matches</button>
@@ -1033,6 +1204,11 @@
     <div class="card-header">
       <h2><span class="step-badge">6</span> Save the filtered set</h2>
       <p id="save-summary" class="muted small">Loading match count…</p>
+    </div>
+
+    <div class="step-explainer">
+      <strong>What's happening here?</strong>
+      <p>The filtered pictures are written into a folder under <code>_outputs/</code>. By default they're <em>shortcuts</em> (symlinks/hardlinks) — instant, zero extra disk space, but they break if you move the originals. <em>Real copies</em> are independent files (safer, slower). You can also <strong>burn the detection boxes onto the saved pictures</strong> — useful when reviewing a curation in Explorer to see <em>why</em> each picture was kept.</p>
     </div>
 
     <h3>What do you want to save?</h3>
@@ -1101,6 +1277,17 @@
         <span class="muted small">Shortcuts/hardlinks use no extra disk; copies are full duplicates.</span>
       </label>
     </div>
+
+    <h3 style="margin-top:18px">Annotation overlay (optional)</h3>
+    <label class="checkbox-row big" style="margin-top:6px">
+      <input type="checkbox" id="save-annotated" />
+      <div>
+        <strong>Mark detected objects on the saved pictures</strong>
+        <p class="muted small" style="margin:4px 0 0">
+          Re-runs the model on every match and burns the bounding boxes + class labels onto each image. Forces <em>Real copies</em> mode automatically (the originals stay untouched). Roughly doubles the export time, but lets you flip through the output folder in Explorer and instantly see what the model spotted.
+        </p>
+      </div>
+    </label>
 
     <div class="actions" style="margin-top:18px">
       <button class="btn btn-primary btn-lg" id="btn-save">Save</button>
@@ -1249,9 +1436,33 @@
   </div>
 </div>
 
+<!-- Folder browser modal -->
+<div class="folder-modal hidden" id="folder-modal">
+  <div class="folder-modal-card">
+    <header>
+      <h3>Pick a folder</h3>
+      <button class="btn btn-ghost btn-small" id="folder-modal-close" type="button">✕</button>
+    </header>
+    <div class="folder-modal-body">
+      <div class="folder-roots" id="folder-roots">
+        <p class="muted small">Loading roots…</p>
+      </div>
+      <div class="folder-pane">
+        <div class="folder-breadcrumb" id="folder-breadcrumb"></div>
+        <div class="folder-list" id="folder-list"></div>
+      </div>
+    </div>
+    <footer>
+      <span class="muted small" id="folder-current-path">—</span>
+      <span class="folder-image-count" id="folder-image-count"></span>
+      <button class="btn btn-primary" id="folder-modal-pick" type="button" disabled>Use this folder</button>
+    </footer>
+  </div>
+</div>
+
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=2026-04-28-f-clip-feedback"></script>
 </body>
 </html>

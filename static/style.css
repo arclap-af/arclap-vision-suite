@@ -1933,3 +1933,294 @@ code { background: var(--bg-2); padding: 1px 6px; border-radius: 4px; font-famil
   .live-grid { grid-template-columns: 1fr; }
   .topnav-btn { padding: 6px 10px; font-size: 0.8em; }
 }
+
+/* =============================================================================
+   Filter wizard — rebuilt UI (per-step explainers, sectioned rule builder,
+   day-of-week pills, daily time window, quick presets, annotated export)
+   ============================================================================= */
+
+/* Per-step explainer card — sits under each step's card-header */
+.step-explainer {
+  margin: 14px 0 16px;
+  padding: 14px 18px;
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--color-brand) 6%, var(--color-surface)) 0%,
+    var(--color-surface) 100%);
+  border-left: 3px solid var(--color-brand);
+  border-radius: var(--radius-2);
+  color: var(--color-text);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.step-explainer strong { color: var(--color-text-strong); display: block; margin-bottom: 6px; font-size: 13px; letter-spacing: 0.02em; text-transform: uppercase; }
+.step-explainer p { margin: 0 0 8px; }
+.step-explainer p:last-child { margin-bottom: 0; }
+.step-explainer ul { margin: 6px 0 0; padding-left: 18px; }
+.step-explainer ul li { margin-bottom: 4px; }
+.step-explainer code { background: var(--color-surface-2, var(--color-surface)); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+
+/* Quick-presets bar above the rule sections */
+.rule-presets {
+  margin: 14px 0;
+  padding: 12px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+}
+.rule-presets h4 { margin: 0 0 6px; font-size: 14px; }
+.rule-preset-row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Collapsible rule sections (A / B / C) */
+.rule-section {
+  margin: 12px 0;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-3);
+  overflow: hidden;
+}
+.rule-section > summary {
+  padding: 14px 18px;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-strong);
+  list-style: none;
+  display: flex; align-items: center; gap: 10px;
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--color-brand) 4%, transparent) 0%,
+    transparent 100%);
+}
+.rule-section > summary::-webkit-details-marker { display: none; }
+.rule-section > summary::after {
+  content: "▾"; margin-left: auto; color: var(--color-text-muted); transition: transform 0.15s;
+}
+.rule-section[open] > summary::after { transform: rotate(180deg); }
+.rule-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px;
+  background: var(--color-brand); color: white;
+  border-radius: 50%;
+  font-size: 13px; font-weight: 700;
+}
+.rule-section-body { padding: 10px 18px 18px; }
+.rule-section-body h5 { margin: 6px 0 4px; font-size: 13.5px; color: var(--color-text-strong); }
+
+/* Daily time window (hour from / until) */
+.daily-window-row {
+  display: flex; gap: 10px; align-items: end; flex-wrap: wrap;
+  margin-top: 6px;
+}
+.daily-window-row .text-row { min-width: 140px; flex: 0 0 auto; }
+.daily-window-row input[type="number"] {
+  width: 80px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-strong);
+  padding: 6px 10px;
+  border-radius: var(--radius-2);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+/* Advanced hour grid (was visible by default; now nested inside <details>) */
+.hour-advanced {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--color-surface-2, transparent);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-2);
+}
+.hour-advanced > summary {
+  cursor: pointer; font-size: 12.5px; color: var(--color-text-muted);
+  list-style: none;
+}
+.hour-advanced > summary::-webkit-details-marker { display: none; }
+.hour-advanced > summary::before { content: "⚙ "; }
+
+/* Day-of-week pills */
+.dow-pills {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  margin-top: 6px;
+}
+.dow-pills button {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  padding: 6px 14px;
+  font-size: 12.5px; font-weight: 500;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s, color 0.12s;
+}
+.dow-pills button.on {
+  background: var(--color-brand);
+  color: white;
+  border-color: var(--color-brand);
+}
+.dow-shortcuts { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+
+/* Dual-range slider (brightness min/max stacked) */
+.dual-range { display: flex; gap: 8px; align-items: center; }
+.dual-range input[type="range"] { flex: 1; }
+
+/* Annotated-export big checkbox row */
+.checkbox-row.big {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 14px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+}
+.checkbox-row.big input[type="checkbox"] { margin-top: 3px; transform: scale(1.2); }
+.checkbox-row.big > div { flex: 1; }
+.checkbox-row.big strong { display: block; font-size: 14px; }
+
+/* Section D — condition shortcut buttons */
+.cond-shortcuts {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
+}
+
+/* Condition checkbox rows reuse .rule-class-row styling but with a small
+   tag chip showing the per-frame heuristic confidence. */
+.rule-class-row .cond-conf {
+  font-family: var(--font-mono); font-size: 10.5px;
+  background: var(--color-surface-2, var(--color-border));
+  color: var(--color-text-muted);
+  padding: 1px 6px; border-radius: 999px; margin-left: 6px;
+}
+
+/* Thumbs feedback overlay on Step 5 preview tiles */
+.thumb-feedback {
+  position: absolute; top: 8px; right: 8px;
+  display: flex; gap: 4px;
+  opacity: 0; transition: opacity 0.15s;
+  z-index: 2;
+}
+.thumb-tile:hover .thumb-feedback { opacity: 1; }
+.thumb-fb {
+  background: rgba(0,0,0,0.6);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: white;
+  padding: 4px 10px;
+  border-radius: var(--radius-2);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  transition: background 0.12s, transform 0.12s;
+}
+.thumb-fb:hover { background: rgba(0,0,0,0.85); transform: scale(1.1); }
+.thumb-fb-up:hover { background: rgba(34,197,94,0.85); }
+.thumb-fb-down:hover { background: rgba(239,68,68,0.85); }
+.thumb-tile.fb-good { box-shadow: 0 0 0 3px rgba(34,197,94,0.7); }
+.thumb-tile.fb-bad { box-shadow: 0 0 0 3px rgba(239,68,68,0.7); }
+.thumb-tile { position: relative; }
+
+/* Folder picker — input + Browse button on one row */
+.folder-input-row {
+  display: flex; gap: 8px; align-items: stretch;
+}
+.folder-input-row input[type="text"] { flex: 1; }
+.folder-input-row .btn { white-space: nowrap; flex: 0 0 auto; }
+
+/* Recent-paths inline list */
+#recent-source-paths a {
+  display: inline-block; margin-right: 8px;
+  color: var(--color-brand); cursor: pointer;
+  text-decoration: underline;
+}
+
+/* Folder browser modal */
+.folder-modal {
+  position: fixed; inset: 0;
+  background: rgba(15, 17, 25, 0.55);
+  z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.folder-modal-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-3);
+  width: min(960px, 100%);
+  height: min(640px, 100%);
+  display: flex; flex-direction: column;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.4);
+  overflow: hidden;
+}
+.folder-modal-card header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--color-border);
+}
+.folder-modal-card header h3 { margin: 0; font-size: 16px; }
+.folder-modal-body {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  flex: 1;
+  min-height: 0;
+}
+.folder-roots {
+  border-right: 1px solid var(--color-border);
+  overflow-y: auto;
+  padding: 8px;
+  background: var(--color-bg, var(--color-surface));
+}
+.folder-roots .root-btn {
+  display: block; width: 100%;
+  background: transparent; border: none;
+  color: var(--color-text);
+  text-align: left; padding: 8px 10px;
+  font-size: 13px; font-family: inherit;
+  border-radius: var(--radius-2);
+  cursor: pointer;
+}
+.folder-roots .root-btn:hover { background: var(--color-surface-2, var(--color-border)); }
+.folder-pane { display: flex; flex-direction: column; min-height: 0; }
+.folder-breadcrumb {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg, var(--color-surface));
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--color-text-muted);
+}
+.folder-breadcrumb .crumb {
+  cursor: pointer; padding: 2px 6px; border-radius: 3px;
+}
+.folder-breadcrumb .crumb:hover { background: var(--color-surface-2, var(--color-border)); color: var(--color-text-strong); }
+.folder-breadcrumb .crumb-sep { color: var(--color-text-muted); }
+.folder-list {
+  flex: 1; overflow-y: auto;
+  padding: 8px;
+}
+.folder-row {
+  display: grid;
+  grid-template-columns: 28px 1fr auto auto;
+  gap: 10px; align-items: center;
+  padding: 8px 12px;
+  border-radius: var(--radius-2);
+  cursor: pointer;
+  font-size: 13px;
+}
+.folder-row:hover { background: var(--color-surface-2, var(--color-border)); }
+.folder-row .icon { font-size: 18px; }
+.folder-row .name { color: var(--color-text-strong); }
+.folder-row .stat { color: var(--color-text-muted); font-family: var(--font-mono); font-size: 11.5px; }
+.folder-row .chevron { color: var(--color-text-muted); }
+.folder-row.empty { opacity: 0.6; }
+.folder-modal-card footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg, var(--color-surface));
+}
+.folder-image-count {
+  font-family: var(--font-mono); font-size: 12px;
+  padding: 4px 10px;
+  background: var(--color-surface-2, var(--color-border));
+  border-radius: var(--radius-2);
+  color: var(--color-text-strong);
+}
+.folder-image-count.has-images { background: var(--color-brand); color: white; }
+#folder-current-path { font-family: var(--font-mono); font-size: 12px; flex: 1; overflow-wrap: anywhere; }
