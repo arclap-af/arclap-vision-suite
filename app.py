@@ -3192,8 +3192,10 @@ def _swiss_web_collect_thread(job_id: str, queries: list[str],
                     candidates = []
                 if not candidates:
                     continue
-                job.setdefault("source_stats", {})[source_name] = (
-                    job["source_stats"].get(source_name, 0) + len(candidates))
+                # Two-step to avoid KeyError when "source_stats" doesn't exist yet
+                # (Python evaluates the RHS before the LHS subscript assignment.)
+                stats = job.setdefault("source_stats", {})
+                stats[source_name] = stats.get(source_name, 0) + len(candidates)
                 for c in candidates:
                     if downloaded >= max_results:
                         break
@@ -3400,7 +3402,10 @@ def swiss_import_zip(file: UploadFile = File(...)):
 @app.post("/api/swiss/dataset/import-from-f-drive")
 def swiss_import_from_f():
     """Convenience one-click: import the existing F:\\Construction Site
-    Intelligence\\data\\training_dataset into the managed Suite dataset.
+    Intelligence\\data\\training_dataset into the managed Suite dataset
+    AND copy the training-run artifacts (results.csv, confusion matrix,
+    PR curves, etc.) into _runs/swiss_train/<version>/ so the Charts
+    sub-tab works immediately for the bundled swiss_detector_v2.
     Idempotent — skips files already present."""
     src = Path(r"F:\Construction Site Intelligence\data\training_dataset")
     if not src.is_dir():
@@ -3410,9 +3415,9 @@ def swiss_import_from_f():
 
     n_imgs = n_lbls = 0
     for split in ("train", "val"):
-        for kind, ext_set, count_var in (
-            ("images", {".jpg", ".jpeg", ".png", ".webp", ".bmp"}, "imgs"),
-            ("labels", {".txt"}, "lbls"),
+        for kind, ext_set in (
+            ("images", {".jpg", ".jpeg", ".png", ".webp", ".bmp"}),
+            ("labels", {".txt"}),
         ):
             src_dir = src / kind / split
             if not src_dir.is_dir():
@@ -3433,13 +3438,45 @@ def swiss_import_from_f():
                         n_lbls += 1
                 except Exception:
                     continue
+
+    # Also pull training-run artifacts so the Charts tab works for the bundled v2
+    n_artifacts = 0
+    fdrive_models = Path(r"F:\Construction Site Intelligence\models")
+    if fdrive_models.is_dir():
+        for run_dir in fdrive_models.iterdir():
+            if not run_dir.is_dir():
+                continue
+            # Only mirror runs whose name corresponds to a swiss_detector_v* file
+            target_run = ROOT / "_runs" / "swiss_train" / run_dir.name
+            target_run.mkdir(parents=True, exist_ok=True)
+            for f in run_dir.iterdir():
+                if not f.is_file():
+                    continue
+                if f.suffix.lower() not in {".csv", ".png", ".jpg", ".jpeg",
+                                              ".yaml", ".yml", ".json", ".txt"}:
+                    continue
+                tgt = target_run / f.name
+                if tgt.exists():
+                    continue
+                try:
+                    shutil.copy2(f, tgt)
+                    n_artifacts += 1
+                except Exception:
+                    continue
+
     swiss_core.append_ingestion(ROOT, {
         "kind": "f_drive_import",
         "source": str(src),
         "n_images": n_imgs,
         "n_labels": n_lbls,
+        "n_artifacts": n_artifacts,
     })
-    return {"ok": True, "imported_images": n_imgs, "imported_labels": n_lbls}
+    return {
+        "ok": True,
+        "imported_images": n_imgs,
+        "imported_labels": n_lbls,
+        "imported_artifacts": n_artifacts,
+    }
 
 
 # ----------------------------------------------------------------------------
@@ -3922,6 +3959,198 @@ def swiss_benchmark(req: SwissBenchmarkRequest):
         "gpu_max_memory_mb": gpu_mem_mb,
         "n_parameters": int(sum(p.numel() for p in model.model.parameters())),
     }
+
+
+# ============================================================================
+# Training-run artifacts: results.csv, confusion matrices, PR curves,
+# sample predictions, augmentation grids — everything Ultralytics writes.
+# ============================================================================
+
+SWISS_RUNS_DIR = ROOT / "_runs" / "swiss_train"
+
+
+@app.get("/api/swiss/version/{version_name}/run-artifacts")
+def swiss_run_artifacts(version_name: str):
+    """Return parsed per-epoch metrics + list of available image artifacts
+    for one trained version. UI uses this to render Chart.js plots and a
+    gallery of static PNGs (confusion matrix, PR curves, sample images)."""
+    run_dir = SWISS_RUNS_DIR / version_name
+    if not run_dir.is_dir():
+        return {"available": False, "run_dir": str(run_dir)}
+
+    # ---- Parse results.csv ----
+    epochs: list[dict] = []
+    csv_path = run_dir / "results.csv"
+    if csv_path.is_file():
+        try:
+            import csv as _csv
+            with csv_path.open(encoding="utf-8") as fh:
+                reader = _csv.DictReader(fh)
+                for row in reader:
+                    norm = {k.strip(): v for k, v in row.items()}
+                    # Coerce numeric fields
+                    out = {}
+                    for k, v in norm.items():
+                        try:
+                            out[k] = float(v) if v not in ("", None) else None
+                        except ValueError:
+                            out[k] = v
+                    epochs.append(out)
+        except Exception as e:
+            epochs = []
+
+    # ---- List image artifacts ----
+    images = []
+    for f in run_dir.iterdir():
+        if f.suffix.lower() in {".png", ".jpg", ".jpeg"}:
+            images.append({
+                "filename": f.name,
+                "size_kb": round(f.stat().st_size / 1024, 1),
+            })
+    images.sort(key=lambda x: x["filename"])
+
+    # ---- Args.yaml ----
+    args_path = run_dir / "args.yaml"
+    args_summary = None
+    if args_path.is_file():
+        try:
+            text = args_path.read_text(encoding="utf-8")
+            picks = {}
+            for line in text.splitlines():
+                if ":" not in line:
+                    continue
+                k, _, v = line.partition(":")
+                k = k.strip(); v = v.strip()
+                if k in ("model", "data", "epochs", "batch", "imgsz",
+                         "optimizer", "lr0", "lrf", "momentum", "weight_decay",
+                         "patience", "device", "amp", "single_cls"):
+                    picks[k] = v
+            args_summary = picks
+        except Exception:
+            args_summary = None
+
+    return {
+        "available": True,
+        "run_dir": str(run_dir),
+        "version_name": version_name,
+        "epochs": epochs,
+        "images": images,
+        "args": args_summary,
+    }
+
+
+@app.get("/api/swiss/version/{version_name}/run-artifact")
+def swiss_run_artifact(version_name: str, filename: str):
+    """Serve a single artifact image for the run."""
+    run_dir = SWISS_RUNS_DIR / version_name
+    if not run_dir.is_dir():
+        raise HTTPException(404, f"run dir not found: {run_dir}")
+    # Prevent path traversal
+    safe = Path(filename).name
+    p = run_dir / safe
+    if not p.is_file():
+        raise HTTPException(404, f"file not found: {safe}")
+    return FileResponse(p)
+
+
+# ----------------------------------------------------------------------------
+# Dataset insights — class imbalance, image sizes, corrupt + duplicate detection
+# ----------------------------------------------------------------------------
+
+@app.get("/api/swiss/dataset/insights")
+def swiss_dataset_insights():
+    """Audit the managed dataset for issues + distribution stats. Pure data
+    inspection — no model needed. Used by the Data sub-tab to show health."""
+    droot = swiss_core.dataset_root(ROOT)
+    classes = swiss_core.load_classes(ROOT)
+    class_lookup = {c.id: c.en for c in classes}
+
+    out = {
+        "ok": True,
+        "image_size_buckets": {"<480p": 0, "480-720p": 0, "720-1080p": 0,
+                                "1080-2160p": 0, ">=2160p": 0},
+        "format_counts": {},
+        "corrupt": [],
+        "label_issues": [],
+        "per_class": {c.id: {"n": 0, "name": c.en, "de": c.de,
+                              "color": c.color}
+                       for c in classes},
+        "total_images": 0,
+        "total_labels": 0,
+    }
+
+    for split in ("train", "val"):
+        img_dir = droot / "images" / split
+        lbl_dir = droot / "labels" / split
+        if not img_dir.is_dir():
+            continue
+        for img in img_dir.iterdir():
+            if img.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+                continue
+            out["total_images"] += 1
+            ext = img.suffix.lower()
+            out["format_counts"][ext] = out["format_counts"].get(ext, 0) + 1
+            try:
+                im = cv2.imread(str(img))
+                if im is None:
+                    out["corrupt"].append({"path": str(img), "split": split,
+                                            "reason": "cv2.imread None"})
+                    continue
+                h, w = im.shape[:2]
+                m = max(h, w)
+                if m < 480: out["image_size_buckets"]["<480p"] += 1
+                elif m < 720: out["image_size_buckets"]["480-720p"] += 1
+                elif m < 1080: out["image_size_buckets"]["720-1080p"] += 1
+                elif m < 2160: out["image_size_buckets"]["1080-2160p"] += 1
+                else: out["image_size_buckets"][">=2160p"] += 1
+            except Exception as e:
+                out["corrupt"].append({"path": str(img), "split": split,
+                                        "reason": f"{type(e).__name__}: {e}"})
+                continue
+
+            # Validate matching label
+            lbl = lbl_dir / (img.stem + ".txt")
+            if not lbl.is_file():
+                continue
+            out["total_labels"] += 1
+            try:
+                for i, line in enumerate(lbl.read_text(encoding="utf-8").splitlines()):
+                    bits = line.strip().split()
+                    if not bits:
+                        continue
+                    if len(bits) < 5:
+                        out["label_issues"].append({
+                            "path": str(lbl), "line": i + 1,
+                            "reason": "fewer than 5 fields"})
+                        continue
+                    try:
+                        cid = int(bits[0])
+                        cx, cy, bw, bh = (float(x) for x in bits[1:5])
+                    except ValueError:
+                        out["label_issues"].append({
+                            "path": str(lbl), "line": i + 1,
+                            "reason": "non-numeric value"})
+                        continue
+                    if cid not in class_lookup:
+                        out["label_issues"].append({
+                            "path": str(lbl), "line": i + 1,
+                            "reason": f"unknown class id {cid}"})
+                        continue
+                    if any(v < 0 or v > 1 for v in (cx, cy, bw, bh)):
+                        out["label_issues"].append({
+                            "path": str(lbl), "line": i + 1,
+                            "reason": "coords out of [0,1]"})
+                        continue
+                    out["per_class"][cid]["n"] += 1
+            except Exception as e:
+                out["label_issues"].append({
+                    "path": str(lbl), "line": 0,
+                    "reason": f"{type(e).__name__}: {e}"})
+
+    # Cap returned issue lists at 50 each so the response stays small
+    out["corrupt"] = out["corrupt"][:50]
+    out["label_issues"] = out["label_issues"][:50]
+    return out
 
 
 if __name__ == "__main__":

@@ -4216,3 +4216,403 @@ async function swissBenchmark(versionName) {
 if ($('btn-cv-frames-go')) $('btn-cv-frames-go').addEventListener('click', cvExtractFrames);
 if ($('btn-cv-auto-go'))   $('btn-cv-auto-go').addEventListener('click', cvAutoAnnotate);
 if ($('btn-cv-eval-go'))   $('btn-cv-eval-go').addEventListener('click', cvEvaluateRun);
+
+// =============================================================================
+// Training charts — read results.csv + render Chart.js plots
+// =============================================================================
+
+let chartsCharts = {};   // {chartId: ChartInstance}
+
+function destroyChart(id) {
+  if (chartsCharts[id]) {
+    chartsCharts[id].destroy();
+    delete chartsCharts[id];
+  }
+}
+
+function chartTextColor() {
+  return getComputedStyle(document.documentElement).getPropertyValue('--color-text-muted').trim() || '#888';
+}
+function chartGridColor() {
+  return getComputedStyle(document.documentElement).getPropertyValue('--color-border').trim() || '#ccc';
+}
+
+function commonChartOptions() {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { labels: { color: chartTextColor(), boxWidth: 12, font: { size: 11 } } },
+      tooltip: { mode: 'index', intersect: false },
+    },
+    scales: {
+      x: { ticks: { color: chartTextColor(), maxRotation: 0 }, grid: { color: chartGridColor() } },
+      y: { ticks: { color: chartTextColor() }, grid: { color: chartGridColor() } },
+    },
+  };
+}
+
+const CHART_PALETTE = [
+  '#E5213C', '#1E88E5', '#43A047', '#FBC02D', '#7B1FA2',
+  '#00897B', '#F57C00', '#5D4037', '#455A64', '#D81B60',
+];
+
+async function loadChartsForVersion(versionName) {
+  if (!versionName) return;
+  const r = await fetch(`/api/swiss/version/${encodeURIComponent(versionName)}/run-artifacts`);
+  if (!r.ok) {
+    setChartsEmpty(`HTTP ${r.status}`);
+    return;
+  }
+  const d = await r.json();
+  if (!d.available) {
+    setChartsEmpty(`No training run found at <code>${escapeHtml(d.run_dir || '?')}</code>. Train a new version, or run "Import from F:\\" in the Data tab to populate the bundled v2's run.`);
+    return;
+  }
+
+  // Args summary
+  if ($('charts-args')) {
+    const a = d.args || {};
+    const bits = [];
+    if (a.epochs) bits.push(`<strong>${a.epochs}</strong> epochs`);
+    if (a.batch) bits.push(`batch <strong>${a.batch}</strong>`);
+    if (a.imgsz) bits.push(`imgsz <strong>${a.imgsz}</strong>`);
+    if (a.optimizer) bits.push(`optimizer <strong>${escapeHtml(a.optimizer)}</strong>`);
+    if (a.lr0) bits.push(`lr0 <strong>${a.lr0}</strong>`);
+    $('charts-args').innerHTML = bits.length
+      ? `Trained with: ${bits.join(' · ')}`
+      : '<em>No args.yaml in this run.</em>';
+  }
+
+  renderTrainingCharts(d.epochs || []);
+  renderArtifactGallery(versionName, d.images || []);
+}
+
+function setChartsEmpty(msg) {
+  ['chart-train-losses', 'chart-val-losses', 'chart-val-metrics', 'chart-lr'].forEach(destroyChart);
+  if ($('charts-args')) $('charts-args').innerHTML = msg;
+  if ($('charts-image-gallery'))
+    $('charts-image-gallery').innerHTML = `<p class="muted small" style="padding:14px">${msg}</p>`;
+}
+
+function pickFirstNonEmptyKey(epochs, candidates) {
+  for (const k of candidates) {
+    for (const e of epochs) {
+      if (e[k] != null) return k;
+    }
+  }
+  return null;
+}
+
+function renderTrainingCharts(epochs) {
+  if (!epochs.length) return;
+  const x = epochs.map(e => e.epoch ?? '');
+
+  // Loss column names vary slightly between Ultralytics versions — try several
+  const tBox = pickFirstNonEmptyKey(epochs, ['train/box_loss', '         train/box_loss']);
+  const tCls = pickFirstNonEmptyKey(epochs, ['train/cls_loss']);
+  const tDfl = pickFirstNonEmptyKey(epochs, ['train/dfl_loss']);
+  const vBox = pickFirstNonEmptyKey(epochs, ['val/box_loss']);
+  const vCls = pickFirstNonEmptyKey(epochs, ['val/cls_loss']);
+  const vDfl = pickFirstNonEmptyKey(epochs, ['val/dfl_loss']);
+  const map50 = pickFirstNonEmptyKey(epochs, ['metrics/mAP50(B)', 'metrics/mAP_0.5']);
+  const map = pickFirstNonEmptyKey(epochs, ['metrics/mAP50-95(B)', 'metrics/mAP_0.5:0.95']);
+  const prec = pickFirstNonEmptyKey(epochs, ['metrics/precision(B)', 'metrics/precision']);
+  const rec = pickFirstNonEmptyKey(epochs, ['metrics/recall(B)', 'metrics/recall']);
+  const lr0 = pickFirstNonEmptyKey(epochs, ['lr/pg0']);
+
+  const series = (key, label, color) => key ? ({
+    label, borderColor: color, backgroundColor: color + '22',
+    data: epochs.map(e => e[key]),
+    borderWidth: 2, pointRadius: 0, tension: 0.25,
+  }) : null;
+
+  destroyChart('chart-train-losses');
+  destroyChart('chart-val-losses');
+  destroyChart('chart-val-metrics');
+  destroyChart('chart-lr');
+
+  const trainSets = [
+    series(tBox, 'box loss', '#E5213C'),
+    series(tCls, 'cls loss', '#1E88E5'),
+    series(tDfl, 'dfl loss', '#43A047'),
+  ].filter(Boolean);
+  if (trainSets.length) {
+    chartsCharts['chart-train-losses'] = new Chart($('chart-train-losses'), {
+      type: 'line', data: { labels: x, datasets: trainSets }, options: commonChartOptions(),
+    });
+  }
+  const valSets = [
+    series(vBox, 'box loss', '#E5213C'),
+    series(vCls, 'cls loss', '#1E88E5'),
+    series(vDfl, 'dfl loss', '#43A047'),
+  ].filter(Boolean);
+  if (valSets.length) {
+    chartsCharts['chart-val-losses'] = new Chart($('chart-val-losses'), {
+      type: 'line', data: { labels: x, datasets: valSets }, options: commonChartOptions(),
+    });
+  }
+  const metricSets = [
+    series(map50, 'mAP@50', '#E5213C'),
+    series(map, 'mAP@50-95', '#1E88E5'),
+    series(prec, 'precision', '#43A047'),
+    series(rec, 'recall', '#FBC02D'),
+  ].filter(Boolean);
+  if (metricSets.length) {
+    chartsCharts['chart-val-metrics'] = new Chart($('chart-val-metrics'), {
+      type: 'line', data: { labels: x, datasets: metricSets }, options: commonChartOptions(),
+    });
+  }
+  if (lr0) {
+    chartsCharts['chart-lr'] = new Chart($('chart-lr'), {
+      type: 'line',
+      data: { labels: x, datasets: [series(lr0, 'lr/pg0', '#7B1FA2')] },
+      options: commonChartOptions(),
+    });
+  }
+}
+
+function renderArtifactGallery(versionName, images) {
+  const wrap = $('charts-image-gallery');
+  if (!wrap) return;
+  if (!images.length) {
+    wrap.innerHTML = '<p class="muted small" style="padding:14px">No PNG/JPG artifacts found in this run.</p>';
+    return;
+  }
+  // Sort: confusion matrices first, then PR/F1/labels, then samples
+  const order = ['confusion', 'pr_curve', 'BoxPR', 'BoxP', 'BoxR', 'F1', 'labels', 'results', 'train', 'val'];
+  images.sort((a, b) => {
+    const aw = order.findIndex(t => a.filename.toLowerCase().includes(t.toLowerCase()));
+    const bw = order.findIndex(t => b.filename.toLowerCase().includes(t.toLowerCase()));
+    return (aw === -1 ? 99 : aw) - (bw === -1 ? 99 : bw);
+  });
+  wrap.innerHTML = images.map(img => `
+    <a class="charts-image-tile" href="/api/swiss/version/${encodeURIComponent(versionName)}/run-artifact?filename=${encodeURIComponent(img.filename)}" target="_blank">
+      <img src="/api/swiss/version/${encodeURIComponent(versionName)}/run-artifact?filename=${encodeURIComponent(img.filename)}" loading="lazy" alt="${escapeHtml(img.filename)}" />
+      <div class="charts-image-caption">${escapeHtml(img.filename)} <span class="muted small">${img.size_kb} KB</span></div>
+    </a>`).join('');
+}
+
+if ($('charts-version-pick')) {
+  $('charts-version-pick').addEventListener('change', () => {
+    loadChartsForVersion($('charts-version-pick').value);
+  });
+}
+
+// Populate version dropdown(s) when Swiss state loads
+function populateChartsDropdowns() {
+  if (!swissState) return;
+  const versions = swissState.versions || [];
+  const opts = versions.map(v =>
+    `<option value="${escapeHtml(v.name)}" ${v.is_active ? 'selected' : ''}>${escapeHtml(v.name)} ${v.is_active ? '(active)' : ''}</option>`
+  ).join('');
+  for (const id of ['charts-version-pick', 'compare-version-a', 'compare-version-b']) {
+    if ($(id)) {
+      const cur = $(id).value;
+      $(id).innerHTML = opts;
+      if (cur) $(id).value = cur;
+    }
+  }
+  // Default Compare A=oldest, B=newest
+  if ($('compare-version-a') && $('compare-version-b') && versions.length >= 2) {
+    if (!$('compare-version-a').value || $('compare-version-a').value === $('compare-version-b').value) {
+      $('compare-version-a').value = versions[0].name;
+      $('compare-version-b').value = versions[versions.length - 1].name;
+    }
+  }
+}
+
+// =============================================================================
+// Compare two versions
+// =============================================================================
+
+async function loadCompareCharts() {
+  const a = $('compare-version-a').value;
+  const b = $('compare-version-b').value;
+  if (!a || !b) return;
+  $('compare-summary').textContent = `Loading…`;
+  let dataA = null, dataB = null;
+  try {
+    [dataA, dataB] = await Promise.all([
+      fetch(`/api/swiss/version/${encodeURIComponent(a)}/run-artifacts`).then(r => r.json()),
+      fetch(`/api/swiss/version/${encodeURIComponent(b)}/run-artifacts`).then(r => r.json()),
+    ]);
+  } catch (e) {
+    $('compare-summary').textContent = 'Failed to load: ' + e.message;
+    return;
+  }
+
+  ['chart-compare-map50', 'chart-compare-pr', 'chart-compare-boxloss'].forEach(destroyChart);
+
+  const series = (epochs, key, label, color, dash=false) => {
+    if (!epochs || !epochs.length) return null;
+    const k = pickFirstNonEmptyKey(epochs, [key, key.replace('(B)', '')]);
+    if (!k) return null;
+    return {
+      label, borderColor: color, backgroundColor: color + '22',
+      data: epochs.map(e => e[k]),
+      borderWidth: 2, pointRadius: 0, tension: 0.25,
+      borderDash: dash ? [4, 3] : undefined,
+    };
+  };
+
+  // mAP@50 chart
+  const map50A = series(dataA.epochs, 'metrics/mAP50(B)', `${a} mAP@50`, '#1E88E5');
+  const map50B = series(dataB.epochs, 'metrics/mAP50(B)', `${b} mAP@50`, '#E5213C');
+  const mapSets = [map50A, map50B].filter(Boolean);
+  if (mapSets.length && $('chart-compare-map50')) {
+    chartsCharts['chart-compare-map50'] = new Chart($('chart-compare-map50'), {
+      type: 'line',
+      data: { labels: (dataA.epochs || []).map(e => e.epoch), datasets: mapSets },
+      options: commonChartOptions(),
+    });
+  }
+
+  // P/R chart
+  const sets = [
+    series(dataA.epochs, 'metrics/precision(B)', `${a} P`, '#1E88E5'),
+    series(dataA.epochs, 'metrics/recall(B)', `${a} R`, '#1E88E5', true),
+    series(dataB.epochs, 'metrics/precision(B)', `${b} P`, '#E5213C'),
+    series(dataB.epochs, 'metrics/recall(B)', `${b} R`, '#E5213C', true),
+  ].filter(Boolean);
+  if (sets.length && $('chart-compare-pr')) {
+    chartsCharts['chart-compare-pr'] = new Chart($('chart-compare-pr'), {
+      type: 'line',
+      data: { labels: (dataA.epochs || []).map(e => e.epoch), datasets: sets },
+      options: commonChartOptions(),
+    });
+  }
+
+  // Box loss chart
+  const lossA = series(dataA.epochs, 'train/box_loss', `${a}`, '#1E88E5');
+  const lossB = series(dataB.epochs, 'train/box_loss', `${b}`, '#E5213C');
+  const lossSets = [lossA, lossB].filter(Boolean);
+  if (lossSets.length && $('chart-compare-boxloss')) {
+    chartsCharts['chart-compare-boxloss'] = new Chart($('chart-compare-boxloss'), {
+      type: 'line',
+      data: { labels: (dataA.epochs || []).map(e => e.epoch), datasets: lossSets },
+      options: commonChartOptions(),
+    });
+  }
+
+  // Final-epoch summary
+  function finalMetrics(epochs) {
+    if (!epochs || !epochs.length) return null;
+    const last = epochs[epochs.length - 1];
+    const map50 = pickFirstNonEmptyKey(epochs, ['metrics/mAP50(B)']);
+    const map = pickFirstNonEmptyKey(epochs, ['metrics/mAP50-95(B)']);
+    const p = pickFirstNonEmptyKey(epochs, ['metrics/precision(B)']);
+    const r = pickFirstNonEmptyKey(epochs, ['metrics/recall(B)']);
+    return {
+      map50: map50 ? last[map50] : null,
+      map: map ? last[map] : null,
+      precision: p ? last[p] : null,
+      recall: r ? last[r] : null,
+      epochs: last.epoch,
+    };
+  }
+  const fa = finalMetrics(dataA.epochs);
+  const fb = finalMetrics(dataB.epochs);
+  if (fa && fb) {
+    const dmap = ((fb.map50 || 0) - (fa.map50 || 0)) * 100;
+    const arrow = dmap > 0 ? '🟢' : dmap < 0 ? '🔴' : '⚪';
+    $('compare-summary').innerHTML =
+      `<strong>${escapeHtml(a)}</strong> mAP@50 ${(fa.map50 * 100).toFixed(1)}%, P ${(fa.precision * 100).toFixed(1)}%, R ${(fa.recall * 100).toFixed(1)}% (${fa.epochs} epochs)<br>` +
+      `<strong>${escapeHtml(b)}</strong> mAP@50 ${(fb.map50 * 100).toFixed(1)}%, P ${(fb.precision * 100).toFixed(1)}%, R ${(fb.recall * 100).toFixed(1)}% (${fb.epochs} epochs)<br>` +
+      `${arrow} Δ mAP@50 = <strong>${dmap > 0 ? '+' : ''}${dmap.toFixed(2)}pp</strong> ${dmap > 0 ? '(B beats A)' : dmap < 0 ? '(A beats B)' : '(tied)'}`;
+  } else {
+    $('compare-summary').innerHTML =
+      `<em>One or both versions has no <code>results.csv</code>. Train a new version locally to populate it.</em>`;
+  }
+}
+
+if ($('compare-version-a')) $('compare-version-a').addEventListener('change', loadCompareCharts);
+if ($('compare-version-b')) $('compare-version-b').addEventListener('change', loadCompareCharts);
+
+// =============================================================================
+// Dataset insights
+// =============================================================================
+
+async function loadDatasetInsights() {
+  $('dataset-insights').innerHTML = '<p class="muted small" style="padding:14px">Auditing… (reads every image, can take a minute on large datasets)</p>';
+  try {
+    const r = await fetch('/api/swiss/dataset/insights');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    renderDatasetInsights(d);
+  } catch (e) {
+    $('dataset-insights').innerHTML = `<p class="muted small" style="padding:14px;color:#dc2626">Audit failed: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderDatasetInsights(d) {
+  const fmt = Object.entries(d.format_counts || {}).map(([k, v]) =>
+    `<span class="chip">${escapeHtml(k)} ${v.toLocaleString()}</span>`).join(' ');
+  const sizeRows = Object.entries(d.image_size_buckets || {}).map(([k, v]) =>
+    `<tr><td>${escapeHtml(k)}</td><td class="num">${v.toLocaleString()}</td></tr>`).join('');
+  const perClass = Object.values(d.per_class || {}).filter(c => c.n > 0)
+    .sort((a, b) => b.n - a.n);
+  const max = Math.max(1, ...perClass.map(c => c.n));
+  const perClassRows = perClass.map(c => `
+    <div class="swiss-bar-row">
+      <div class="swiss-bar-label">
+        <span class="swiss-bar-swatch" style="background:${c.color}"></span>
+        <span>${escapeHtml(c.name)}</span>
+        <span class="muted small">${escapeHtml(c.de)}</span>
+      </div>
+      <div class="swiss-bar-track">
+        <div class="swiss-bar-fill" style="width:${(c.n / max * 100).toFixed(1)}%;background:${c.color}"></div>
+      </div>
+      <div class="swiss-bar-num">${c.n.toLocaleString()}</div>
+    </div>`).join('');
+  const corrupt = (d.corrupt || []).slice(0, 8).map(c =>
+    `<li><code>${escapeHtml(c.path)}</code> <span class="muted small">${escapeHtml(c.reason)}</span></li>`).join('');
+  const labelIssues = (d.label_issues || []).slice(0, 8).map(l =>
+    `<li><code>${escapeHtml(l.path)}</code>:${l.line} — <span class="muted small">${escapeHtml(l.reason)}</span></li>`).join('');
+
+  $('dataset-insights').innerHTML = `
+    <div class="insights-grid">
+      <div class="insights-card">
+        <h4>📐 Image size distribution</h4>
+        <table class="cv-eval-table"><tbody>${sizeRows}</tbody></table>
+      </div>
+      <div class="insights-card">
+        <h4>🖼️ Format mix</h4>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">${fmt || '<span class="muted small">no images</span>'}</div>
+        <p class="muted small" style="margin-top:8px">${d.total_images.toLocaleString()} images · ${d.total_labels.toLocaleString()} label files</p>
+      </div>
+      <div class="insights-card ${d.corrupt && d.corrupt.length ? 'insights-warn' : ''}">
+        <h4>⚠️ Corrupt images (${(d.corrupt || []).length})</h4>
+        <ul class="insights-list">${corrupt || '<li class="muted small">none ✓</li>'}</ul>
+      </div>
+      <div class="insights-card ${d.label_issues && d.label_issues.length ? 'insights-warn' : ''}">
+        <h4>⚠️ Label issues (${(d.label_issues || []).length})</h4>
+        <ul class="insights-list">${labelIssues || '<li class="muted small">none ✓</li>'}</ul>
+      </div>
+    </div>
+    <h4 style="margin-top:18px">📊 Class balance</h4>
+    <p class="muted small" style="margin:0 0 8px">Per-class label counts in train+val. Big imbalance is bad — model learns the dominant class and ignores the rest.</p>
+    <div class="swiss-data-bars">${perClassRows || '<p class="muted small">No labels yet.</p>'}</div>
+  `;
+}
+
+if ($('btn-dataset-insights')) {
+  $('btn-dataset-insights').addEventListener('click', loadDatasetInsights);
+}
+
+// Wire sub-tab change to populate Charts dropdown lazily + auto-load on switch
+document.addEventListener('click', e => {
+  const t = e.target.closest('.swiss-subtab');
+  if (!t) return;
+  if (t.dataset.stab === 'charts') {
+    populateChartsDropdowns();
+    if ($('charts-version-pick') && $('charts-version-pick').value) {
+      loadChartsForVersion($('charts-version-pick').value);
+    }
+  }
+  if (t.dataset.stab === 'compare') {
+    populateChartsDropdowns();
+    setTimeout(loadCompareCharts, 100);
+  }
+});

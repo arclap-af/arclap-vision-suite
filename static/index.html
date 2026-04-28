@@ -1413,7 +1413,9 @@
     <button class="swiss-subtab" data-stab="classes">📋 Classes</button>
     <button class="swiss-subtab" data-stab="data">📦 Data</button>
     <button class="swiss-subtab" data-stab="train">🧠 Train</button>
+    <button class="swiss-subtab" data-stab="charts">📈 Charts</button>
     <button class="swiss-subtab" data-stab="evaluate">🧪 Evaluate</button>
+    <button class="swiss-subtab" data-stab="compare">⚖️ Compare</button>
     <button class="swiss-subtab" data-stab="deploy">🚀 Deploy</button>
     <button class="swiss-subtab" data-stab="activity">🕒 Activity</button>
   </nav>
@@ -1557,6 +1559,50 @@
     </div>
   </section>
 
+  <!-- ===== Charts sub-tab — training engineering charts ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="charts">
+    <div class="card-header">
+      <h3>📈 Training charts &amp; engineering metrics</h3>
+      <p>Per-epoch loss curves, validation mAP, learning-rate schedule, plus the static images Ultralytics writes (confusion matrix, PR curves, sample predictions, label distribution). Pick any version to inspect its training run.</p>
+    </div>
+    <label class="text-row" style="max-width:420px">
+      <span>Version</span>
+      <select id="charts-version-pick"></select>
+      <span class="muted small">Bundled v2 needs <em>Import from F:\\</em> first to populate its artifacts.</span>
+    </label>
+    <div id="charts-args" class="charts-args muted small"></div>
+
+    <div class="charts-grid">
+      <div class="chart-card wide">
+        <h4>Training losses per epoch</h4>
+        <canvas id="chart-train-losses"></canvas>
+      </div>
+      <div class="chart-card wide">
+        <h4>Validation losses per epoch</h4>
+        <canvas id="chart-val-losses"></canvas>
+      </div>
+      <div class="chart-card wide">
+        <h4>Validation metrics — mAP@50, mAP@50-95, Precision, Recall</h4>
+        <canvas id="chart-val-metrics"></canvas>
+      </div>
+      <div class="chart-card">
+        <h4>Learning rate schedule</h4>
+        <canvas id="chart-lr"></canvas>
+      </div>
+    </div>
+
+    <h3 style="margin-top:18px">Engineering plots from training run</h3>
+    <p class="muted small" style="margin:0 0 8px">Static images Ultralytics writes during training. Click to enlarge.</p>
+    <div id="charts-image-gallery" class="charts-image-gallery">
+      <p class="muted small" style="padding:14px">Pick a version above to load its images.</p>
+    </div>
+
+    <h3 style="margin-top:18px">Dataset insights</h3>
+    <p class="muted small" style="margin:0 0 8px">One-pass audit of <code>_datasets/swiss_construction/</code>: image-size distribution, format mix, corrupt files, label issues, class imbalance.</p>
+    <button class="btn btn-secondary btn-small" id="btn-dataset-insights">🔬 Run dataset audit</button>
+    <div id="dataset-insights" class="dataset-insights"></div>
+  </section>
+
   <!-- ===== Evaluate sub-tab ===== -->
   <section class="card swiss-stab-pane hidden" data-stab-pane="evaluate">
     <div class="card-header">
@@ -1586,6 +1632,40 @@
       <span class="muted small" id="cv-eval-status"></span>
     </div>
     <div id="cv-eval-report" class="cv-eval-report hidden"></div>
+  </section>
+
+  <!-- ===== Compare sub-tab — two versions side-by-side ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="compare">
+    <div class="card-header">
+      <h3>⚖️ Compare two versions</h3>
+      <p>Pick two trained versions and see their training curves overlaid + final-epoch metrics side-by-side. Useful for "did v3 actually beat v2?".</p>
+    </div>
+    <div class="compare-pickers">
+      <label class="text-row">
+        <span>Version A (baseline)</span>
+        <select id="compare-version-a"></select>
+      </label>
+      <span class="compare-vs">vs</span>
+      <label class="text-row">
+        <span>Version B (challenger)</span>
+        <select id="compare-version-b"></select>
+      </label>
+    </div>
+    <div id="compare-summary" class="compare-summary muted small">Pick two versions to compare.</div>
+    <div class="charts-grid">
+      <div class="chart-card wide">
+        <h4>mAP@50 over training (overlaid)</h4>
+        <canvas id="chart-compare-map50"></canvas>
+      </div>
+      <div class="chart-card wide">
+        <h4>Validation precision / recall</h4>
+        <canvas id="chart-compare-pr"></canvas>
+      </div>
+      <div class="chart-card wide">
+        <h4>Training box-loss</h4>
+        <canvas id="chart-compare-boxloss"></canvas>
+      </div>
+    </div>
   </section>
 
   <!-- ===== Deploy sub-tab ===== -->
@@ -1876,6 +1956,6 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-29-b-swiss-redesign"></script>
+<script src="/static/app.js?v=2026-04-29-c-engineering-charts"></script>
 </body>
 </html>
