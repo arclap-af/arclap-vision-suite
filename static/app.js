@@ -466,6 +466,7 @@ function showPage(name) {
   if (name === 'live') { /* nothing to fetch up-front */ }
   if (name === 'train') { /* nothing to fetch up-front */ }
   if (name === 'filter') { refreshFilterScans(); populateFilterModelPicker(); }
+  if (name === 'swiss') loadSwissState();
 }
 
 document.querySelectorAll('.topnav-btn').forEach(b => {
@@ -3244,3 +3245,599 @@ if ($('btn-rtsp-start')) {
   $('btn-rtsp-start').addEventListener('click', rtspStart);
   $('btn-rtsp-stop').addEventListener('click', rtspStop);
 }
+
+// =============================================================================
+// Swiss Detector tab — full lifecycle of the multi-class construction model
+// =============================================================================
+
+let swissState = null;            // last full /api/swiss/state response
+let swissEditingClassId = null;   // null = "add", number = "edit"
+let swissWebJob = null;           // {id, classId, status...}
+let swissWebTicked = new Set();   // filenames currently ticked in modal
+let swissWebPollHandle = null;
+
+async function loadSwissState() {
+  try {
+    const r = await fetch('/api/swiss/state');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    swissState = await r.json();
+    renderSwissHero();
+    renderSwissClassGrid();
+    renderSwissDataBars();
+    renderSwissVersions();
+    renderSwissActivity();
+  } catch (e) {
+    $('swiss-hero').innerHTML =
+      `<div class="swiss-hero-loading" style="color:var(--color-error,#e53935)">Couldn't load Swiss state: ${escapeHtml(e.message)}</div>`;
+    toast('Swiss state failed to load: ' + e.message, 'error');
+  }
+}
+
+function renderSwissHero() {
+  const s = swissState;
+  if (!s) return;
+  const a = s.active;
+  const stats = s.stats || {};
+  const classCount = (s.classes || []).filter(c => c.active).length;
+  const trainCount = stats.train_images || 0;
+  const valCount = stats.val_images || 0;
+  if (!a) {
+    $('swiss-hero').innerHTML = `
+      <div class="swiss-hero-card">
+        <div class="swiss-hero-headline">No active model yet</div>
+        <p class="muted small">No <code>swiss_detector_v*.pt</code> in <code>_models/</code>. Bundled v2 should auto-pin on first boot. If you cloned a fresh repo, double-check the file is there.</p>
+      </div>`;
+    return;
+  }
+  $('swiss-hero').innerHTML = `
+    <div class="swiss-hero-card">
+      <div class="swiss-hero-row">
+        <div>
+          <div class="swiss-hero-eyebrow">ACTIVE VERSION</div>
+          <div class="swiss-hero-name">${escapeHtml(a.name)}</div>
+          <div class="swiss-hero-meta">
+            ${classCount} classes in registry · ${trainCount.toLocaleString()} train + ${valCount.toLocaleString()} val frames
+          </div>
+        </div>
+        <div class="swiss-hero-actions">
+          <a class="btn btn-secondary btn-small" href="javascript:void(0)" id="btn-swiss-go-filter">▶ Use in Filter</a>
+        </div>
+      </div>
+    </div>`;
+  if ($('btn-swiss-go-filter')) {
+    $('btn-swiss-go-filter').addEventListener('click', () => showPage('filter'));
+  }
+}
+
+const SWISS_CATEGORY_ICONS = {
+  Crane: '🏗️', Machine: '🚜', Vehicle: '🚛', Person: '👷',
+  Structure: '🏚️', Object: '🔗', Material: '📦', PPE: '🦺',
+  'Site state': '🌍', Other: '🔹',
+};
+
+function renderSwissClassGrid() {
+  const s = swissState;
+  if (!s) return;
+  const classes = s.classes || [];
+  const counts = (s.stats && s.stats.per_class_counts) || {};
+  const staging = (s.stats && s.stats.staging) || {};
+  $('swiss-class-summary').textContent =
+    `${classes.filter(c => c.active).length} active · ${classes.length} total`;
+  if (!classes.length) {
+    $('swiss-class-grid').innerHTML =
+      '<p class="muted small" style="padding:14px">No classes yet. Click + Add new class.</p>';
+    return;
+  }
+  $('swiss-class-grid').innerHTML = classes.map(c => {
+    const lblCount = counts[c.id] || 0;
+    const stageCount = staging[c.de] || 0;
+    const dimmed = c.active ? '' : 'dimmed';
+    const icon = SWISS_CATEGORY_ICONS[c.category] || '🔹';
+    return `
+      <div class="swiss-class-card ${dimmed}" data-class-id="${c.id}" style="border-left-color:${c.color}">
+        <div class="swiss-class-head">
+          <span class="swiss-class-id">#${c.id}</span>
+          <span class="swiss-class-cat">${icon} ${escapeHtml(c.category || 'Other')}</span>
+        </div>
+        <div class="swiss-class-name">
+          <strong>${escapeHtml(c.en)}</strong>
+          <span class="muted small">${escapeHtml(c.de || '')}</span>
+        </div>
+        <div class="swiss-class-stats">
+          <span class="chip">📦 ${lblCount.toLocaleString()} labels</span>
+          ${stageCount ? `<span class="chip chip-warn">📥 ${stageCount} staged</span>` : ''}
+        </div>
+        <div class="swiss-class-actions">
+          <button class="btn btn-ghost btn-small" data-act="web" data-id="${c.id}" title="Find images on the web">🔍 Web</button>
+          <button class="btn btn-ghost btn-small" data-act="edit" data-id="${c.id}" title="Edit name / colour / queries">✏️</button>
+          ${c.active
+            ? `<button class="btn btn-ghost btn-small" data-act="del" data-id="${c.id}" title="Soft-delete (id stays reserved)">🗑️</button>`
+            : `<button class="btn btn-ghost btn-small" data-act="restore" data-id="${c.id}" title="Reactivate">↺</button>`}
+        </div>
+      </div>`;
+  }).join('');
+  $('swiss-class-grid').querySelectorAll('button[data-act]').forEach(b => {
+    b.addEventListener('click', () => {
+      const id = parseInt(b.dataset.id);
+      const act = b.dataset.act;
+      if (act === 'edit') openSwissClassModal(id);
+      if (act === 'web') openSwissWebModal(id);
+      if (act === 'del') swissDeleteClass(id);
+      if (act === 'restore') swissRestoreClass(id);
+    });
+  });
+}
+
+function renderSwissDataBars() {
+  const s = swissState;
+  if (!s) return;
+  const counts = (s.stats && s.stats.per_class_counts) || {};
+  const max = Math.max(1, ...Object.values(counts));
+  const classes = s.classes || [];
+  if (!classes.length) {
+    $('swiss-data-bars').innerHTML = '<p class="muted small" style="padding:14px">No classes.</p>';
+    return;
+  }
+  $('swiss-data-bars').innerHTML = classes.map(c => {
+    const n = counts[c.id] || 0;
+    const w = (n / max * 100).toFixed(1);
+    return `
+      <div class="swiss-bar-row">
+        <div class="swiss-bar-label">
+          <span class="swiss-bar-swatch" style="background:${c.color}"></span>
+          <span>${escapeHtml(c.en)}</span>
+          <span class="muted small">${escapeHtml(c.de || '')}</span>
+        </div>
+        <div class="swiss-bar-track">
+          <div class="swiss-bar-fill" style="width:${w}%;background:${c.color}"></div>
+        </div>
+        <div class="swiss-bar-num">${n.toLocaleString()}</div>
+      </div>`;
+  }).join('');
+}
+
+function renderSwissVersions() {
+  const s = swissState;
+  if (!s) return;
+  const versions = s.versions || [];
+  if (!versions.length) {
+    $('swiss-versions').innerHTML = '<p class="muted small" style="padding:14px">No trained versions yet.</p>';
+    return;
+  }
+  $('swiss-versions').innerHTML = versions.slice().reverse().map(v => {
+    const when = v.created_at
+      ? new Date(v.created_at * 1000).toLocaleString()
+      : '—';
+    const map = (v.map50 != null) ? `mAP50 ${v.map50.toFixed(3)}` : 'mAP50 —';
+    const activeBadge = v.is_active
+      ? '<span class="chip chip-success">✓ ACTIVE</span>'
+      : `<button class="btn btn-secondary btn-small" data-act="activate" data-name="${escapeHtml(v.name)}">Set active</button>`;
+    return `
+      <div class="swiss-version-row ${v.is_active ? 'active' : ''}">
+        <div>
+          <strong>${escapeHtml(v.name)}</strong>
+          <span class="muted small">${v.n_classes} classes · ${map} · ${when}</span>
+        </div>
+        <div>${activeBadge}</div>
+      </div>`;
+  }).join('');
+  $('swiss-versions').querySelectorAll('button[data-act="activate"]').forEach(b => {
+    b.addEventListener('click', () => swissActivateVersion(b.dataset.name));
+  });
+}
+
+function renderSwissActivity() {
+  const s = swissState;
+  if (!s) return;
+  const log = (s.ingestion_log || []).slice().reverse();
+  if (!log.length) {
+    $('swiss-activity').innerHTML = '<p class="muted small" style="padding:14px">No activity yet.</p>';
+    return;
+  }
+  $('swiss-activity').innerHTML = log.map(entry => {
+    const when = entry.at ? new Date(entry.at * 1000).toLocaleString() : '—';
+    const summary = swissActivitySummary(entry);
+    return `<div class="swiss-activity-row">
+      <span class="muted small">${when}</span>
+      <span>${summary}</span>
+    </div>`;
+  }).join('');
+}
+
+function swissActivitySummary(e) {
+  switch (e.kind) {
+    case 'class_added':       return `+ Added class <strong>${escapeHtml(e.en || '')}</strong> (${escapeHtml(e.de || '')})`;
+    case 'class_edited':      return `✏️ Edited class #${e.class_id}: ${(e.fields || []).join(', ')}`;
+    case 'class_deactivated': return `🗑️ Deactivated class #${e.class_id}`;
+    case 'web_collect_accepted': return `📥 Accepted ${e.n_accepted} web images for class #${e.class_id}`;
+    case 'dataset_zip_imported': return `📦 Imported ${e.n_images} images + ${e.n_labels} labels from ${escapeHtml(e.filename || '')}`;
+    case 'f_drive_import':    return `⬇️ Imported ${e.n_images} images + ${e.n_labels} labels from F:\\`;
+    case 'auto_annotated':    return `🤖 Auto-annotated ${e.n_labels} frames using ${escapeHtml(e.model)}`;
+    case 'train_started':     return `🚀 Started training <strong>${escapeHtml(e.version_name)}</strong> (${e.epochs} epochs)`;
+    case 'version_activated': return `✓ Activated version <strong>${escapeHtml(e.version)}</strong>`;
+    default: return escapeHtml(e.kind || JSON.stringify(e));
+  }
+}
+
+// ----- Class modal (add / edit) ---------------------------------------------
+
+function openSwissClassModal(classId) {
+  swissEditingClassId = classId;
+  const modal = $('swiss-class-modal');
+  if (classId == null) {
+    $('swiss-class-modal-title').textContent = 'Add new class';
+    $('swiss-class-en').value = '';
+    $('swiss-class-de').value = '';
+    $('swiss-class-color').value = '#888888';
+    $('swiss-class-category').value = 'Machine';
+    $('swiss-class-desc').value = '';
+    $('swiss-class-queries').value = '';
+  } else {
+    const c = (swissState.classes || []).find(x => x.id === classId);
+    if (!c) return;
+    $('swiss-class-modal-title').textContent = `Edit class #${c.id} · ${c.en}`;
+    $('swiss-class-en').value = c.en || '';
+    $('swiss-class-de').value = c.de || '';
+    $('swiss-class-color').value = c.color || '#888888';
+    $('swiss-class-category').value = c.category || 'Other';
+    $('swiss-class-desc').value = c.description || '';
+    $('swiss-class-queries').value = (c.queries || []).join('\n');
+  }
+  modal.classList.remove('hidden');
+}
+
+function closeSwissClassModal() {
+  $('swiss-class-modal').classList.add('hidden');
+  swissEditingClassId = null;
+}
+
+async function saveSwissClass() {
+  const body = {
+    en: $('swiss-class-en').value.trim(),
+    de: $('swiss-class-de').value.trim(),
+    color: $('swiss-class-color').value,
+    category: $('swiss-class-category').value,
+    description: $('swiss-class-desc').value.trim(),
+    queries: $('swiss-class-queries').value.split('\n').map(s => s.trim()).filter(Boolean),
+  };
+  if (!body.en) { toast('English name is required', 'error'); return; }
+  try {
+    let r;
+    if (swissEditingClassId == null) {
+      r = await fetch('/api/swiss/classes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } else {
+      r = await fetch(`/api/swiss/classes/${swissEditingClassId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    toast(swissEditingClassId == null ? 'Class added' : 'Class updated', 'success');
+    closeSwissClassModal();
+    await loadSwissState();
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'error');
+  }
+}
+
+async function swissDeleteClass(classId) {
+  if (!confirm(`Soft-delete class #${classId}? It stays in the registry but won't appear in active lists.`)) return;
+  try {
+    const r = await fetch(`/api/swiss/classes/${classId}`, { method: 'DELETE' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    await loadSwissState();
+  } catch (e) {
+    toast('Delete failed: ' + e.message, 'error');
+  }
+}
+
+async function swissRestoreClass(classId) {
+  try {
+    const r = await fetch(`/api/swiss/classes/${classId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: true }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    await loadSwissState();
+  } catch (e) {
+    toast('Restore failed: ' + e.message, 'error');
+  }
+}
+
+// ----- Web-collect modal (DuckDuckGo image search) --------------------------
+
+function openSwissWebModal(classId) {
+  const c = (swissState.classes || []).find(x => x.id === classId);
+  if (!c) return;
+  swissWebJob = { classId };
+  swissWebTicked = new Set();
+  $('swiss-web-title').textContent = `🔍 Find web images — ${c.en} (${c.de})`;
+  $('swiss-web-queries').textContent = c.queries && c.queries.length
+    ? `Queries: ${c.queries.join(' · ')}`
+    : 'No queries set for this class. Click ✏️ to add some, then re-open.';
+  $('swiss-web-grid').innerHTML =
+    '<p class="muted small" style="padding:18px">Click <em>Start search</em> — DuckDuckGo image search runs in the background and thumbnails appear here as they download.</p>';
+  $('swiss-web-progress').textContent = '—';
+  $('swiss-web-summary').textContent = '—';
+  $('swiss-web-accept').disabled = true;
+  $('swiss-web-modal').classList.remove('hidden');
+  if (!c.queries || !c.queries.length) {
+    $('swiss-web-start').disabled = true;
+  } else {
+    $('swiss-web-start').disabled = false;
+  }
+}
+
+function closeSwissWebModal() {
+  $('swiss-web-modal').classList.add('hidden');
+  if (swissWebPollHandle) {
+    clearInterval(swissWebPollHandle);
+    swissWebPollHandle = null;
+  }
+  swissWebJob = null;
+  swissWebTicked = new Set();
+}
+
+async function startSwissWebCollect() {
+  if (!swissWebJob || swissWebJob.classId == null) return;
+  const max = parseInt($('swiss-web-count').value) || 40;
+  $('swiss-web-start').disabled = true;
+  $('swiss-web-progress').textContent = 'Starting…';
+  $('swiss-web-grid').innerHTML = '';
+  swissWebTicked = new Set();
+  try {
+    const r = await fetch('/api/swiss/web-collect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ class_id: swissWebJob.classId, max_results: max }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    swissWebJob.id = d.job_id;
+    swissWebJob.target = max;
+    swissWebPollHandle = setInterval(pollSwissWebJob, 1500);
+  } catch (e) {
+    toast('Web collect failed: ' + e.message, 'error');
+    $('swiss-web-start').disabled = false;
+    $('swiss-web-progress').textContent = '';
+  }
+}
+
+async function pollSwissWebJob() {
+  if (!swissWebJob || !swissWebJob.id) return;
+  try {
+    const r = await fetch(`/api/swiss/web-collect/${swissWebJob.id}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    $('swiss-web-progress').textContent =
+      `${d.downloaded} / ${d.target} (${d.progress}%)`;
+    renderSwissWebGrid(d);
+    if (d.status === 'done' || d.status === 'error') {
+      clearInterval(swissWebPollHandle);
+      swissWebPollHandle = null;
+      $('swiss-web-start').disabled = false;
+      if (d.status === 'error') {
+        toast('Web collect error: ' + (d.error || ''), 'error');
+      } else {
+        $('swiss-web-summary').textContent =
+          `Done — ${d.candidates.length} candidates. Tick the good ones below, then click ✓ Add ticked.`;
+      }
+    }
+  } catch {}
+}
+
+function renderSwissWebGrid(d) {
+  const grid = $('swiss-web-grid');
+  if (!d.candidates || !d.candidates.length) {
+    if (d.status === 'done') {
+      grid.innerHTML = '<p class="muted small" style="padding:18px">No images found. Try different queries on the class.</p>';
+    }
+    return;
+  }
+  // Render each candidate exactly once — preserve ticks across re-renders
+  const have = new Set([...grid.querySelectorAll('[data-fname]')].map(el => el.dataset.fname));
+  for (const c of d.candidates) {
+    if (have.has(c.filename)) continue;
+    const tile = document.createElement('div');
+    tile.className = 'swiss-web-tile';
+    tile.dataset.fname = c.filename;
+    tile.innerHTML = `
+      <img src="/api/swiss/web-collect/${swissWebJob.id}/thumb/${encodeURIComponent(c.filename)}"
+           loading="lazy" alt=""
+           onerror="this.style.background='var(--color-surface)';this.alt='(image unavailable)'" />
+      <div class="swiss-web-tick">
+        <input type="checkbox" data-fname="${escapeHtml(c.filename)}" />
+      </div>
+      <div class="swiss-web-meta" title="${escapeHtml(c.query || '')}">${escapeHtml((c.query || '').slice(0, 40))}</div>`;
+    tile.querySelector('input').addEventListener('change', e => {
+      if (e.target.checked) swissWebTicked.add(c.filename);
+      else swissWebTicked.delete(c.filename);
+      $('swiss-web-accept').disabled = swissWebTicked.size === 0;
+      $('swiss-web-summary').textContent = `${swissWebTicked.size} ticked of ${d.candidates.length}`;
+    });
+    grid.appendChild(tile);
+  }
+}
+
+async function acceptSwissWebTicked() {
+  if (!swissWebJob || !swissWebJob.id || !swissWebTicked.size) return;
+  $('swiss-web-accept').disabled = true;
+  try {
+    const r = await fetch(`/api/swiss/web-collect/${swissWebJob.id}/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accepted: [...swissWebTicked] }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    toast(`Added ${d.moved} images to staging — they'll be in the next training run.`, 'success');
+    closeSwissWebModal();
+    await loadSwissState();
+  } catch (e) {
+    toast('Accept failed: ' + e.message, 'error');
+    $('swiss-web-accept').disabled = false;
+  }
+}
+
+// ----- Dataset import + train + version activate ---------------------------
+
+async function swissImportZipFile(file) {
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  $('swiss-import-status').textContent = `Uploading ${file.name}…`;
+  try {
+    const r = await fetch('/api/swiss/dataset/import-zip', { method: 'POST', body: fd });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    $('swiss-import-status').textContent =
+      `Imported ${d.imported_images} images + ${d.imported_labels} labels.`;
+    toast('Dataset imported', 'success');
+    await loadSwissState();
+  } catch (e) {
+    $('swiss-import-status').textContent = '';
+    toast('Import failed: ' + e.message, 'error');
+  }
+}
+
+async function swissImportFromFDrive() {
+  $('swiss-import-status').textContent = 'Importing from F:\\Construction Site Intelligence…';
+  try {
+    const r = await fetch('/api/swiss/dataset/import-from-f-drive', { method: 'POST' });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    $('swiss-import-status').textContent =
+      `Imported ${d.imported_images} images + ${d.imported_labels} labels from F:\\.`;
+    toast('F:\\ dataset imported', 'success');
+    await loadSwissState();
+  } catch (e) {
+    $('swiss-import-status').textContent = '';
+    toast('F:\\ import failed: ' + e.message, 'error');
+  }
+}
+
+async function swissTrainNewVersion() {
+  const body = {
+    base: $('swiss-train-base').value,
+    epochs: parseInt($('swiss-train-epochs').value) || 50,
+    batch: parseInt($('swiss-train-batch').value) || 16,
+    imgsz: parseInt($('swiss-train-imgsz').value) || 640,
+    notes: $('swiss-train-notes').value.trim(),
+  };
+  $('btn-swiss-train').disabled = true;
+  $('swiss-train-status').textContent = 'Starting…';
+  try {
+    const r = await fetch('/api/swiss/train', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    $('swiss-train-status').innerHTML =
+      `Training <strong>${escapeHtml(d.version_name)}</strong> (PID ${d.pid}). The new .pt will appear in the Versions list when done.`;
+    toast(`Training ${d.version_name} started`, 'success');
+    await loadSwissState();
+  } catch (e) {
+    $('swiss-train-status').textContent = '';
+    toast('Train failed: ' + e.message, 'error');
+  } finally {
+    $('btn-swiss-train').disabled = false;
+  }
+}
+
+async function swissActivateVersion(name) {
+  try {
+    const r = await fetch(`/api/swiss/versions/${encodeURIComponent(name)}/activate`, { method: 'POST' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    toast(`Activated ${name}`, 'success');
+    await loadSwissState();
+  } catch (e) {
+    toast('Activate failed: ' + e.message, 'error');
+  }
+}
+
+// ----- wire button + modal listeners ---------------------------------------
+
+if ($('btn-swiss-add-class')) {
+  $('btn-swiss-add-class').addEventListener('click', () => openSwissClassModal(null));
+}
+if ($('swiss-class-modal-close')) {
+  $('swiss-class-modal-close').addEventListener('click', closeSwissClassModal);
+}
+if ($('swiss-class-cancel')) {
+  $('swiss-class-cancel').addEventListener('click', closeSwissClassModal);
+}
+if ($('swiss-class-save')) {
+  $('swiss-class-save').addEventListener('click', saveSwissClass);
+}
+if ($('swiss-web-close')) {
+  $('swiss-web-close').addEventListener('click', closeSwissWebModal);
+}
+if ($('swiss-web-start')) {
+  $('swiss-web-start').addEventListener('click', startSwissWebCollect);
+}
+if ($('swiss-web-tick-all')) {
+  $('swiss-web-tick-all').addEventListener('click', () => {
+    document.querySelectorAll('#swiss-web-grid input[type="checkbox"]').forEach(cb => {
+      cb.checked = true;
+      swissWebTicked.add(cb.dataset.fname);
+    });
+    $('swiss-web-accept').disabled = swissWebTicked.size === 0;
+    $('swiss-web-summary').textContent = `${swissWebTicked.size} ticked`;
+  });
+}
+if ($('swiss-web-untick-all')) {
+  $('swiss-web-untick-all').addEventListener('click', () => {
+    document.querySelectorAll('#swiss-web-grid input[type="checkbox"]').forEach(cb => cb.checked = false);
+    swissWebTicked = new Set();
+    $('swiss-web-accept').disabled = true;
+    $('swiss-web-summary').textContent = '0 ticked';
+  });
+}
+if ($('swiss-web-accept')) {
+  $('swiss-web-accept').addEventListener('click', acceptSwissWebTicked);
+}
+if ($('btn-swiss-import-zip')) {
+  $('btn-swiss-import-zip').addEventListener('click', () => $('swiss-import-zip-input').click());
+}
+if ($('swiss-import-zip-input')) {
+  $('swiss-import-zip-input').addEventListener('change', e => {
+    if (e.target.files.length) swissImportZipFile(e.target.files[0]);
+    e.target.value = '';
+  });
+}
+if ($('btn-swiss-import-fdrive')) {
+  $('btn-swiss-import-fdrive').addEventListener('click', swissImportFromFDrive);
+}
+if ($('btn-swiss-train')) {
+  $('btn-swiss-train').addEventListener('click', swissTrainNewVersion);
+}
+// Esc closes any swiss modal
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (!$('swiss-class-modal').classList.contains('hidden')) closeSwissClassModal();
+    if (!$('swiss-web-modal').classList.contains('hidden')) closeSwissWebModal();
+  }
+});

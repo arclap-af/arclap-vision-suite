@@ -30,6 +30,7 @@
     <button class="topnav-btn" data-page="train">Train</button>
     <button class="topnav-btn" data-page="live">Live RTSP</button>
     <button class="topnav-btn" data-page="filter">Filter</button>
+    <button class="topnav-btn" data-page="swiss">🏗️ Swiss Detector</button>
     <button class="topnav-btn" data-page="history">History</button>
     <button class="topnav-btn" data-page="projects">Projects</button>
   </nav>
@@ -1395,6 +1396,195 @@
   </section>
 </main>
 
+<!-- ============================================================
+     Swiss Detector — full lifecycle of the multi-class construction model
+     ============================================================ -->
+<main class="container hidden" id="page-swiss">
+  <section class="card">
+    <div class="card-header">
+      <h2>🏗️ Swiss Construction Detector</h2>
+      <p>One place to manage the Swiss multi-class detector — its taxonomy, training data, and trained versions. Add a new class, collect images from the web, drop a Roboflow zip, retrain, activate. No folders to navigate.</p>
+    </div>
+
+    <div id="swiss-hero" class="swiss-hero">
+      <div class="swiss-hero-loading">Loading Swiss Detector state…</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h3>📋 Class taxonomy</h3>
+      <p>Every class the model could detect. Existing IDs are immutable so old annotations never break. Add a new class, then collect training data for it (Add data → Web search / Upload).</p>
+    </div>
+    <div class="swiss-class-toolbar">
+      <button class="btn btn-primary btn-small" id="btn-swiss-add-class">+ Add new class</button>
+      <span class="muted small" id="swiss-class-summary">—</span>
+    </div>
+    <div id="swiss-class-grid" class="swiss-class-grid">
+      <p class="muted small" style="padding:14px">Loading classes…</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h3>📦 Training data</h3>
+      <p>The persistent dataset the next training run will use. Per-class counts include both train and val frames.</p>
+    </div>
+    <div class="swiss-data-controls">
+      <button class="btn btn-secondary btn-small" id="btn-swiss-import-zip">📁 Upload Roboflow / CVAT zip</button>
+      <input type="file" id="swiss-import-zip-input" accept=".zip" hidden />
+      <button class="btn btn-secondary btn-small" id="btn-swiss-import-fdrive">⬇️ Import from F:\\ Construction Site Intelligence</button>
+      <span class="muted small" id="swiss-import-status"></span>
+    </div>
+    <div id="swiss-data-bars" class="swiss-data-bars">
+      <p class="muted small" style="padding:14px">No data yet — import a dataset above.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h3>🧠 Train a new version</h3>
+      <p>Fine-tune from the active version (transfer learning) or start from a stock YOLO. Training output appears in the Versions list below; the UI lets you activate or roll back.</p>
+    </div>
+    <div class="swiss-train-grid">
+      <label class="text-row">
+        <span>Base weights</span>
+        <select id="swiss-train-base">
+          <option value="active" selected>Active version (recommended — fine-tune)</option>
+          <option value="yolov8m.pt">yolov8m.pt — generic stock</option>
+          <option value="yolov8x.pt">yolov8x.pt — bigger / slower / more accurate</option>
+          <option value="yolov8n.pt">yolov8n.pt — fastest / smallest</option>
+        </select>
+      </label>
+      <label class="text-row">
+        <span>Epochs</span>
+        <input type="number" id="swiss-train-epochs" value="50" min="1" max="500" />
+        <span class="muted small">50 is a solid default. More epochs = longer training, often diminishing returns past 100.</span>
+      </label>
+      <label class="text-row">
+        <span>Batch size</span>
+        <input type="number" id="swiss-train-batch" value="16" min="1" max="64" />
+        <span class="muted small">Lower if you hit GPU OOM. 16 fits an RTX 3090 at imgsz 640.</span>
+      </label>
+      <label class="text-row">
+        <span>Image size</span>
+        <input type="number" id="swiss-train-imgsz" value="640" min="320" max="1280" step="32" />
+      </label>
+      <label class="text-row" style="grid-column:1 / -1">
+        <span>Notes (optional)</span>
+        <input type="text" id="swiss-train-notes" placeholder="e.g. added 200 fresh excavator frames + new helmet class" />
+      </label>
+    </div>
+    <div class="actions" style="margin-top:14px">
+      <button class="btn btn-primary btn-lg" id="btn-swiss-train">🚀 Train new swiss_detector version</button>
+      <span class="muted small" id="swiss-train-status"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h3>📊 Versions</h3>
+      <p>Every trained Swiss detector that lives in <code>_models/</code>. Click <em>Activate</em> to make a version the default for the Filter and other tabs.</p>
+    </div>
+    <div id="swiss-versions" class="swiss-versions">
+      <p class="muted small" style="padding:14px">Loading versions…</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h3>🕒 Activity log</h3>
+      <p>Every change to the taxonomy, every dataset import, every training run.</p>
+    </div>
+    <div id="swiss-activity" class="swiss-activity">
+      <p class="muted small" style="padding:14px">No activity yet.</p>
+    </div>
+  </section>
+</main>
+
+<!-- Swiss: add-class modal -->
+<div class="folder-modal hidden" id="swiss-class-modal">
+  <div class="folder-modal-card" style="height:auto;max-height:90vh">
+    <header>
+      <h3 id="swiss-class-modal-title">Add new class</h3>
+      <button class="btn btn-ghost btn-small" id="swiss-class-modal-close" type="button">✕</button>
+    </header>
+    <div style="padding:18px;display:flex;flex-direction:column;gap:12px">
+      <label class="text-row">
+        <span>Name (English)</span>
+        <input type="text" id="swiss-class-en" placeholder="e.g. Skid steer loader" />
+      </label>
+      <label class="text-row">
+        <span>Name (German)</span>
+        <input type="text" id="swiss-class-de" placeholder="e.g. Kompaktlader" />
+      </label>
+      <label class="text-row">
+        <span>Color</span>
+        <input type="color" id="swiss-class-color" value="#888888" />
+      </label>
+      <label class="text-row">
+        <span>Category</span>
+        <select id="swiss-class-category">
+          <option value="Machine">Machine</option>
+          <option value="Vehicle">Vehicle</option>
+          <option value="Crane">Crane</option>
+          <option value="Person">Person</option>
+          <option value="Structure">Structure</option>
+          <option value="Object">Object</option>
+          <option value="Material">Material</option>
+          <option value="PPE">PPE</option>
+          <option value="Site state">Site state</option>
+          <option value="Other">Other</option>
+        </select>
+      </label>
+      <label class="text-row">
+        <span>Description (optional)</span>
+        <input type="text" id="swiss-class-desc" placeholder="What this class looks like / how to recognise it" />
+      </label>
+      <label class="text-row">
+        <span>Web search queries (one per line)</span>
+        <textarea id="swiss-class-queries" rows="4" style="font-family:var(--font-mono);font-size:12.5px"
+                  placeholder="e.g.&#10;Bobcat skid steer construction site&#10;Kompaktlader Baustelle&#10;skid steer loader jobsite"></textarea>
+        <span class="muted small">Used by "Find images on the web" to seed DuckDuckGo. Aim for 3-5 specific queries.</span>
+      </label>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
+        <button class="btn btn-ghost" id="swiss-class-cancel" type="button">Cancel</button>
+        <button class="btn btn-primary" id="swiss-class-save" type="button">Save class</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Swiss: web-collect modal -->
+<div class="folder-modal hidden" id="swiss-web-modal">
+  <div class="folder-modal-card" style="height:90vh">
+    <header>
+      <h3 id="swiss-web-title">Collect web images</h3>
+      <button class="btn btn-ghost btn-small" id="swiss-web-close" type="button">✕</button>
+    </header>
+    <div class="swiss-web-body">
+      <div class="swiss-web-controls">
+        <label class="text-row">
+          <span>How many images?</span>
+          <input type="number" id="swiss-web-count" value="40" min="5" max="200" />
+        </label>
+        <button class="btn btn-primary" id="swiss-web-start" type="button">🔍 Start search</button>
+        <span class="muted small" id="swiss-web-progress">—</span>
+      </div>
+      <p class="muted small" id="swiss-web-queries"></p>
+      <div class="swiss-web-grid" id="swiss-web-grid">
+        <p class="muted small" style="padding:18px">Click "Start search" — DuckDuckGo image search runs in the background and thumbnails appear here as they download.</p>
+      </div>
+    </div>
+    <footer>
+      <span class="muted small" id="swiss-web-summary">—</span>
+      <button class="btn btn-ghost btn-small" id="swiss-web-tick-all" type="button">Tick all</button>
+      <button class="btn btn-ghost btn-small" id="swiss-web-untick-all" type="button">Untick all</button>
+      <button class="btn btn-primary" id="swiss-web-accept" type="button" disabled>✓ Add ticked to dataset</button>
+    </footer>
+  </div>
+</div>
+
 <!-- ====== History Page ====== -->
 <main class="container hidden" id="page-history">
   <section class="card">
@@ -1562,6 +1752,6 @@
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-28-g-video-render"></script>
+<script src="/static/app.js?v=2026-04-28-h-swiss-tab"></script>
 </body>
 </html>

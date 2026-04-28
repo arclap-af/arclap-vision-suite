@@ -37,6 +37,7 @@ from core.playground import inspect_model, predict_on_image
 from core.presets import class_index as preset_class_index
 from core.presets import get_preset, list_presets
 from core.seed import SUGGESTED, install_suggested, seed_existing_models
+from core import swiss as swiss_core
 
 PYTHON = sys.executable
 ROOT = Path(__file__).parent.resolve()
@@ -2854,6 +2855,588 @@ def open_browser_when_ready():
             return
         except Exception:
             time.sleep(0.25)
+
+
+# ============================================================================
+# Swiss Construction Detector — full lifecycle in one tab
+# ============================================================================
+
+# Lazy-init the dataset on first import. Fast no-op if already done.
+swiss_core.ensure_initialized(ROOT)
+
+
+@app.get("/api/swiss/state")
+def swiss_state():
+    """Everything the Swiss Detector tab needs in one shot: active version,
+    classes, dataset stats, recent ingestion log, list of versions."""
+    swiss_core.ensure_initialized(ROOT)
+    classes = swiss_core.load_classes(ROOT)
+    versions = swiss_core.list_versions(ROOT)
+    active = swiss_core.active_version(ROOT)
+    stats = swiss_core.dataset_stats(ROOT)
+    log = swiss_core.read_ingestion(ROOT)
+    return {
+        "dataset_root": str(swiss_core.dataset_root(ROOT)),
+        "active": active,
+        "classes": [asdict_safe(c) for c in classes],
+        "versions": [asdict_safe(v) for v in versions],
+        "stats": stats,
+        "ingestion_log": log[-30:],  # last 30 entries
+    }
+
+
+def asdict_safe(obj):
+    """dataclasses.asdict but tolerant of non-dataclass inputs."""
+    from dataclasses import is_dataclass, asdict
+    if is_dataclass(obj):
+        return asdict(obj)
+    return obj
+
+
+class SwissAddClassRequest(BaseModel):
+    en: str
+    de: str = ""
+    color: str = "#888888"
+    category: str = "Other"
+    description: str = ""
+    queries: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/swiss/classes")
+def swiss_add_class(req: SwissAddClassRequest):
+    if not req.en.strip():
+        raise HTTPException(400, "Class name (English) cannot be empty.")
+    cls = swiss_core.add_class(
+        ROOT, en=req.en, de=req.de, color=req.color, category=req.category,
+        description=req.description, queries=req.queries,
+    )
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "class_added", "class_id": cls.id, "en": cls.en, "de": cls.de,
+    })
+    return asdict_safe(cls)
+
+
+class SwissEditClassRequest(BaseModel):
+    en: str | None = None
+    de: str | None = None
+    color: str | None = None
+    category: str | None = None
+    description: str | None = None
+    queries: list[str] | None = None
+    active: bool | None = None
+
+
+@app.put("/api/swiss/classes/{class_id}")
+def swiss_edit_class(class_id: int, req: SwissEditClassRequest):
+    fields = {k: v for k, v in req.model_dump().items() if v is not None}
+    try:
+        cls = swiss_core.update_class(ROOT, class_id, **fields)
+    except KeyError:
+        raise HTTPException(404, f"No class with id {class_id}")
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "class_edited", "class_id": class_id, "fields": list(fields),
+    })
+    return asdict_safe(cls)
+
+
+@app.delete("/api/swiss/classes/{class_id}")
+def swiss_deactivate_class(class_id: int):
+    try:
+        cls = swiss_core.deactivate_class(ROOT, class_id)
+    except KeyError:
+        raise HTTPException(404, f"No class with id {class_id}")
+    swiss_core.append_ingestion(ROOT, {"kind": "class_deactivated", "class_id": class_id})
+    return asdict_safe(cls)
+
+
+@app.post("/api/swiss/versions/{version_name}/activate")
+def swiss_activate_version(version_name: str):
+    try:
+        result = swiss_core.set_active(ROOT, version_name)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    swiss_core.append_ingestion(ROOT, {"kind": "version_activated", "version": version_name})
+    return result
+
+
+# ----------------------------------------------------------------------------
+# Web image collection (DuckDuckGo Image Search — no API key required)
+# ----------------------------------------------------------------------------
+
+# In-memory job tracking. Web jobs run in a thread, write thumbs to disk,
+# then the UI polls status until done.
+_swiss_web_jobs: dict[str, dict] = {}
+
+
+class SwissWebCollectRequest(BaseModel):
+    class_id: int
+    queries: list[str] = Field(default_factory=list)  # if empty, use class.queries
+    max_results: int = 50
+
+
+@app.post("/api/swiss/web-collect")
+def swiss_web_collect_start(req: SwissWebCollectRequest):
+    classes = swiss_core.load_classes(ROOT)
+    cls = next((c for c in classes if c.id == req.class_id), None)
+    if cls is None:
+        raise HTTPException(404, f"No class with id {req.class_id}")
+    queries = req.queries or cls.queries
+    if not queries:
+        raise HTTPException(400,
+                            "Class has no search queries. Edit the class to add some, "
+                            "or pass `queries` in the request body.")
+
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = swiss_core.web_jobs_root(ROOT) / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    _swiss_web_jobs[job_id] = {
+        "id": job_id,
+        "class_id": cls.id,
+        "class_name": cls.en,
+        "queries": queries,
+        "status": "running",
+        "progress": 0,
+        "downloaded": 0,
+        "target": req.max_results,
+        "started_at": time.time(),
+        "dir": str(job_dir),
+        "candidates": [],   # [{filename, url, query}]
+        "error": None,
+    }
+    threading.Thread(
+        target=_swiss_web_collect_thread,
+        args=(job_id, queries, req.max_results, job_dir),
+        daemon=True,
+    ).start()
+    return {"ok": True, "job_id": job_id, "queue_size": len(queries)}
+
+
+def _swiss_web_collect_thread(job_id: str, queries: list[str],
+                               max_results: int, out_dir: Path):
+    """Pull images from DuckDuckGo (no API key) per query. Saves to out_dir
+    and updates the in-memory job dict so the UI can poll progress."""
+    job = _swiss_web_jobs.get(job_id)
+    if not job:
+        return
+    try:
+        try:
+            from duckduckgo_search import DDGS
+        except ImportError:
+            job["status"] = "error"
+            job["error"] = ("duckduckgo-search not installed. "
+                           "Run: pip install duckduckgo-search")
+            return
+        import requests as _rq
+        out_dir.mkdir(parents=True, exist_ok=True)
+        per_query = max(5, max_results // max(1, len(queries)))
+        downloaded = 0
+        headers = {"User-Agent": "Mozilla/5.0"}
+        with DDGS() as ddgs:
+            for q in queries:
+                if downloaded >= max_results:
+                    break
+                try:
+                    results = list(ddgs.images(
+                        q, max_results=per_query,
+                        type_image="photo", size="Medium",
+                    ))
+                except Exception as e:
+                    job.setdefault("warnings", []).append(f"query '{q[:40]}': {e}")
+                    continue
+                for r in results:
+                    if downloaded >= max_results:
+                        break
+                    url = r.get("image") or ""
+                    if not url:
+                        continue
+                    try:
+                        ext = Path(url.split("?")[0]).suffix.lower()
+                        if ext not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+                            ext = ".jpg"
+                        fname = f"{downloaded:04d}{ext}"
+                        dst = out_dir / fname
+                        resp = _rq.get(url, timeout=8, headers=headers, stream=True)
+                        if resp.status_code != 200:
+                            continue
+                        with open(dst, "wb") as f:
+                            for chunk in resp.iter_content(8192):
+                                f.write(chunk)
+                        # Sanity check that it's a real image
+                        try:
+                            from PIL import Image as _PIL
+                            _PIL.open(dst).verify()
+                        except Exception:
+                            dst.unlink(missing_ok=True)
+                            continue
+                        downloaded += 1
+                        job["downloaded"] = downloaded
+                        job["progress"] = round(100 * downloaded / max(1, max_results), 1)
+                        job["candidates"].append({
+                            "filename": fname,
+                            "url": url,
+                            "query": q,
+                        })
+                    except Exception as e:
+                        continue
+        job["status"] = "done"
+        job["finished_at"] = time.time()
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+
+
+@app.get("/api/swiss/web-collect/{job_id}")
+def swiss_web_collect_status(job_id: str):
+    job = _swiss_web_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Web-collect job not found")
+    # Strip raw URLs from response (just to keep payload tight); keep filenames
+    return {
+        "id": job_id,
+        "class_id": job["class_id"],
+        "class_name": job["class_name"],
+        "status": job["status"],
+        "progress": job["progress"],
+        "downloaded": job["downloaded"],
+        "target": job["target"],
+        "candidates": job["candidates"],
+        "error": job.get("error"),
+        "warnings": job.get("warnings", []),
+    }
+
+
+@app.get("/api/swiss/web-collect/{job_id}/thumb/{filename}")
+def swiss_web_collect_thumb(job_id: str, filename: str):
+    job = _swiss_web_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404)
+    p = Path(job["dir"]) / filename
+    if not p.is_file():
+        raise HTTPException(404)
+    return FileResponse(p)
+
+
+class SwissWebAcceptRequest(BaseModel):
+    accepted: list[str]   # list of filenames the user wants to keep
+
+
+@app.post("/api/swiss/web-collect/{job_id}/accept")
+def swiss_web_collect_accept(job_id: str, req: SwissWebAcceptRequest):
+    """Move accepted candidates from the web-job temp dir into the class's
+    staging folder. From there auto-annotation or manual labelling can pick
+    them up for inclusion in the next training run."""
+    job = _swiss_web_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Web-collect job not found")
+    classes = swiss_core.load_classes(ROOT)
+    cls = next((c for c in classes if c.id == job["class_id"]), None)
+    if cls is None:
+        raise HTTPException(400, f"Class {job['class_id']} no longer exists")
+
+    staging_dir = swiss_core.staging_root(ROOT) / cls.de
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    src_dir = Path(job["dir"])
+    moved = 0
+    for fname in req.accepted:
+        src = src_dir / fname
+        if not src.is_file():
+            continue
+        # Stable per-class numbered filenames
+        existing = sum(1 for _ in staging_dir.iterdir())
+        ext = src.suffix.lower() or ".jpg"
+        dst = staging_dir / f"{cls.de}_web_{existing:05d}{ext}"
+        try:
+            shutil.copy2(src, dst)
+            moved += 1
+        except Exception:
+            continue
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "web_collect_accepted",
+        "class_id": cls.id,
+        "n_accepted": moved,
+        "staging_dir": str(staging_dir),
+    })
+    return {"ok": True, "moved": moved, "staging_dir": str(staging_dir)}
+
+
+# ----------------------------------------------------------------------------
+# Dataset import (Roboflow zip / YOLO-format folder)
+# ----------------------------------------------------------------------------
+
+@app.post("/api/swiss/dataset/import-zip")
+def swiss_import_zip(file: UploadFile = File(...)):
+    """Import a Roboflow YOLOv8 zip or any zip with the standard
+    images/{train,val} + labels/{train,val} layout. Files merge into the
+    persistent dataset; class IDs in the import must match the registry."""
+    swiss_core.ensure_initialized(ROOT)
+    droot = swiss_core.dataset_root(ROOT)
+    tmp_zip = droot / f"_import_{int(time.time())}.zip"
+    with tmp_zip.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    import zipfile as _zip
+    extract_root = droot / "_extract" / tmp_zip.stem
+    extract_root.mkdir(parents=True, exist_ok=True)
+    try:
+        with _zip.ZipFile(tmp_zip) as zf:
+            zf.extractall(extract_root)
+    except Exception as e:
+        raise HTTPException(400, f"Bad zip: {e}")
+
+    # Detect layout — find images/train (Roboflow) or train/images (CVAT)
+    sources = []
+    for split in ("train", "val", "valid"):
+        split_canon = "val" if split == "valid" else split
+        for img_dir in [extract_root.rglob(f"images/{split}"),
+                        extract_root.rglob(f"{split}/images")]:
+            for d in img_dir:
+                # find sibling labels
+                if (d.parent / f"labels" / split).is_dir():
+                    sources.append((d, d.parent / "labels" / split, split_canon))
+                elif (d.parent.parent / "labels" / split).is_dir():
+                    sources.append((d, d.parent.parent / "labels" / split, split_canon))
+
+    n_imgs = 0
+    n_lbls = 0
+    for img_dir, lbl_dir, split in sources:
+        dst_img = droot / "images" / split
+        dst_lbl = droot / "labels" / split
+        dst_img.mkdir(parents=True, exist_ok=True)
+        dst_lbl.mkdir(parents=True, exist_ok=True)
+        for img in img_dir.iterdir():
+            if img.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+                continue
+            target = dst_img / img.name
+            if not target.exists():
+                shutil.copy2(img, target)
+                n_imgs += 1
+        for lbl in lbl_dir.iterdir():
+            if lbl.suffix.lower() != ".txt":
+                continue
+            target = dst_lbl / lbl.name
+            if not target.exists():
+                shutil.copy2(lbl, target)
+                n_lbls += 1
+
+    # Cleanup
+    try:
+        shutil.rmtree(extract_root)
+    except Exception:
+        pass
+    tmp_zip.unlink(missing_ok=True)
+
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "dataset_zip_imported",
+        "filename": file.filename,
+        "n_images": n_imgs,
+        "n_labels": n_lbls,
+    })
+    return {"ok": True, "imported_images": n_imgs, "imported_labels": n_lbls}
+
+
+@app.post("/api/swiss/dataset/import-from-f-drive")
+def swiss_import_from_f():
+    """Convenience one-click: import the existing F:\\Construction Site
+    Intelligence\\data\\training_dataset into the managed Suite dataset.
+    Idempotent — skips files already present."""
+    src = Path(r"F:\Construction Site Intelligence\data\training_dataset")
+    if not src.is_dir():
+        raise HTTPException(404, f"Source not found: {src}")
+    swiss_core.ensure_initialized(ROOT)
+    droot = swiss_core.dataset_root(ROOT)
+
+    n_imgs = n_lbls = 0
+    for split in ("train", "val"):
+        for kind, ext_set, count_var in (
+            ("images", {".jpg", ".jpeg", ".png", ".webp", ".bmp"}, "imgs"),
+            ("labels", {".txt"}, "lbls"),
+        ):
+            src_dir = src / kind / split
+            if not src_dir.is_dir():
+                continue
+            dst_dir = droot / kind / split
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            for f in src_dir.iterdir():
+                if f.suffix.lower() not in ext_set:
+                    continue
+                target = dst_dir / f.name
+                if target.exists():
+                    continue
+                try:
+                    shutil.copy2(f, target)
+                    if kind == "images":
+                        n_imgs += 1
+                    else:
+                        n_lbls += 1
+                except Exception:
+                    continue
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "f_drive_import",
+        "source": str(src),
+        "n_images": n_imgs,
+        "n_labels": n_lbls,
+    })
+    return {"ok": True, "imported_images": n_imgs, "imported_labels": n_lbls}
+
+
+# ----------------------------------------------------------------------------
+# Auto-annotate using current active model
+# ----------------------------------------------------------------------------
+
+class SwissAutoAnnotateRequest(BaseModel):
+    folder: str           # absolute path to folder of images
+    split: str = Field("train", pattern="^(train|val)$")
+    conf: float = 0.30
+    classes: list[int] | None = None
+
+
+@app.post("/api/swiss/auto-annotate")
+def swiss_auto_annotate(req: SwissAutoAnnotateRequest):
+    """Run the current active Swiss model over a folder of new images,
+    write YOLO-format labels for each detection, then merge images +
+    labels into the managed dataset for retraining."""
+    active = swiss_core.active_version(ROOT)
+    if not active:
+        raise HTTPException(400, "No active Swiss model — set one first.")
+    src = Path(req.folder).expanduser().resolve()
+    if not src.is_dir():
+        raise HTTPException(400, f"Not a directory: {src}")
+
+    droot = swiss_core.dataset_root(ROOT)
+    img_dst = droot / "images" / req.split
+    lbl_dst = droot / "labels" / req.split
+    img_dst.mkdir(parents=True, exist_ok=True)
+    lbl_dst.mkdir(parents=True, exist_ok=True)
+
+    from ultralytics import YOLO
+    model = YOLO(active["path"])
+
+    n_imgs = n_lbls = 0
+    for img in src.iterdir():
+        if img.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+            continue
+        try:
+            res = model.predict(str(img), conf=req.conf, classes=req.classes,
+                                 verbose=False)[0]
+        except Exception:
+            continue
+        # Copy image
+        target_img = img_dst / img.name
+        if not target_img.exists():
+            shutil.copy2(img, target_img)
+            n_imgs += 1
+        # Write label
+        lines = []
+        boxes = getattr(res, "boxes", None)
+        if boxes is not None and len(boxes) > 0:
+            xywhn = boxes.xywhn.cpu().numpy()
+            cls = boxes.cls.cpu().numpy().astype(int)
+            for (cx, cy, w, h), c in zip(xywhn, cls):
+                lines.append(f"{int(c)} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+        target_lbl = lbl_dst / (img.stem + ".txt")
+        target_lbl.write_text("\n".join(lines), encoding="utf-8")
+        n_lbls += 1
+
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "auto_annotated",
+        "source": str(src),
+        "split": req.split,
+        "model": active["name"],
+        "n_images": n_imgs,
+        "n_labels": n_lbls,
+    })
+    return {"ok": True, "n_images": n_imgs, "n_labels": n_lbls,
+            "model": active["name"]}
+
+
+# ----------------------------------------------------------------------------
+# Train a new version
+# ----------------------------------------------------------------------------
+
+class SwissTrainRequest(BaseModel):
+    base: str = "active"              # "active" | "yolov8m.pt" | absolute path
+    epochs: int = 50
+    batch: int = 16
+    imgsz: int = 640
+    notes: str = ""
+
+
+@app.post("/api/swiss/train")
+def swiss_train(req: SwissTrainRequest):
+    """Trigger a new training run using the managed dataset + chosen base
+    weights. Output goes to _models/swiss_detector_v{N}.pt with metadata
+    sidecar. Becomes the active candidate after training (UI promotes
+    explicitly)."""
+    swiss_core.ensure_initialized(ROOT)
+    classes = [c for c in swiss_core.load_classes(ROOT) if c.active]
+    if not classes:
+        raise HTTPException(400, "No active classes in registry.")
+    stats = swiss_core.dataset_stats(ROOT)
+    if stats["train_images"] < 10:
+        raise HTTPException(400,
+                             "Dataset too small to train — add at least 10 "
+                             "training images (you have "
+                             f"{stats['train_images']}).")
+
+    # Resolve base weights
+    if req.base == "active":
+        active = swiss_core.active_version(ROOT)
+        if not active:
+            raise HTTPException(400,
+                                 "No active version to fine-tune from. Pick a "
+                                 "specific base like yolov8m.pt.")
+        base_path = active["path"]
+    elif Path(req.base).is_absolute() and Path(req.base).is_file():
+        base_path = req.base
+    else:
+        base_path = req.base   # stock filename — Ultralytics will download
+
+    next_name = swiss_core.next_version_name(ROOT)
+    out_root = ROOT / "_runs" / "swiss_train"
+    out_root.mkdir(parents=True, exist_ok=True)
+    data_yaml = swiss_core.write_data_yaml(ROOT)
+
+    cmd = [
+        PYTHON, "scripts/swiss_train.py",
+        "--base", str(base_path),
+        "--data", str(data_yaml),
+        "--out-root", str(out_root),
+        "--run-name", next_name,
+        "--models-dir", str(MODELS_DIR),
+        "--epochs", str(int(req.epochs)),
+        "--batch", str(int(req.batch)),
+        "--imgsz", str(int(req.imgsz)),
+        "--notes", req.notes or "",
+    ]
+
+    # Same fire-and-forget pattern as render-video / refine-clip
+    proc = subprocess.Popen(
+        cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    def _drain():
+        try:
+            for _ in proc.stdout:
+                pass
+        finally:
+            proc.wait()
+    threading.Thread(target=_drain, daemon=True).start()
+
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "train_started",
+        "version_name": next_name,
+        "base": base_path,
+        "epochs": req.epochs,
+        "pid": proc.pid,
+    })
+    return {
+        "ok": True,
+        "pid": proc.pid,
+        "version_name": next_name,
+        "expected_output": str(MODELS_DIR / f"{next_name}.pt"),
+        "command_argv": cmd,
+    }
 
 
 if __name__ == "__main__":

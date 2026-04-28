@@ -2178,6 +2178,245 @@ code { background: var(--bg-2); padding: 1px 6px; border-radius: 4px; font-famil
   margin-top: 6px;
 }
 
+/* =============================================================================
+   Swiss Detector tab — full lifecycle UI
+   ============================================================================= */
+
+/* Hero card with active version */
+.swiss-hero-card {
+  padding: 18px 22px;
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--color-brand) 8%, var(--color-surface)) 0%,
+    var(--color-surface) 100%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-3);
+}
+.swiss-hero-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 14px; flex-wrap: wrap;
+}
+.swiss-hero-eyebrow { font-size: 11px; letter-spacing: 0.08em; color: var(--color-text-muted); }
+.swiss-hero-name { font-size: 22px; font-weight: 700; color: var(--color-text-strong); margin: 4px 0 6px; font-family: var(--font-mono); }
+.swiss-hero-meta { color: var(--color-text-muted); font-size: 13px; }
+.swiss-hero-loading { color: var(--color-text-muted); padding: 14px; }
+
+/* Class toolbar + summary */
+.swiss-class-toolbar {
+  display: flex; align-items: center; gap: 12px;
+  margin: 8px 0 14px;
+}
+
+/* Class grid */
+.swiss-class-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+.swiss-class-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-left: 4px solid #888;
+  border-radius: var(--radius-2);
+  padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 6px;
+  transition: transform 0.12s, box-shadow 0.12s;
+}
+.swiss-class-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+}
+.swiss-class-card.dimmed { opacity: 0.45; }
+.swiss-class-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; font-family: var(--font-mono); color: var(--color-text-muted);
+}
+.swiss-class-id {
+  background: var(--color-surface-2, var(--color-border));
+  padding: 2px 6px; border-radius: 4px;
+}
+.swiss-class-name { display: flex; flex-direction: column; gap: 2px; }
+.swiss-class-name strong { font-size: 14px; color: var(--color-text-strong); }
+.swiss-class-stats {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-top: 2px;
+}
+.swiss-class-stats .chip {
+  font-size: 11px; font-family: var(--font-mono);
+  background: var(--color-surface-2, var(--color-border));
+  padding: 2px 8px; border-radius: 999px;
+  color: var(--color-text-muted);
+}
+.swiss-class-stats .chip-warn {
+  background: rgba(255, 152, 0, 0.15); color: #d97706;
+}
+.swiss-class-stats .chip-success {
+  background: rgba(34, 197, 94, 0.15); color: #16a34a;
+}
+.swiss-class-actions {
+  display: flex; gap: 4px;
+  margin-top: 4px;
+}
+.swiss-class-actions .btn { padding: 4px 8px; font-size: 12px; }
+
+/* Data bars */
+.swiss-data-controls {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  margin: 8px 0 14px;
+}
+.swiss-data-bars {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.swiss-bar-row {
+  display: grid;
+  grid-template-columns: 280px 1fr 60px;
+  gap: 12px; align-items: center;
+  padding: 4px 8px;
+  border-radius: var(--radius-1);
+}
+.swiss-bar-row:nth-child(odd) {
+  background: var(--color-surface);
+}
+.swiss-bar-label {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.swiss-bar-swatch {
+  width: 12px; height: 12px; border-radius: 3px;
+  flex: 0 0 auto;
+}
+.swiss-bar-track {
+  height: 8px;
+  background: var(--color-surface-2, var(--color-border));
+  border-radius: 999px;
+  overflow: hidden;
+}
+.swiss-bar-fill {
+  height: 100%; min-width: 2px;
+  border-radius: 999px;
+  transition: width 0.2s;
+}
+.swiss-bar-num {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--color-text-muted); text-align: right;
+}
+
+/* Train form grid */
+.swiss-train-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+/* Versions list */
+.swiss-versions {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.swiss-version-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+}
+.swiss-version-row.active {
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--color-brand) 8%, var(--color-surface)) 0%,
+    var(--color-surface) 60%);
+  border-color: var(--color-brand);
+}
+.swiss-version-row strong { margin-right: 12px; font-family: var(--font-mono); }
+.swiss-version-row .chip {
+  background: rgba(34, 197, 94, 0.15); color: #16a34a;
+  padding: 4px 10px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+}
+
+/* Activity log */
+.swiss-activity {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 320px; overflow-y: auto;
+  padding: 4px;
+}
+.swiss-activity-row {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 12px;
+  padding: 6px 12px;
+  border-radius: var(--radius-1);
+  font-size: 13px;
+}
+.swiss-activity-row:nth-child(odd) {
+  background: var(--color-surface);
+}
+
+/* Web-collect modal */
+.swiss-web-body {
+  display: flex; flex-direction: column;
+  flex: 1; min-height: 0;
+}
+.swiss-web-controls {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg, var(--color-surface));
+  flex-wrap: wrap;
+}
+.swiss-web-controls .text-row { flex: 0 0 auto; min-width: 0; }
+.swiss-web-controls input[type="number"] { width: 80px; }
+#swiss-web-queries {
+  padding: 0 18px;
+  margin: 8px 0 0;
+}
+.swiss-web-grid {
+  flex: 1; overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+  padding: 14px 18px;
+}
+.swiss-web-tile {
+  position: relative;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  overflow: hidden;
+  aspect-ratio: 1.4;
+}
+.swiss-web-tile img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.swiss-web-tick {
+  position: absolute; top: 6px; right: 6px;
+  background: rgba(0,0,0,0.7);
+  border-radius: 50%;
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+}
+.swiss-web-tick input { transform: scale(1.3); cursor: pointer; }
+.swiss-web-meta {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  background: rgba(0,0,0,0.65);
+  color: white;
+  font-size: 10.5px; font-family: var(--font-mono);
+  padding: 4px 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Class modal — overrides folder-modal-card to be auto-height */
+#swiss-class-modal .folder-modal-card { height: auto; }
+#swiss-class-modal textarea {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-strong);
+  padding: 8px 10px;
+  border-radius: var(--radius-2);
+  resize: vertical;
+}
+
 /* Folder picker — input + Browse button on one row */
 .folder-input-row {
   display: flex; gap: 8px; align-items: stretch;

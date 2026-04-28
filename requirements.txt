@@ -8,6 +8,8 @@ tqdm>=4.66
 pillow>=10.0                # CLIP refinement reads images via PIL
 open-clip-torch>=2.24       # CLIP zero-shot refinement (Filter Section D)
 ffmpeg-python>=0.2          # Python wrapper used by the timelapse video render
+duckduckgo-search>=6.0      # Web image collection in the Swiss Detector tab
+requests>=2.31              # HTTP client for image downloads + Roboflow workflow calls
 
 # FastAPI web app (preferred UI: app.py)
 fastapi>=0.115
