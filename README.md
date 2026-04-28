@@ -1,198 +1,200 @@
-# Arclap Timelapse Cleaner
+# Arclap Vision Suite
 
-Privacy-safe local processor for timelapse videos and image batches. Drag a video into a browser tab (or point at a folder of 60k+ images) and pick what you want done:
+[![CI](https://github.com/arclap-af/arclap-timelapse-cleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/arclap-af/arclap-timelapse-cleaner/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)
+[![CUDA](https://img.shields.io/badge/CUDA-12.4-76b900.svg)](https://developer.nvidia.com/cuda-toolkit)
+[![Docker](https://img.shields.io/badge/docker-supported-2496ed.svg)](Dockerfile)
 
-### Cleanup modes
-- **Blur faces only** — fastest; people stay visible as silhouettes. Optional `--include-vehicles` blurs cars/buses/trucks too. Exclude regions (`--exclude-region`) to keep your own logo intact. Custom-model support (`--custom-model`) lets you redact site-specific objects.
-- **Remove people completely** — slower; plate-mode inpainting from neighboring frames.
-- **Drop dark frames only** — no AI, just trims night/dusk segments.
-- **Stabilize camera shake** — two-pass ffmpeg vidstab to remove drift / jitter.
-- **Normalize color & exposure** — histogram-match every frame to a stable reference for a consistent look across hours of changing light.
-- **PPE compliance check** — flag missing hard hats / hi-vis (custom-model recommended). Outputs an annotated video plus a per-frame CSV report.
-- **Site analytics dashboard** — turn the timelapse into business intelligence: activity heatmap, people-count chart, peak/average stats.
+A **local-first computer-vision workbench** built around YOLO. Timelapse cleanup is one of several tools it ships with — alongside a model playground, live RTSP processing, PPE compliance detection, site analytics, and privacy-aware audit reporting.
 
-### YOLO Model Playground
-A dedicated **Models** tab lets you upload any YOLOv8/v11 `.pt` file (detection, segmentation, pose, OBB, classification), auto-detects the task and class names, and runs live inference on a sample image with annotated bounding boxes / masks / keypoints. Uploaded models are also usable in the main wizard via the custom-model flag.
+> **Privacy-first by design.** Every frame, every model, every output stays on your machine. No cloud upload, no telemetry, no third-party calls.
 
-### Workflow features
-- **Folder input** — point at a server-local folder of 60k+ JPGs/PNGs and they're processed in place (no upload).
-- **Persistent jobs** — a SQLite store at `_data/jobs.db` keeps every run. Close the browser, re-open, history is intact. The **History** tab shows every job ever run with re-open / view-log buttons.
-- **Job queue** — single GPU worker serializes submissions so multiple jobs can't OOM each other.
-- **Projects** — group jobs under named workspaces with per-project default settings.
-- **Recipes** — export current wizard settings as JSON, share with colleagues, import on the other side.
-- **Watch folder** — `python watcher.py --watch ./incoming --mode blur` polls a directory and auto-submits any new video as a job.
-- **Notifications** — webhook + email on job completion (SMTP via `ARCLAP_SMTP_*` env vars).
-- **Audit reports** — every finished job writes an HTML privacy attestation alongside the output (open in browser → Print → Save as PDF).
-- **Watermarks / title cards** — `python overlay.py --logo logo.png --title "Day 14"` adds branding to a finished video.
+> **Note on the repo name.** The repo is currently `arclap-timelapse-cleaner` for historical reasons; the project is now branded as Arclap Vision Suite. Rename the repo on GitHub when convenient.
 
-### UI
-Modern dark theme by default with a light theme toggle, English/German locale switch, keyboard shortcuts (Cmd/Ctrl+Enter to run), and a multi-tab layout (Wizard / Models / History / Projects).
+---
 
-Everything runs on your machine — videos and images never leave the box. Uses an NVIDIA GPU when present, falls back to CPU.
+## What's inside
+
+| Tool | What it does |
+|---|---|
+| **Timelapse Cleanup** | Blur faces, remove people entirely, drop dark frames, normalize colour & exposure, stabilize camera shake. |
+| **YOLO Model Playground** | Drop any `.pt` (detect / segment / pose / OBB / classify), auto-detects task + classes, run inference with annotated overlay. |
+| **Live RTSP / IP Camera** | Connect to any RTSP stream, run YOLO live, blur or detect in real time, record annotated MP4. |
+| **PPE Compliance** | Helmet + hi-vis vest detection with a custom PPE-trained model. Annotated video + per-frame CSV + compliance summary. |
+| **Site Analytics** | Activity heatmap + people-count chart + per-frame CSV + summary JSON. Turn timelapses into BI. |
+| **Watch Folder** | Polls a directory and auto-submits new videos as jobs (sidecar service). |
+| **Watermarks / Title Cards** | `overlay.py` adds branding via ffmpeg filters. |
+
+All accessible through a **single FastAPI app** with a five-tab dark-themed wizard UI: Wizard / Models / Live RTSP / History / Projects.
+
+---
+
+## Screenshots
+
+> Screenshots will live in `docs/`. Drop `docs/screenshot-wizard.png` etc. and they'll show below.
+
+![Wizard](docs/screenshot-wizard.png)
+![Model Playground](docs/screenshot-models.png)
+![Live RTSP](docs/screenshot-live.png)
 
 ---
 
 ## One-click install
 
 ### Windows
-
-1. Clone the repo (or [download as ZIP](https://github.com/arclap-af/arclap-timelapse-cleaner/archive/refs/heads/main.zip) and extract).
+1. Clone or [download as ZIP](https://github.com/arclap-af/arclap-timelapse-cleaner/archive/refs/heads/main.zip).
 2. Double-click **`install.bat`**.
-
-That's it. The installer will:
-- Verify Python 3.10+ is on your PATH (and tell you what to do if not).
-- Install `ffmpeg` automatically via `winget` if missing.
-- Create a virtual environment in `./venv`.
-- Detect your NVIDIA GPU (or fall back to CPU) and pip-install the matching PyTorch build.
-- Install all other dependencies.
-- Pre-download the YOLOv8 segmentation weights.
-- Verify everything imports correctly.
-
-When it's done, double-click **`run.bat`** to start the app — your browser opens automatically at <http://127.0.0.1:8000>.
+3. When done, double-click **`run.bat`** — your browser opens to <http://127.0.0.1:8000>.
 
 ### macOS / Linux
-
 ```bash
 git clone https://github.com/arclap-af/arclap-timelapse-cleaner.git
 cd arclap-timelapse-cleaner
-./install.sh        # one-time setup
-./run.sh            # start the app
+./install.sh    # one-time setup
+./run.sh        # start the app
 ```
 
-`install.sh` uses `brew` (macOS) or `apt`/`dnf`/`pacman` (Linux) to install `ffmpeg` if missing.
+The installer auto-detects Python, ffmpeg, and an NVIDIA GPU; installs the right PyTorch CUDA build; pre-downloads YOLO weights; and verifies imports. Re-runs are idempotent.
 
-### Re-running the installer is safe
-Both `install.bat` and `install.sh` are idempotent — they detect and skip work that is already done. Use them again any time you want to verify or repair the install.
-
----
-
-## Manual install (advanced)
-
-If you'd rather not use the wrappers:
-
+### Docker
 ```bash
-python -m venv venv
-# Windows: ./venv/Scripts/activate
-# Unix:    source venv/bin/activate
-
-# PyTorch must be installed first with the right CUDA build:
-#   NVIDIA (CUDA 12.4):
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
-#   CPU only:
-# pip install torch torchvision
-
-pip install -r requirements.txt
-
-# (Optional) pre-download the YOLO weights:
-python -c "from ultralytics import YOLO; YOLO('yolov8x-seg.pt')"
+docker compose up -d         # uses your NVIDIA GPU via nvidia-container-toolkit
+# or for CPU-only:
+docker build --build-arg BASE_IMAGE=python:3.12-slim --build-arg TORCH_INDEX=cpu -t arclap-cpu .
+docker run -p 8000:8000 arclap-cpu
 ```
 
-Make sure `ffmpeg` is on your PATH (`ffmpeg -version` should print version info).
+---
+
+## Architecture
+
+```
+app.py                FastAPI backend (preferred web UI)
+gui.py                Gradio backend (alternative web UI)
+core/
+  db.py               SQLite jobs / projects / models persistence
+  queue.py            Single-worker GPU job queue + runner
+  playground.py       YOLO model inspection + live inference / annotation
+  notify.py           Webhook, email, audit-report HTML
+  seed.py             Auto-register .pt files + suggested-models catalogue
+pipelines/            Plugin registry — each cleanup mode is its own module
+  blur.py / remove.py / darkonly.py / stabilize.py /
+  color_normalize.py / ppe.py / analytics.py / rtsp.py
+clean.py              Rolling-median person-removal pipeline (v1)
+clean_v2.py           Plate-mode inpainting pipeline (v2) — CuPy-accelerated when available
+clean_blur.py         Head-blur (v3) — supports vehicles, ROI exclusion, custom models
+stabilize.py          Camera-shake stabilization (ffmpeg vidstab)
+color_normalize.py    Color & exposure normalization (per-channel histogram match)
+ppe_check.py          PPE compliance detection
+analytics.py          Activity heatmap + people-count dashboard
+rtsp_live.py          Live RTSP / IP-camera processor
+overlay.py            Watermarks, title cards, burn-in date
+watcher.py            Watch-folder daemon
+static/               Single-page wizard frontend (HTML / vanilla JS / CSS)
+tests/                pytest suite (35+ tests)
+.github/workflows/    GitHub Actions CI
+ROADMAP.md            What's deliberately out-of-scope and why
+```
+
+### Plugin system for cleanup modes
+Every mode lives as a small file in `pipelines/<name>.py`. Adding a new mode is purely additive:
+
+```python
+# pipelines/my_custom_mode.py
+NAME = "my_custom_mode"
+DESCRIPTION = "Whatever this does."
+
+def build(job, ctx):
+    # Return the subprocess argv to run for this job
+    return [ctx["python"], "my_script.py", "--input", job.input_ref, "--output", job.output_path]
+```
+
+The registry auto-discovers it on next server start; the wizard picks it up via `/api/pipelines`.
 
 ---
 
-## Using the app
+## Performance
 
-Once running, the wizard walks you through:
+The default configuration is optimised for an **NVIDIA RTX 3090** but runs on anything with CUDA 11.8+.
 
-1. **Drop a video** — it auto-scans brightness and recommends a threshold.
-2. **Brightness** — slider pre-filled, with a live histogram.
-3. **What do you want to do?** — pick blur / remove / drop dark frames.
-4. **Test on 10 seconds** — fast preview with side-by-side BEFORE/AFTER.
-5. **Run on full video** — final run with a live log; result video embedded + downloadable.
+| Mode | 95-second 1080p input | Notes |
+|---|---:|---|
+| Blur faces | ~5 min | YOLO bound |
+| Drop dark frames | <1 min | No AI; ffmpeg only |
+| Color normalize | ~3 min | Per-channel CDF lookup |
+| Plate inpainting | ~38 min (CPU median) → ~4–5 min (CuPy GPU median) | Install `cupy-cuda12x` to enable |
+| Final encode | ~2 min (libx264 slow) → ~20 s (`--nvenc`) | Pass `--nvenc` to the pipeline |
 
-The app lives entirely on `127.0.0.1` — nothing is shared externally.
+**Live RTSP** runs continuously — limited by your camera's frame rate. On RTX 3090, YOLOv8x-seg on 1080p RTSP at `--detect-every 2` keeps up with 30 fps cameras while blurring in real time.
 
 ---
 
-## Command-line usage
-
-The pipelines are also runnable directly without the GUI:
+## Use the CLI directly (advanced)
 
 ```bash
 # Head blur
 python clean_blur.py \
-  --input "video.mp4" --output "blurred.mp4" \
-  --device cuda --model yolov8x-seg.pt --conf 0.10 \
-  --blur-strength 71 --feather 25 --min-brightness 130
+    --input "video.mp4" --output "blurred.mp4" \
+    --device cuda --model yolov8x-seg.pt --conf 0.10 \
+    --blur-strength 71 --feather 25 --min-brightness 130 \
+    --include-vehicles --exclude-region "0,0,0.15,0.10" \
+    --nvenc
 
-# Plate-mode inpainting (remove people)
-python clean_v2.py \
-  --input "video.mp4" --output "cleaned.mp4" \
-  --device cuda --model yolov8x-seg.pt --conf 0.10 \
-  --mode plate --plate-window 100 --mask-dilate 35 \
-  --min-brightness 130
+# Live RTSP, blur faces in real time
+python rtsp_live.py \
+    --url rtsp://user:pass@cam.local/stream1 \
+    --mode blur --output ./_outputs/live_record.mp4 \
+    --status ./_outputs/live_status.json --duration 0
 
-# Original rolling-median pipeline (kept for reference)
-python clean.py --input "video.mp4" --output "cleaned.mp4" --device cuda --test
+# Watch folder service
+python watcher.py --watch ./incoming --mode blur \
+    --server http://127.0.0.1:8000 --project "My Site"
+
+# PPE compliance check (custom model)
+python ppe_check.py \
+    --input site_video.mp4 --output annotated.mp4 \
+    --report ppe.csv --custom-model ppe-yolov8.pt
+
+# Site analytics dashboard
+python analytics.py \
+    --input site_video.mp4 --output-dir ./_analytics_run1 \
+    --model yolov8x-seg.pt
 ```
-
-Pass `--test` to any script to process only the first 10 seconds — useful while tuning.
-
-### Tunable parameters
-
-| Flag | Meaning |
-|---|---|
-| `--min-brightness` | Drop frames with mean grayscale below this (0 disables). The web UI's auto-scan will recommend a value. |
-| `--conf` | Person-detection confidence threshold. Lower (0.05–0.10) catches more faint people; higher (0.25+) avoids false positives. |
-| `--model` | YOLO weight file: `yolov8n-seg.pt` (fastest) → `yolov8x-seg.pt` (most accurate). |
-| `--mask-dilate` | Pixels of padding around each detected person. Bigger = safer coverage, more area to inpaint. |
-| `--blur-strength` | Gaussian blur kernel size for head-blur mode (must be odd). |
-| `--feather` | Soft-edge pixels around the blurred region so it blends in. |
-| `--plate-window` | Frames per background plate (plate-mode inpainting). Larger = cleaner plate but slower lighting tracking. |
 
 ---
 
-## Repo layout
+## Tests
 
+```bash
+pip install pytest
+pytest tests/ -v
 ```
-install.bat / install.sh    One-click installer (Windows / Unix)
-run.bat / run.sh            Launcher for the web app
-scripts/setup.py            Cross-platform Python install logic
-app.py                      FastAPI backend (preferred web UI)
-gui.py                      Gradio backend (alternative web UI)
-core/
-  db.py                     SQLite jobs / projects / models persistence
-  queue.py                  Single-worker GPU job queue + runner
-  playground.py             YOLO model inspection + live inference / annotation
-  notify.py                 Webhook, email, audit-report HTML
-clean.py                    Rolling-median person-removal pipeline (v1)
-clean_v2.py                 Plate-mode inpainting pipeline (v2)
-clean_blur.py               Head-blur (v3) — supports --include-vehicles, --exclude-region, --custom-model
-stabilize.py                Camera-shake stabilization (ffmpeg vidstab)
-color_normalize.py          Color & exposure normalization
-ppe_check.py                PPE compliance detection + annotated output + CSV
-analytics.py                Activity heatmap + people-count dashboard
-overlay.py                  Watermarks, title cards, burn-in date
-watcher.py                  Watch-folder daemon that auto-submits jobs
-ROADMAP.md                  What's deliberately out-of-scope (and why)
-static/
-  index.html                Single-page wizard frontend
-  style.css                 Modern dark UI styling
-  app.js                    Vanilla JS frontend logic (SSE streaming)
-requirements.txt            Python dependencies
-```
+
+The CI workflow (`.github/workflows/ci.yml`) runs the suite on Linux + Windows × Python 3.11 + 3.12.
+
+---
+
+## Configuration
+
+| Environment variable | Purpose |
+|---|---|
+| `ARCLAP_SMTP_HOST` / `_PORT` / `_USER` / `_PASS` / `_FROM` | Enables email notifications on job completion |
 
 ---
 
 ## Troubleshooting
 
-**`install.bat` says ffmpeg installed but install.bat asks me to re-run.**
-Windows hadn't refreshed `PATH` for the running shell. Close the window, open a new one, double-click `install.bat` again.
-
-**Browser doesn't open automatically.**
-Open <http://127.0.0.1:8000> manually. The server prints the URL on startup.
-
-**`CUDA available: False` in the log.**
-Either you're on a machine without an NVIDIA GPU (CPU mode is fine, just slower), or your driver is too old for the installed PyTorch wheel. Run `nvidia-smi` to check the driver, then re-run `install.bat`.
-
-**The app says port 8000 already in use.**
-Stop the other process or edit the `port=8000` line near the bottom of `app.py`.
+- **`ffmpeg` not on PATH** → installer prints exact `winget install` / `brew install` / `apt install` command.
+- **Browser doesn't open automatically** → navigate to <http://127.0.0.1:8000> manually.
+- **`CUDA available: False`** → driver is older than the installed PyTorch wheel. Update the driver, then re-run `install.bat`.
+- **Port 8000 already used** → another process is running on it; stop it or edit the `port=8000` line in `app.py`.
+- **RTSP stream won't connect** → verify the URL works in VLC first; some cameras need `?tcp` in the URL or per-camera credentials.
 
 ---
 
 ## License
 
-Pick one — this repo ships without a `LICENSE` file by default. Add one (e.g. MIT) before sharing externally.
+[MIT](LICENSE) — built by Arclap AG.
 
-Built by Arclap AG.
+See [`ROADMAP.md`](ROADMAP.md) for what's deliberately deferred.

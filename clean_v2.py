@@ -35,6 +35,44 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
+# Optional GPU acceleration for the masked median in plate mode.
+# `pip install cupy-cuda12x` to enable; we silently fall back to NumPy.
+try:
+    import cupy as _cp
+    _HAS_CUPY = True
+except Exception:
+    _cp = None
+    _HAS_CUPY = False
+
+
+def _masked_median_axis0(stack_imgs: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """Median over axis=0 of stack_imgs, ignoring entries where valid==False.
+    GPU implementation when cupy is available; else NumPy masked array.
+    Both inputs are uint8/bool numpy arrays. Returns uint8 numpy array.
+    """
+    if _HAS_CUPY:
+        try:
+            return _gpu_masked_median(stack_imgs, valid)
+        except Exception:
+            pass  # fall through to CPU path
+    masked = np.ma.array(
+        stack_imgs,
+        mask=np.broadcast_to(~valid[..., None], stack_imgs.shape),
+    )
+    return np.ma.median(masked, axis=0).filled(0).astype(np.uint8)
+
+
+def _gpu_masked_median(stack_imgs: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """CuPy GPU median. Replaces invalid entries with NaN, uses nanmedian."""
+    s = _cp.asarray(stack_imgs, dtype=_cp.float32)
+    v = _cp.asarray(valid)  # bool, shape (T, H, W)
+    # broadcast mask across channels
+    mask3 = _cp.broadcast_to(v[..., None], s.shape)
+    s = _cp.where(mask3, s, _cp.nan)
+    out = _cp.nanmedian(s, axis=0)
+    out = _cp.where(_cp.isnan(out), 0, out)
+    return _cp.asnumpy(out.astype(_cp.uint8))
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -78,6 +116,8 @@ def parse_args():
 
     p.add_argument("--test", action="store_true")
     p.add_argument("--keep-workdir", action="store_true")
+    p.add_argument("--nvenc", action="store_true",
+                   help="Use NVIDIA hardware encoder (h264_nvenc) for the final encode.")
     return p.parse_args()
 
 
@@ -254,8 +294,7 @@ def build_background_plates(frames, mask_dir, plates_dir, plate_window, plate_st
                 else:
                     valid[k] = masks[k][row_start:row_end] == 0  # True where NOT person
 
-            masked = np.ma.array(stack, mask=np.broadcast_to(~valid[..., None], stack.shape))
-            block_median = np.ma.median(masked, axis=0).filled(0).astype(np.uint8)
+            block_median = _masked_median_axis0(stack, valid)
             plate[row_start:row_end] = block_median
 
         plate_path = plates_dir / f"plate_{plate_idx:04d}.jpg"
@@ -342,11 +381,7 @@ def median_fill_rolling(frames, mask_dir, clean_dir, window, skip_people):
                 mj = load_mask(j)
                 stack_valid[k] = (mj == 0) if mj is not None else True
 
-            masked = np.ma.array(
-                stack_imgs,
-                mask=np.broadcast_to(~stack_valid[..., None], stack_imgs.shape),
-            )
-            median = np.ma.median(masked, axis=0).filled(0).astype(np.uint8)
+            median = _masked_median_axis0(stack_imgs, stack_valid)
             mask_blur = cv2.GaussianBlur(target_mask, (21,21), 0).astype(np.float32) / 255.0
             mask3 = cv2.merge([mask_blur, mask_blur, mask_blur])
             out = (target.astype(np.float32) * (1 - mask3) +
@@ -360,7 +395,7 @@ def median_fill_rolling(frames, mask_dir, clean_dir, window, skip_people):
             if k < evict: del mask_cache[k]
 
 
-def stitch(clean_dir, output, fps, crf):
+def stitch(clean_dir, output, fps, crf, nvenc=False):
     print(f"\n[6/6] Encoding final video at {fps}fps...")
     files = sorted(p for p in clean_dir.iterdir()
                    if p.is_file() and p.suffix.lower() in IMAGE_EXTS
@@ -377,16 +412,20 @@ def stitch(clean_dir, output, fps, crf):
                 if img is not None:
                     cv2.imwrite(str(target), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
 
+    encoder_args = (
+        ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", str(crf)]
+        if nvenc else
+        ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", str(crf), "-preset", "slow"]
+    )
     run([
         "ffmpeg", "-y",
         "-framerate", str(fps),
         "-i", str(renumbered / "r_%06d.jpg"),
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-crf", str(crf), "-preset", "slow",
+        *encoder_args,
         "-movflags", "+faststart",
         str(output),
     ])
-    print(f"      Output: {output}")
+    print(f"      Output: {output} ({'NVENC' if nvenc else 'libx264'})")
 
 
 def main():
@@ -443,7 +482,7 @@ def main():
     else:
         median_fill_rolling(kept_frames, mask_dir, clean_dir, args.window, args.skip_people)
 
-    stitch(clean_dir, out_path, fps_out, args.crf)
+    stitch(clean_dir, out_path, fps_out, args.crf, nvenc=args.nvenc)
 
     if not args.keep_workdir:
         shutil.rmtree(work, ignore_errors=True)

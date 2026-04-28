@@ -84,6 +84,9 @@ def parse_args():
 
     p.add_argument("--test", action="store_true")
     p.add_argument("--keep-workdir", action="store_true")
+    p.add_argument("--nvenc", action="store_true",
+                   help="Use NVIDIA hardware encoder (h264_nvenc) for the final ffmpeg "
+                        "encode. ~5–10× faster than libx264 at slightly larger file size.")
     return p.parse_args()
 
 
@@ -329,7 +332,7 @@ def blur_heads(frames, blurred_dir, args):
     print(f"      Heads blurred in {n_blurred} frames; {n_no_people} frames had no people")
 
 
-def stitch(blurred_dir, output, fps, crf):
+def stitch(blurred_dir, output, fps, crf, nvenc=False):
     print(f"\n[4/4] Encoding final video at {fps}fps...")
     # Pick up any image we wrote, regardless of original extension
     files = sorted(p for p in blurred_dir.iterdir()
@@ -348,16 +351,20 @@ def stitch(blurred_dir, output, fps, crf):
                 if img is not None:
                     cv2.imwrite(str(target), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
 
+    encoder_args = (
+        ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", str(crf)]
+        if nvenc else
+        ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", str(crf), "-preset", "slow"]
+    )
     run([
         "ffmpeg", "-y",
         "-framerate", str(fps),
         "-i", str(renumbered / "r_%06d.jpg"),
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-crf", str(crf), "-preset", "slow",
+        *encoder_args,
         "-movflags", "+faststart",
         str(output),
     ])
-    print(f"      Output: {output}")
+    print(f"      Output: {output} ({'NVENC' if nvenc else 'libx264'})")
 
 
 def main():
@@ -403,7 +410,7 @@ def main():
         sys.exit("All frames were dropped by the brightness filter — try lowering --min-brightness.")
 
     blur_heads(kept_frames, blurred_dir, args)
-    stitch(blurred_dir, out_path, fps_out, args.crf)
+    stitch(blurred_dir, out_path, fps_out, args.crf, nvenc=args.nvenc)
 
     if not args.keep_workdir:
         shutil.rmtree(work, ignore_errors=True)

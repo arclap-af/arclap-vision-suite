@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }} · py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install minimal test deps (CPU only — skip torch CUDA wheels)
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip --quiet
+          # Install CPU PyTorch from PyPI (small) so the imports resolve in tests
+          pip install --quiet torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          # Then everything else
+          pip install --quiet -r requirements.txt
+          pip install --quiet pytest
+
+      - name: Run pytest
+        run: pytest tests/ -v
+
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install --quiet ruff
+      - name: ruff check
+        run: ruff check . --output-format=github
+        continue-on-error: true   # advisory while the codebase stabilises

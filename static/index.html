@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Arclap Timelapse Cleaner</title>
+<title>Arclap Vision Suite</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -16,13 +16,14 @@
   <div class="brand">
     <div class="logo">A</div>
     <div>
-      <h1>Arclap Timelapse Cleaner</h1>
-      <p class="subtitle">Privacy-safe timelapse processor — runs locally on your GPU</p>
+      <h1>Arclap Vision Suite</h1>
+      <p class="subtitle">Local computer-vision workbench — timelapse cleanup, YOLO playground, live RTSP, PPE, analytics</p>
     </div>
   </div>
   <nav class="topnav">
     <button class="topnav-btn active" data-page="wizard">Wizard</button>
     <button class="topnav-btn" data-page="models">Models</button>
+    <button class="topnav-btn" data-page="live">Live RTSP</button>
     <button class="topnav-btn" data-page="history">History</button>
     <button class="topnav-btn" data-page="projects">Projects</button>
   </nav>
@@ -386,6 +387,79 @@
         <div id="test-result-table" class="muted small"></div>
       </div>
     </div>
+  </section>
+</main>
+
+<!-- ====== Live RTSP Page ====== -->
+<main class="container hidden" id="page-live">
+  <section class="card">
+    <div class="card-header">
+      <h2>Live RTSP / IP camera</h2>
+      <p>Connect to any RTSP stream (Hikvision, Reolink, Axis, Dahua, generic ONVIF). The processor reads frames live, runs YOLO, and either blurs faces in real time, draws detection boxes, or just records — all while updating a live status panel.</p>
+    </div>
+    <div class="rtsp-form">
+      <label class="text-row">
+        <span>Stream URL</span>
+        <input type="text" id="rtsp-url" placeholder="rtsp://user:pass@camera.local:554/stream1" />
+      </label>
+      <div class="rtsp-grid">
+        <label class="text-row">
+          <span>Mode</span>
+          <select id="rtsp-mode">
+            <option value="blur">Blur faces in real time</option>
+            <option value="detect">Detect &amp; draw boxes</option>
+            <option value="count">Count people only (no recording)</option>
+            <option value="record">Raw recording (no AI)</option>
+          </select>
+        </label>
+        <label class="text-row">
+          <span>Detection sensitivity</span>
+          <input type="range" id="rtsp-conf" min="10" max="80" step="1" value="30"/>
+          <span id="rtsp-conf-value" class="muted small">0.30</span>
+        </label>
+        <label class="text-row">
+          <span>Process every Nth frame</span>
+          <input type="range" id="rtsp-detect-every" min="1" max="10" step="1" value="2"/>
+          <span id="rtsp-detect-every-value" class="muted small">2 (skip every other frame)</span>
+        </label>
+        <label class="text-row">
+          <span>Max output FPS</span>
+          <input type="range" id="rtsp-fps" min="5" max="30" step="1" value="15"/>
+          <span id="rtsp-fps-value" class="muted small">15 fps</span>
+        </label>
+        <label class="text-row">
+          <span>Auto-stop after (seconds, 0 = never)</span>
+          <input type="number" id="rtsp-duration" value="0" min="0" />
+        </label>
+        <label class="text-row">
+          <span>Recording filename</span>
+          <input type="text" id="rtsp-output-name" value="rtsp_record.mp4" />
+        </label>
+      </div>
+      <button class="btn btn-primary btn-lg" id="btn-rtsp-start">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+        Start live processing
+      </button>
+      <button class="btn btn-ghost hidden" id="btn-rtsp-stop">Stop</button>
+    </div>
+  </section>
+
+  <section class="card hidden" id="rtsp-live-panel">
+    <div class="card-header">
+      <h2>Live status</h2>
+      <p>Updates twice a second from the running stream processor.</p>
+    </div>
+    <div class="live-grid">
+      <div class="live-stat"><dt>State</dt><dd id="live-state">—</dd></div>
+      <div class="live-stat"><dt>People in frame</dt><dd id="live-people">—</dd></div>
+      <div class="live-stat"><dt>Frames captured</dt><dd id="live-frames">—</dd></div>
+      <div class="live-stat"><dt>Effective FPS</dt><dd id="live-fps">—</dd></div>
+      <div class="live-stat"><dt>Elapsed</dt><dd id="live-elapsed">—</dd></div>
+      <div class="live-stat"><dt>Resolution</dt><dd id="live-res">—</dd></div>
+    </div>
+    <pre id="live-raw" class="muted small"></pre>
   </section>
 </main>
 

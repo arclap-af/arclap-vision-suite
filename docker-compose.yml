@@ -1,0 +1,43 @@
+# Arclap Timelapse Cleaner — docker-compose deployment.
+#
+# Usage:
+#   docker compose up -d        # start in background
+#   docker compose logs -f      # follow logs
+#   docker compose down         # stop
+#
+# By default this expects an NVIDIA GPU + nvidia-container-toolkit installed
+# on the host. For CPU-only deployments, comment out the `deploy.resources`
+# block and rebuild with TORCH_INDEX=cpu.
+
+services:
+  arclap:
+    build:
+      context: .
+      args:
+        # Override these with `docker compose build --build-arg BASE_IMAGE=...`
+        BASE_IMAGE: nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+        TORCH_INDEX: cu124
+    image: arclap-cleaner:latest
+    container_name: arclap-cleaner
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./_data:/app/_data
+      - ./_outputs:/app/_outputs
+      - ./_uploads:/app/_uploads
+      - ./_models:/app/_models
+    # SMTP credentials for email notifications (optional; ignored if unset)
+    environment:
+      - ARCLAP_SMTP_HOST=${ARCLAP_SMTP_HOST:-}
+      - ARCLAP_SMTP_PORT=${ARCLAP_SMTP_PORT:-587}
+      - ARCLAP_SMTP_USER=${ARCLAP_SMTP_USER:-}
+      - ARCLAP_SMTP_PASS=${ARCLAP_SMTP_PASS:-}
+      - ARCLAP_SMTP_FROM=${ARCLAP_SMTP_FROM:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import pipelines as pipeline_registry
 from core import DB, JobQueue, JobRow, JobRunner, ModelRow, ProjectRow
 from core.notify import build_audit_report, send_email, send_webhook
 from core.playground import inspect_model, predict_on_image
@@ -61,77 +62,9 @@ queue = JobQueue()
 
 
 def build_command(job: JobRow) -> list[str]:
-    """Translate a JobRow into the subprocess command for its mode."""
-    s = job.settings
-    out = job.output_path
-    is_test = bool(s.get("test"))
-
-    base = ["--output", str(out), "--device", "cuda" if GPU_AVAILABLE else "cpu"]
-    if job.kind == "folder":
-        base += ["--input-folder", job.input_ref]
-    else:
-        base += ["--input", job.input_ref]
-    if is_test:
-        base += ["--test", "--keep-workdir"]
-
-    min_brightness = float(s.get("min_brightness", 130))
-    base += ["--min-brightness", f"{min_brightness:.1f}"]
-
-    if job.mode == "blur":
-        return [
-            PYTHON, "clean_blur.py", *base,
-            "--batch", str(int(s.get("batch", 32))),
-            "--conf", f"{float(s.get('conf', 0.10)):.3f}",
-            "--model", s.get("model", "yolov8x-seg.pt"),
-            "--blur-strength", str(int(s.get("blur_strength", 71))),
-            "--feather", str(int(s.get("feather", 25))),
-        ]
-    if job.mode == "remove":
-        return [
-            PYTHON, "clean_v2.py", *base,
-            "--batch", str(int(s.get("batch", 32))),
-            "--conf", f"{float(s.get('conf', 0.10)):.3f}",
-            "--model", s.get("model", "yolov8x-seg.pt"),
-            "--mode", "plate",
-            "--plate-window", str(int(s.get("plate_window", 100))),
-            "--mask-dilate", str(int(s.get("mask_dilate", 35))),
-        ]
-    if job.mode == "darkonly":
-        return [
-            PYTHON, "clean_v2.py", *base,
-            "--mode", "plate", "--skip-people",
-        ]
-    if job.mode == "stabilize":
-        return [
-            PYTHON, "stabilize.py",
-            "--input", job.input_ref, "--output", str(out),
-            "--shakiness", str(int(s.get("shakiness", 5))),
-        ]
-    if job.mode == "color_normalize":
-        return [
-            PYTHON, "color_normalize.py", *base,
-        ]
-    if job.mode == "ppe":
-        cmd = [PYTHON, "ppe_check.py",
-               "--input", job.input_ref, "--output", str(out),
-               "--report", str(Path(out).with_suffix(".ppe_report.csv")),
-               "--device", "cuda" if GPU_AVAILABLE else "cpu",
-               "--conf", f"{float(s.get('conf', 0.30)):.3f}"]
-        if s.get("custom_model_path"):
-            cmd += ["--custom-model", s["custom_model_path"]]
-        return cmd
-    if job.mode == "analytics":
-        out_dir = Path(out).with_suffix("")  # strip .mp4 → directory name
-        cmd = [PYTHON, "analytics.py",
-               "--output-dir", str(out_dir),
-               "--device", "cuda" if GPU_AVAILABLE else "cpu",
-               "--conf", f"{float(s.get('conf', 0.20)):.3f}"]
-        if job.kind == "folder":
-            cmd += ["--input-folder", job.input_ref]
-        else:
-            cmd += ["--input", job.input_ref]
-        return cmd
-    raise ValueError(f"Unknown mode: {job.mode}")
+    """Delegate to the pipeline registry."""
+    ctx = {"python": PYTHON, "gpu": GPU_AVAILABLE, "root": ROOT}
+    return pipeline_registry.build_command(job, ctx)
 
 
 def make_comparison(orig_video: str, processed_video: str, job_id: str) -> str | None:
@@ -233,7 +166,14 @@ runner = JobRunner(db, queue, root=ROOT, build_cmd=build_command, on_success=on_
 # FastAPI app
 # ----------------------------------------------------------------------------
 
-app = FastAPI(title="Arclap Timelapse Cleaner")
+app = FastAPI(
+    title="Arclap Vision Suite",
+    description=(
+        "Local computer-vision workbench: timelapse cleanup, YOLO model "
+        "playground, live RTSP processing, PPE compliance detection, "
+        "site analytics, and more."
+    ),
+)
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 app.mount("/files/uploads", StaticFiles(directory=str(UPLOADS)), name="uploads")
 app.mount("/files/outputs", StaticFiles(directory=str(OUTPUTS)), name="outputs")
@@ -295,7 +235,86 @@ def system_info():
         "gpu_name": GPU_NAME,
         "queue_pending": queue.pending(),
         "current_job": runner.is_running(),
+        "pipelines": pipeline_registry.list_modes(),
     }
+
+
+@app.get("/health")
+def health():
+    """Liveness probe for Docker / k8s. Returns 200 when the worker is alive."""
+    return {
+        "status": "ok",
+        "worker_alive": runner.is_running() is not None or queue.pending() == 0,
+        "gpu": GPU_AVAILABLE,
+    }
+
+
+@app.get("/api/pipelines")
+def list_pipelines():
+    return pipeline_registry.list_modes()
+
+
+# ----------------------------------------------------------------------------
+# RTSP live stream
+# ----------------------------------------------------------------------------
+
+class RtspStartRequest(BaseModel):
+    url: str
+    output_name: str | None = None
+    rtsp_mode: str = "blur"  # blur | detect | count | record
+    conf: float = 0.30
+    detect_every: int = 2
+    max_fps: float = 15.0
+    duration: int = 0  # seconds; 0 = run until stopped
+    project_id: str | None = None
+
+
+@app.post("/api/rtsp/start")
+def rtsp_start(req: RtspStartRequest):
+    """Spawn a live RTSP processor as a queued job."""
+    out_name = (req.output_name or f"rtsp_{int(time.time())}").strip()
+    if not out_name.lower().endswith(".mp4"):
+        out_name += ".mp4"
+    output_path = OUTPUTS / out_name
+    if req.project_id:
+        proj = db.get_project(req.project_id)
+        if proj:
+            proj_dir = OUTPUTS / proj.name
+            proj_dir.mkdir(exist_ok=True)
+            output_path = proj_dir / out_name
+
+    settings = {
+        "rtsp_mode": req.rtsp_mode,
+        "conf": req.conf,
+        "detect_every": req.detect_every,
+        "max_fps": req.max_fps,
+        "duration": req.duration,
+    }
+    job = db.create_job(
+        kind="stream",
+        mode="rtsp",
+        input_ref=req.url,
+        output_path=str(output_path),
+        settings=settings,
+        project_id=req.project_id,
+    )
+    queue.submit(job.id)
+    return {"job_id": job.id}
+
+
+@app.get("/api/rtsp/{job_id}/live")
+def rtsp_live_status(job_id: str):
+    """Poll the status JSON the running rtsp_live.py keeps refreshed."""
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    status_path = Path(job.output_path).with_suffix(".live_status.json")
+    if not status_path.exists():
+        return {"state": "starting"}
+    try:
+        return json.loads(status_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {"state": "starting"}
 
 
 # ----------------------------------------------------------------------------
@@ -838,7 +857,7 @@ def open_browser_when_ready():
 
 
 if __name__ == "__main__":
-    print(f"Arclap Timelapse Cleaner — {GPU_NAME} ({'GPU' if GPU_AVAILABLE else 'CPU'})")
+    print(f"Arclap Vision Suite — {GPU_NAME} ({'GPU' if GPU_AVAILABLE else 'CPU'})")
     print("Starting at http://127.0.0.1:8000 (browser will open automatically).")
     threading.Thread(target=open_browser_when_ready, daemon=True).start()
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")

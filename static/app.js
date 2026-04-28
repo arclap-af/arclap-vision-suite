@@ -383,7 +383,7 @@ $('btn-clear-log').addEventListener('click', () => { $('log-output').textContent
 // Multi-page navigation
 // =============================================================================
 
-const PAGES = ['wizard', 'models', 'history', 'projects'];
+const PAGES = ['wizard', 'models', 'live', 'history', 'projects'];
 
 function showPage(name) {
   PAGES.forEach(p => {
@@ -396,6 +396,7 @@ function showPage(name) {
   if (name === 'models') { refreshSuggested(); refreshModels(); }
   if (name === 'history') refreshHistory();
   if (name === 'projects') { refreshProjects(); }
+  if (name === 'live') { /* nothing to fetch up-front */ }
 }
 
 document.querySelectorAll('.topnav-btn').forEach(b => {
@@ -856,3 +857,102 @@ function escapeHtml(s) {
 
 // Apply locale on load
 applyLocale();
+
+// =============================================================================
+// Live RTSP page
+// =============================================================================
+
+let rtspJobId = null;
+let rtspPollHandle = null;
+
+const rtspConf = $('rtsp-conf');
+const rtspEvery = $('rtsp-detect-every');
+const rtspFps = $('rtsp-fps');
+
+if (rtspConf) {
+  rtspConf.addEventListener('input', () => $('rtsp-conf-value').textContent = (rtspConf.value / 100).toFixed(2));
+  rtspEvery.addEventListener('input', () => {
+    const v = parseInt(rtspEvery.value);
+    $('rtsp-detect-every-value').textContent = v === 1 ? 'every frame'
+      : v === 2 ? '2 (skip every other frame)' : `${v} (skip ${v-1} of every ${v} frames)`;
+  });
+  rtspFps.addEventListener('input', () => $('rtsp-fps-value').textContent = `${rtspFps.value} fps`);
+}
+
+async function rtspStart() {
+  const url = $('rtsp-url').value.trim();
+  if (!url) { toast('Enter an RTSP URL first', 'error'); return; }
+  const body = {
+    url,
+    rtsp_mode: $('rtsp-mode').value,
+    conf: parseInt($('rtsp-conf').value) / 100,
+    detect_every: parseInt($('rtsp-detect-every').value),
+    max_fps: parseFloat($('rtsp-fps').value),
+    duration: parseInt($('rtsp-duration').value) || 0,
+    output_name: $('rtsp-output-name').value.trim() || 'rtsp_record.mp4',
+  };
+  $('btn-rtsp-start').classList.add('loading');
+  try {
+    const r = await fetch('/api/rtsp/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const err = await r.json();
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const data = await r.json();
+    rtspJobId = data.job_id;
+    toast(`Live job ${data.job_id} queued. Connecting…`, 'success');
+    $('btn-rtsp-start').classList.add('hidden');
+    $('btn-rtsp-stop').classList.remove('hidden');
+    $('rtsp-live-panel').classList.remove('hidden');
+    pollRtsp();
+  } catch (err) {
+    toast('Could not start: ' + err.message, 'error');
+  } finally {
+    $('btn-rtsp-start').classList.remove('loading');
+  }
+}
+
+async function rtspStop() {
+  if (!rtspJobId) return;
+  await fetch(`/api/jobs/${rtspJobId}/stop`, { method: 'POST' });
+  toast('Stop sent', 'warn');
+  if (rtspPollHandle) { clearInterval(rtspPollHandle); rtspPollHandle = null; }
+  $('btn-rtsp-stop').classList.add('hidden');
+  $('btn-rtsp-start').classList.remove('hidden');
+}
+
+async function pollRtsp() {
+  if (rtspPollHandle) clearInterval(rtspPollHandle);
+  rtspPollHandle = setInterval(async () => {
+    if (!rtspJobId) return;
+    try {
+      const r = await fetch(`/api/rtsp/${rtspJobId}/live`).then(r => r.json());
+      $('live-state').textContent = r.state || '—';
+      $('live-people').textContent = r.people ?? '—';
+      $('live-frames').textContent = r.frames ?? '—';
+      $('live-fps').textContent = r.fps_actual ? r.fps_actual.toFixed(1) : '—';
+      $('live-elapsed').textContent = r.elapsed_s
+        ? `${Math.round(r.elapsed_s)}s` : '—';
+      $('live-res').textContent = r.resolution
+        ? `${r.resolution[0]}×${r.resolution[1]}` : '—';
+      $('live-raw').textContent = JSON.stringify(r, null, 2);
+      if (r.state === 'stopped') {
+        clearInterval(rtspPollHandle);
+        rtspPollHandle = null;
+        $('btn-rtsp-stop').classList.add('hidden');
+        $('btn-rtsp-start').classList.remove('hidden');
+      }
+    } catch (e) {
+      // network blip; keep polling
+    }
+  }, 500);
+}
+
+if ($('btn-rtsp-start')) {
+  $('btn-rtsp-start').addEventListener('click', rtspStart);
+  $('btn-rtsp-stop').addEventListener('click', rtspStop);
+}

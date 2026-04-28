@@ -1,0 +1,41 @@
+# Things that must NEVER end up in the image
+.git
+.github
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Runtime artefacts (mounted as volumes instead)
+_uploads/
+_outputs/
+_work/
+_data/
+_models/
+
+# User content
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tiff
+*.heic
+01-SITE-*/
+incoming/
+
+# Editor / IDE
+.vscode/
+.idea/
+.claude/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Other
+*.log
