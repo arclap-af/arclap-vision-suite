@@ -1,0 +1,65 @@
+{
+  "name": "arclap_construction",
+  "title": "Arclap Construction Sites",
+  "description": "40-class taxonomy for construction-site detection (equipment, vehicles, materials, PPE, site state). Bilingual EN/DE labels with brand colours per class.",
+  "n_classes": 40,
+  "layers": [
+    {"id": 1, "title": "Equipment, vehicles, structures, workers", "range": [0, 19]},
+    {"id": 2, "title": "Construction materials", "range": [20, 31]},
+    {"id": 3, "title": "PPE objects", "range": [32, 33]},
+    {"id": 4, "title": "Site state", "range": [34, 39]}
+  ],
+  "ppe_roles": {
+    "person": 11,
+    "helmet": 32,
+    "vest": 33
+  },
+  "classes": [
+    {"id": 0,  "en": "Tower crane",            "de": "Turmdrehkran",         "color": "#1E88E5", "layer": 1, "category": "Crane"},
+    {"id": 1,  "en": "Mobile crane",           "de": "Mobilkran",            "color": "#1976D2", "layer": 1, "category": "Crane"},
+    {"id": 2,  "en": "Excavator",              "de": "Bagger",               "color": "#43A047", "layer": 1, "category": "Machine"},
+    {"id": 3,  "en": "Wheel loader",           "de": "Radlader",             "color": "#FBC02D", "layer": 1, "category": "Machine"},
+    {"id": 4,  "en": "Bulldozer",              "de": "Planierraupe",         "color": "#F57C00", "layer": 1, "category": "Machine"},
+    {"id": 5,  "en": "Concrete mixer truck",   "de": "Betonmischer",         "color": "#7B1FA2", "layer": 1, "category": "Vehicle"},
+    {"id": 6,  "en": "Concrete pump truck",    "de": "Betonpumpe",           "color": "#6A1B9A", "layer": 1, "category": "Vehicle"},
+    {"id": 7,  "en": "Dump truck",             "de": "Kipper",               "color": "#D84315", "layer": 1, "category": "Vehicle"},
+    {"id": 8,  "en": "Low loader",             "de": "Tieflader",            "color": "#BF360C", "layer": 1, "category": "Vehicle"},
+    {"id": 9,  "en": "Scaffolding",            "de": "Gerüst",               "color": "#616161", "layer": 1, "category": "Structure"},
+    {"id": 10, "en": "Crane hook",             "de": "Kranhaken",            "color": "#455A64", "layer": 1, "category": "Object"},
+    {"id": 11, "en": "Construction worker",    "de": "Arbeiter",             "color": "#E53935", "layer": 1, "category": "Person",
+                "notes": "Label EVERY visible person regardless of PPE"},
+    {"id": 12, "en": "Site fence",             "de": "Absperrung",           "color": "#757575", "layer": 1, "category": "Structure"},
+    {"id": 13, "en": "Site container",         "de": "Container",            "color": "#5D4037", "layer": 1, "category": "Structure"},
+    {"id": 14, "en": "Drill / piling rig",     "de": "Bohrgerät",            "color": "#00897B", "layer": 1, "category": "Machine"},
+    {"id": 15, "en": "Compactor / roller",     "de": "Verdichter",           "color": "#FFA000", "layer": 1, "category": "Machine"},
+    {"id": 16, "en": "Long-reach excavator",   "de": "Longfrontbagger",      "color": "#2E7D32", "layer": 1, "category": "Machine"},
+    {"id": 17, "en": "Forklift",               "de": "Gabelstapler",         "color": "#FFB300", "layer": 1, "category": "Machine"},
+    {"id": 18, "en": "Telehandler",            "de": "Teleskoplader",        "color": "#F9A825", "layer": 1, "category": "Machine"},
+    {"id": 19, "en": "Truck",                  "de": "LKW",                  "color": "#C62828", "layer": 1, "category": "Vehicle"},
+
+    {"id": 20, "en": "Steel beam stack",       "de": "Stahlträgerstapel",    "color": "#8E8E8E", "layer": 2},
+    {"id": 21, "en": "Rebar bundle",           "de": "Bewehrungsstahlbündel","color": "#A0522D", "layer": 2},
+    {"id": 22, "en": "Lumber stack",           "de": "Holzstapel",           "color": "#DEB887", "layer": 2},
+    {"id": 23, "en": "Plywood stack",          "de": "Sperrholzstapel",      "color": "#D2B48C", "layer": 2},
+    {"id": 24, "en": "Drywall stack",          "de": "Gipskartonstapel",     "color": "#F5F5DC", "layer": 2},
+    {"id": 25, "en": "Insulation bundle",      "de": "Dämmstoffbündel",      "color": "#FFE4B5", "layer": 2},
+    {"id": 26, "en": "Pipe bundle",            "de": "Rohrbündel",           "color": "#708090", "layer": 2},
+    {"id": 27, "en": "Glass panel stack",      "de": "Glaspaneelestapel",    "color": "#B0E0E6", "layer": 2},
+    {"id": 28, "en": "Concrete block stack",   "de": "Steinblockstapel",     "color": "#CD853F", "layer": 2},
+    {"id": 29, "en": "Roofing material stack", "de": "Dachmaterialstapel",   "color": "#8B4513", "layer": 2},
+    {"id": 30, "en": "Formwork / shuttering",  "de": "Schalung",             "color": "#BC8F8F", "layer": 2},
+    {"id": 31, "en": "Material pallet",        "de": "Materialpalette",      "color": "#D2691E", "layer": 2},
+
+    {"id": 32, "en": "Safety helmet",          "de": "Schutzhelm",           "color": "#FFFF00", "layer": 3,
+                "notes": "Box the helmet itself, not the worker"},
+    {"id": 33, "en": "Hi-vis vest",            "de": "Warnweste",            "color": "#FF6600", "layer": 3,
+                "notes": "Box the vest itself, not the worker"},
+
+    {"id": 34, "en": "Stockpile - gravel",     "de": "Kieshaufen",           "color": "#A9A9A9", "layer": 4},
+    {"id": 35, "en": "Stockpile - sand",       "de": "Sandhaufen",           "color": "#F4A460", "layer": 4},
+    {"id": 36, "en": "Stockpile - soil",       "de": "Erdhaufen",            "color": "#6B4423", "layer": 4},
+    {"id": 37, "en": "Excavation pit",         "de": "Baugrube",             "color": "#3E2723", "layer": 4},
+    {"id": 38, "en": "Concrete pour area",     "de": "Betonierfläche",       "color": "#90A4AE", "layer": 4},
+    {"id": 39, "en": "Cleared/prepared ground","de": "Vorbereitete Fläche",  "color": "#C5E1A5", "layer": 4}
+  ]
+}

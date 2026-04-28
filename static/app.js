@@ -1445,6 +1445,20 @@ async function loadSourceInfo(jobId) {
   }
 }
 
+async function loadPresetList() {
+  const sel = $('preset-select');
+  if (!sel) return;
+  try {
+    const presets = await fetch('/api/presets').then(r => r.json());
+    sel.innerHTML = '<option value="">— None (raw COCO labels) —</option>' +
+      presets.map(p => `<option value="${p.name}">${escapeHtml(p.title)} (${p.n_classes} cls)</option>`).join('');
+    // Default to arclap_construction if present
+    if (presets.find(p => p.name === 'arclap_construction')) {
+      sel.value = 'arclap_construction';
+    }
+  } catch {}
+}
+
 async function loadFilterAnalyse(jobId) {
   if (!jobId) return;
   try {
@@ -1457,6 +1471,8 @@ async function loadFilterAnalyse(jobId) {
     loadFilterCharts(jobId);
     loadTimeOfDayChart(jobId);
     loadCooccurrence(jobId);
+    loadPresetList();
+    if ($('preset-select').value) loadPresetSummary(jobId, $('preset-select').value);
 
     const max = Math.max(1, ...data.rows.map(r => r.n_images));
     $('filter-class-list').innerHTML = data.rows.map(r => {
@@ -1476,6 +1492,83 @@ async function loadFilterAnalyse(jobId) {
     toast('Could not load summary: ' + e.message, 'error');
   }
 }
+
+// Preset-summary rendering — bilingual + layered + PPE pills
+async function loadPresetSummary(jobId, presetName) {
+  if (!jobId || !presetName) {
+    $('filter-layered').classList.add('hidden');
+    $('filter-class-list').classList.remove('hidden');
+    $('ppe-summary-card').classList.add('hidden');
+    $('preset-status').textContent = '';
+    return;
+  }
+  try {
+    const r = await fetch(
+      `/api/filter/${jobId}/preset-summary?preset=${encodeURIComponent(presetName)}`
+    );
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    $('preset-status').textContent =
+      `${d.preset.title} · ${d.preset.n_classes} classes`;
+
+    // Hide the raw breakdown when a preset is active; show layered version
+    $('filter-class-list').classList.add('hidden');
+    const wrap = $('filter-layered');
+    wrap.classList.remove('hidden');
+    wrap.innerHTML = d.layers.map(layer => {
+      const total = d.total_images;
+      const classes = (layer.classes || []).sort((a, b) => b.n_images - a.n_images);
+      if (!classes.length) {
+        return `
+          <div class="layer-block">
+            <div class="layer-header"><span class="layer-tag"><span class="layer-pill">L${layer.id}</span> <strong>${escapeHtml(layer.title)}</strong></span><span class="muted small">no detections</span></div>
+          </div>`;
+      }
+      const cls = classes.map(c => `
+        <div class="layer-class">
+          <span class="swatch" style="background:${c.color}"></span>
+          <div class="name">
+            <strong>${escapeHtml(c.en)}</strong>
+            <span class="de">${escapeHtml(c.de)}${c.category ? ' · ' + escapeHtml(c.category) : ''}</span>
+          </div>
+          <span class="n">${c.n_images.toLocaleString()} (${c.pct_of_total}%)</span>
+        </div>`).join('');
+      return `
+        <div class="layer-block">
+          <div class="layer-header">
+            <span class="layer-tag"><span class="layer-pill">L${layer.id}</span> <strong>${escapeHtml(layer.title)}</strong></span>
+            <span class="muted small">${layer.n_images_in_layer.toLocaleString()} frames have at least one</span>
+          </div>
+          <div class="layer-body">${cls}</div>
+        </div>`;
+    }).join('');
+
+    // PPE compliance pills
+    const ppe = d.ppe;
+    const card = $('ppe-summary-card');
+    if (ppe && ppe.person_frames > 0) {
+      card.classList.remove('hidden');
+      const pillCls = (pct) => pct >= 90 ? 'ok' : pct < 50 ? 'warn' : '';
+      $('ppe-grid').innerHTML = `
+        <div class="ppe-tile"><dt>Frames with workers</dt><dd>${ppe.person_frames.toLocaleString()}</dd></div>
+        <div class="ppe-tile ${pillCls(ppe.pct_with_helmet)}"><dt>Worker + helmet</dt><dd>${ppe.pct_with_helmet}%</dd></div>
+        <div class="ppe-tile ${pillCls(ppe.pct_with_vest)}"><dt>Worker + vest</dt><dd>${ppe.pct_with_vest}%</dd></div>
+        <div class="ppe-tile ${pillCls(ppe.pct_with_both)}"><dt>Worker + both</dt><dd>${ppe.pct_with_both}%</dd></div>`;
+    } else {
+      card.classList.add('hidden');
+    }
+  } catch (e) {
+    $('preset-status').textContent = '(load failed: ' + e.message + ')';
+    $('filter-layered').classList.add('hidden');
+    $('filter-class-list').classList.remove('hidden');
+  }
+}
+
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.id === 'preset-select') {
+    loadPresetSummary(activeFilterScanId, e.target.value);
+  }
+});
 
 // Time-of-day chart
 async function loadTimeOfDayChart(jobId) {

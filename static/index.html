@@ -585,6 +585,20 @@
       </div>
     </div>
     <div id="dataset-info" class="dataset-info hidden"></div>
+
+    <details class="folder-input" style="margin-top:14px">
+      <summary>Need a starter <code>data.yaml</code> for your project's class taxonomy?</summary>
+      <p class="muted small">
+        If you're training the Arclap construction-site model (40 classes across 4 layers — equipment, materials, PPE, site state), download the ready-to-use YAML and drop it next to your CVAT export's <code>train/</code> and <code>val/</code> folders before zipping.
+      </p>
+      <div class="folder-row" style="margin-top:8px">
+        <a class="btn btn-secondary"
+           href="/api/presets/arclap_construction/data-yaml"
+           download="data.yaml">Download data.yaml (Arclap construction)</a>
+        <a class="btn btn-ghost"
+           href="/api/presets/arclap_construction" target="_blank">View raw preset JSON</a>
+      </div>
+    </details>
   </section>
 
   <section class="card hidden" id="train-config-card">
@@ -831,7 +845,26 @@
     <p class="muted small">Reads as a heatmap: bigger / redder cells mean those two classes show up in the same frame more often. Useful for spotting context (people often near machines, etc.).</p>
     <div id="cooc-wrap" class="cooc-wrap"></div>
 
+    <div class="preset-bar">
+      <label class="text-row" style="flex:1">
+        <span>Apply taxonomy preset</span>
+        <select id="preset-select">
+          <option value="">— None (raw COCO labels) —</option>
+        </select>
+      </label>
+      <span class="muted small" id="preset-status"></span>
+    </div>
+
+    <div id="ppe-summary-card" class="ppe-summary hidden">
+      <div class="ppe-headline">
+        <h4>PPE compliance · frame-level estimate</h4>
+        <span class="muted small">Frames containing a worker that also contain a helmet/vest detection. Per-instance overlap is in the dedicated PPE pipeline.</span>
+      </div>
+      <div class="ppe-grid" id="ppe-grid"></div>
+    </div>
+
     <h3 style="margin-top:18px">Class breakdown</h3>
+    <div id="filter-layered" class="filter-layered hidden"></div>
     <div id="filter-class-list" class="filter-class-list"></div>
 
     <div class="actions" style="margin-top:18px">

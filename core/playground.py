@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 
-# Color palette for class boxes — distinct, readable, accessible-ish
+# Default fallback palette — distinct, readable, accessible-ish
 COLORS = [
     (66, 135, 245),  (76, 217, 100), (255, 149, 0),  (255, 59, 48),
     (175, 82, 222),  (88, 86, 214),  (52, 199, 89),  (255, 204, 0),
@@ -29,8 +29,36 @@ COLORS = [
 ]
 
 
-def color_for(idx: int) -> tuple[int, int, int]:
+def color_for(idx: int, preset_palette: dict[int, tuple[int, int, int]] | None = None
+              ) -> tuple[int, int, int]:
+    """Return the BGR colour for a class id. If a preset palette is supplied
+    and contains the id, use it (so detection boxes match the project's
+    brand colours). Otherwise fall back to the rotating default palette."""
+    if preset_palette and idx in preset_palette:
+        return preset_palette[idx]
     return COLORS[idx % len(COLORS)]
+
+
+def _hex_to_bgr(h: str) -> tuple[int, int, int]:
+    """#RRGGBB → BGR tuple. Accepts uppercase or lowercase."""
+    h = h.lstrip('#')
+    if len(h) != 6:
+        return (128, 128, 128)
+    r = int(h[0:2], 16); g = int(h[2:4], 16); b = int(h[4:6], 16)
+    return (b, g, r)
+
+
+def palette_from_preset(preset: dict | None) -> dict[int, tuple[int, int, int]]:
+    """Build a class-id -> BGR map from a preset's class definitions."""
+    if not preset:
+        return {}
+    out: dict[int, tuple[int, int, int]] = {}
+    for c in preset.get("classes", []):
+        cid = int(c["id"])
+        col = c.get("color", "")
+        if col:
+            out[cid] = _hex_to_bgr(col)
+    return out
 
 
 def inspect_model(model_path: str | Path) -> dict[str, Any]:
@@ -67,7 +95,8 @@ def predict_on_image(model_path: str, image_path: str, *,
                      device: str = "auto",
                      draw_labels: bool = True,
                      draw_masks: bool = True,
-                     draw_keypoints: bool = True) -> tuple[np.ndarray, list[dict]]:
+                     draw_keypoints: bool = True,
+                     preset: dict | None = None) -> tuple[np.ndarray, list[dict]]:
     """Run inference on one image, return (annotated_bgr_image, detections)."""
     from ultralytics import YOLO
 
@@ -86,6 +115,14 @@ def predict_on_image(model_path: str, image_path: str, *,
     result = results[0]
     annotated = img.copy()
     detections: list[dict] = []
+    palette = palette_from_preset(preset)
+
+    # If a preset is active, override the model's `names` with the preset's
+    # English labels so they show up on the boxes correctly.
+    preset_names: dict[int, str] = {}
+    if preset:
+        for c in preset.get("classes", []):
+            preset_names[int(c["id"])] = c.get("en") or str(c["id"])
 
     # Masks (segmentation)
     if draw_masks and getattr(result, "masks", None) is not None:
@@ -94,7 +131,7 @@ def predict_on_image(model_path: str, image_path: str, *,
                 m = cv2.resize(m, (annotated.shape[1], annotated.shape[0]),
                                interpolation=cv2.INTER_NEAREST)
             color = color_for(int(result.boxes.cls[k].item())
-                              if result.boxes is not None else k)
+                              if result.boxes is not None else k, palette)
             mask_bool = m > 0.5
             overlay = annotated.copy()
             overlay[mask_bool] = (
@@ -110,10 +147,11 @@ def predict_on_image(model_path: str, image_path: str, *,
         names = getattr(result, "names", None) or {}
         for (x1, y1, x2, y2), c, p in zip(xyxy, cls, confs):
             x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
-            color = color_for(int(c))
+            color = color_for(int(c), palette)
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
             if draw_labels:
-                label = f"{names.get(int(c), str(int(c)))} {p:.2f}"
+                friendly = preset_names.get(int(c)) or names.get(int(c), str(int(c)))
+                label = f"{friendly} {p:.2f}"
                 (tw, th), baseline = cv2.getTextSize(
                     label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2
                 )
@@ -124,7 +162,7 @@ def predict_on_image(model_path: str, image_path: str, *,
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             detections.append({
                 "class": int(c),
-                "label": names.get(int(c), str(int(c))),
+                "label": preset_names.get(int(c)) or names.get(int(c), str(int(c))),
                 "confidence": float(p),
                 "box": [int(x1), int(y1), int(x2), int(y2)],
             })
