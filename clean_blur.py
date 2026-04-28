@@ -68,6 +68,15 @@ def parse_args():
     p.add_argument("--vehicle-conf", type=float, default=0.30,
                    help="Confidence threshold for vehicle detection. "
                         "Higher than person-conf because vehicle detections are usually solid.")
+    p.add_argument("--exclude-region", action="append", default=[],
+                   help="Normalized rectangle 'x1,y1,x2,y2' (each in [0,1]) where blur "
+                        "is suppressed. Repeat for multiple regions. Useful for keeping "
+                        "your own logo / signage visible.")
+    p.add_argument("--custom-model", default=None,
+                   help="Path to a custom YOLO .pt file. When set, overrides --model.")
+    p.add_argument("--custom-classes", default=None,
+                   help="Comma-separated class IDs from the custom model to redact "
+                        "(default: all). Each is treated like a vehicle (whole-box blur).")
 
     # Output
     p.add_argument("--fps", type=int, default=0)
@@ -167,19 +176,53 @@ def filter_dark(frames, threshold):
     return keep
 
 
+def parse_exclusion_rects(specs, w, h):
+    """Convert ['x1,y1,x2,y2', ...] in normalized coords to absolute pixel rects."""
+    rects = []
+    for s in specs:
+        try:
+            parts = [float(v.strip()) for v in s.split(",")]
+            if len(parts) != 4:
+                raise ValueError("need 4 numbers")
+            x1, y1, x2, y2 = parts
+            rects.append((
+                int(round(x1 * w)), int(round(y1 * h)),
+                int(round(x2 * w)), int(round(y2 * h)),
+            ))
+        except (ValueError, TypeError) as e:
+            print(f"  [warn] bad --exclude-region '{s}': {e}")
+    return rects
+
+
 def blur_heads(frames, blurred_dir, args):
-    """Detect people (and optionally vehicles), apply Gaussian blur to head/whole-vehicle regions."""
+    """Detect people (and optionally vehicles + custom classes), blur head/box regions."""
     from ultralytics import YOLO
     blurred_dir.mkdir(parents=True, exist_ok=True)
-    model = YOLO(args.model)
+    model_path = args.custom_model or args.model
+    model = YOLO(model_path)
+    using_custom = bool(args.custom_model)
 
     PERSON = 0
     VEHICLES = [2, 3, 5, 7]  # car, motorcycle, bus, truck (COCO class IDs)
-    classes = [PERSON] + (VEHICLES if args.include_vehicles else [])
+    if using_custom:
+        # Custom model: redact whatever classes the user specified, or all classes
+        if args.custom_classes:
+            custom_class_ids = [int(c.strip()) for c in args.custom_classes.split(",") if c.strip()]
+        else:
+            custom_class_ids = None  # all
+        classes = custom_class_ids
+        extras = f" (custom model: {Path(model_path).name})"
+    else:
+        classes = [PERSON] + (VEHICLES if args.include_vehicles else [])
+        extras = " + vehicles" if args.include_vehicles else ""
 
-    extras = " + vehicles (cars/motorcycles/buses/trucks)" if args.include_vehicles else ""
-    print(f"\n[3/4] Detecting people{extras} and blurring ({args.model}, "
-          f"person-conf={args.conf})...")
+    # Pre-parse exclusion rects (need image dims; defer to first frame)
+    exclusion_specs = list(args.exclude_region)
+    if exclusion_specs:
+        print(f"  Honoring {len(exclusion_specs)} exclusion region(s) — these areas will not be blurred.")
+
+    print(f"\n[3/4] Detecting people{extras} and blurring ({Path(model_path).name}, "
+          f"conf={args.conf})...")
 
     # Make sure blur kernel is odd
     k = args.blur_strength
@@ -215,12 +258,18 @@ def blur_heads(frames, blurred_dir, args):
             cls = result.boxes.cls.cpu().numpy().astype(int)
             conf = result.boxes.conf.cpu().numpy()
 
+            # Parse exclusion rects on first frame (need w,h)
+            if exclusion_specs:
+                exclusion_rects = parse_exclusion_rects(exclusion_specs, w, h)
+            else:
+                exclusion_rects = []
+
             for box, c, p in zip(xyxy, cls, conf):
                 x1, y1, x2, y2 = box
                 box_w = x2 - x1
                 box_h = y2 - y1
 
-                if c == PERSON:
+                if not using_custom and c == PERSON:
                     # Head region: top head_ratio of bounding box
                     head_h = box_h * args.head_ratio
                     head_w = box_w * 0.65
@@ -241,9 +290,8 @@ def blur_heads(frames, blurred_dir, args):
                             color=1.0, thickness=-1,
                         )
                 else:
-                    # Vehicle: filter by stricter confidence and blur the whole box
-                    # (license plates / company decals can be anywhere on the vehicle).
-                    if p < args.vehicle_conf:
+                    # Vehicle / custom-class: filter by stricter confidence and blur whole box.
+                    if (not using_custom) and p < args.vehicle_conf:
                         continue
                     vx1 = int(max(0, x1))
                     vy1 = int(max(0, y1))
@@ -252,6 +300,10 @@ def blur_heads(frames, blurred_dir, args):
                     if vx2 > vx1 and vy2 > vy1:
                         cv2.rectangle(head_mask, (vx1, vy1), (vx2, vy2),
                                       color=1.0, thickness=-1)
+
+            # Apply exclusion rects: zero out the mask inside protected zones
+            for ex1, ey1, ex2, ey2 in exclusion_rects:
+                head_mask[max(0, ey1):min(h, ey2), max(0, ex1):min(w, ex2)] = 0.0
 
             if not head_mask.any():
                 n_no_people += 1

@@ -27,7 +27,9 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from core import DB, JobQueue, JobRow, JobRunner, ProjectRow
+from core import DB, JobQueue, JobRow, JobRunner, ModelRow, ProjectRow
+from core.notify import build_audit_report, send_email, send_webhook
+from core.playground import inspect_model, predict_on_image
 
 PYTHON = sys.executable
 ROOT = Path(__file__).parent.resolve()
@@ -35,9 +37,11 @@ UPLOADS = ROOT / "_uploads"
 OUTPUTS = ROOT / "_outputs"
 STATIC = ROOT / "static"
 DATA = ROOT / "_data"
+MODELS_DIR = ROOT / "_models"
 UPLOADS.mkdir(exist_ok=True)
 OUTPUTS.mkdir(exist_ok=True)
 DATA.mkdir(exist_ok=True)
+MODELS_DIR.mkdir(exist_ok=True)
 
 GPU_AVAILABLE = torch.cuda.is_available()
 GPU_NAME = torch.cuda.get_device_name(0) if GPU_AVAILABLE else "CPU only"
@@ -106,6 +110,26 @@ def build_command(job: JobRow) -> list[str]:
         return [
             PYTHON, "color_normalize.py", *base,
         ]
+    if job.mode == "ppe":
+        cmd = [PYTHON, "ppe_check.py",
+               "--input", job.input_ref, "--output", str(out),
+               "--report", str(Path(out).with_suffix(".ppe_report.csv")),
+               "--device", "cuda" if GPU_AVAILABLE else "cpu",
+               "--conf", f"{float(s.get('conf', 0.30)):.3f}"]
+        if s.get("custom_model_path"):
+            cmd += ["--custom-model", s["custom_model_path"]]
+        return cmd
+    if job.mode == "analytics":
+        out_dir = Path(out).with_suffix("")  # strip .mp4 → directory name
+        cmd = [PYTHON, "analytics.py",
+               "--output-dir", str(out_dir),
+               "--device", "cuda" if GPU_AVAILABLE else "cpu",
+               "--conf", f"{float(s.get('conf', 0.20)):.3f}"]
+        if job.kind == "folder":
+            cmd += ["--input-folder", job.input_ref]
+        else:
+            cmd += ["--input", job.input_ref]
+        return cmd
     raise ValueError(f"Unknown mode: {job.mode}")
 
 
@@ -148,14 +172,57 @@ def make_comparison(orig_video: str, processed_video: str, job_id: str) -> str |
 
 
 def on_job_success(job: JobRow) -> None:
-    """Build comparison image for test/preview runs and set output URL."""
+    """Build comparison image, audit report, fire notifications when a job finishes."""
     output_url = f"/files/outputs/{Path(job.output_path).name}"
     updates = {"output_url": output_url}
     if job.settings.get("test") and job.kind == "video":
         cmp = make_comparison(job.input_ref, job.output_path, job.id)
         if cmp:
             updates["compare_url"] = f"/files/outputs/{Path(cmp).name}"
+
+    # Always build the privacy/audit HTML report.
+    try:
+        audit_path = build_audit_report(_job_to_dict_for_audit(job), job.output_path)
+        try:
+            audit_rel = audit_path.relative_to(OUTPUTS).as_posix()
+            updates["compare_url"] = updates.get("compare_url") or \
+                f"/files/outputs/{audit_rel}"
+        except ValueError:
+            pass
+        db.append_log(job.id, f"[audit] report written: {audit_path.name}")
+    except Exception as e:
+        db.append_log(job.id, f"[warn] audit report failed: {e}")
+
+    # Fire notifications (best-effort)
+    notify = job.settings.get("notify") or {}
+    if notify.get("webhook"):
+        ok, info = send_webhook(notify["webhook"], {
+            "event": "job.done", "job_id": job.id, "mode": job.mode,
+            "status": "done", "output_url": output_url,
+        })
+        db.append_log(job.id, f"[notify] webhook {info}" if ok else
+                              f"[notify] webhook FAILED: {info}")
+    if notify.get("email"):
+        ok, info = send_email(
+            to=notify["email"],
+            subject=f"[Arclap] job {job.id} ({job.mode}) done",
+            body=f"Output: {Path(job.output_path).name}\nMode: {job.mode}\n"
+                 f"Started: {job.started_at}\nFinished: {job.finished_at}\n",
+        )
+        db.append_log(job.id, f"[notify] email {info}" if ok else
+                              f"[notify] email FAILED: {info}")
+
     db.update_job(job.id, **updates)
+
+
+def _job_to_dict_for_audit(job: JobRow) -> dict:
+    return {
+        "id": job.id, "mode": job.mode, "kind": job.kind,
+        "input_ref": job.input_ref, "output_path": job.output_path,
+        "settings": job.settings, "status": job.status,
+        "started_at": job.started_at, "finished_at": job.finished_at,
+        "project_id": job.project_id,
+    }
 
 
 runner = JobRunner(db, queue, root=ROOT, build_cmd=build_command, on_success=on_job_success)
@@ -264,6 +331,34 @@ async def upload(file: UploadFile = File(...)):
         "size": dest.stat().st_size,
         "fps": fps, "frames": n, "duration": duration,
         "width": w, "height": h,
+        "url": f"/files/uploads/{dest.name}",
+    }
+    return UPLOADED[file_id]
+
+
+@app.post("/api/upload-image")
+async def upload_image(file: UploadFile = File(...)):
+    """Upload a single image (for playground testing)."""
+    suffix = Path(file.filename or "image.jpg").suffix.lower() or ".jpg"
+    if suffix not in ALLOWED_IMAGE_EXTS:
+        raise HTTPException(
+            415, f"Unsupported image type '{suffix}'. Allowed: "
+                 f"{', '.join(sorted(ALLOWED_IMAGE_EXTS))}"
+        )
+    file_id = uuid.uuid4().hex[:12]
+    dest = UPLOADS / f"{file_id}{suffix}"
+    written = 0
+    with open(dest, "wb") as f:
+        while chunk := await file.read(1 << 20):
+            written += len(chunk)
+            if written > 200 * 1024 * 1024:  # 200 MB cap on test images
+                f.close()
+                dest.unlink(missing_ok=True)
+                raise HTTPException(413, "Image exceeds 200 MB upload limit.")
+            f.write(chunk)
+    UPLOADED[file_id] = {
+        "id": file_id, "kind": "image", "path": str(dest),
+        "name": file.filename, "size": dest.stat().st_size,
         "url": f"/files/uploads/{dest.name}",
     }
     return UPLOADED[file_id]
@@ -539,6 +634,140 @@ async def stream(job_id: str):
 # ----------------------------------------------------------------------------
 # Index page
 # ----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
+# YOLO Model Playground
+# ----------------------------------------------------------------------------
+
+ALLOWED_MODEL_EXTS = {".pt", ".pth"}
+
+
+@app.post("/api/models/upload")
+async def upload_model(file: UploadFile = File(...), notes: str = Form("")):
+    """Upload a YOLO .pt file. Auto-detects task + class names + parameters."""
+    suffix = Path(file.filename or "model.pt").suffix.lower() or ".pt"
+    if suffix not in ALLOWED_MODEL_EXTS:
+        raise HTTPException(
+            415, f"Unsupported model file '{suffix}'. Use .pt or .pth"
+        )
+    name_base = Path(file.filename or "model.pt").stem
+    candidate = MODELS_DIR / f"{name_base}{suffix}"
+    i = 1
+    while candidate.exists():
+        candidate = MODELS_DIR / f"{name_base}_{i}{suffix}"
+        i += 1
+    written = 0
+    with open(candidate, "wb") as f:
+        while chunk := await file.read(1 << 20):
+            written += len(chunk)
+            if written > 2 * 1024 * 1024 * 1024:  # 2 GB cap on model size
+                f.close()
+                candidate.unlink(missing_ok=True)
+                raise HTTPException(413, "Model exceeds 2 GB upload limit.")
+            f.write(chunk)
+
+    try:
+        meta = inspect_model(str(candidate))
+    except Exception as e:
+        candidate.unlink(missing_ok=True)
+        raise HTTPException(400, f"Could not load model: {e}")
+
+    row = db.create_model(
+        name=candidate.stem,
+        path=str(candidate),
+        task=meta["task"],
+        classes=meta["classes"],
+        size_bytes=candidate.stat().st_size,
+        notes=notes or "",
+    )
+    return _model_to_dict(row, n_params=meta.get("n_parameters", 0))
+
+
+@app.get("/api/models")
+def list_models():
+    return [_model_to_dict(m) for m in db.list_models()]
+
+
+@app.delete("/api/models/{model_id}")
+def delete_model(model_id: str):
+    m = db.get_model(model_id)
+    if not m:
+        raise HTTPException(404, "Model not found")
+    db.delete_model(model_id)
+    try:
+        Path(m.path).unlink(missing_ok=True)
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+def _model_to_dict(m: ModelRow, n_params: int = 0) -> dict:
+    return {
+        "id": m.id,
+        "name": m.name,
+        "task": m.task,
+        "classes": m.classes,
+        "n_classes": m.n_classes,
+        "size_bytes": m.size_bytes,
+        "size_mb": round(m.size_bytes / (1024 * 1024), 1),
+        "n_parameters": n_params,
+        "notes": m.notes,
+        "created_at": m.created_at,
+    }
+
+
+class PlaygroundRequest(BaseModel):
+    model_id: str
+    image_id: str            # uploaded video file_id (we'll grab the first frame)
+                              # OR an uploaded image file_id
+    conf: float = 0.25
+    iou: float = 0.45
+    classes: list[int] | None = None
+    draw_masks: bool = True
+    draw_keypoints: bool = True
+
+
+@app.post("/api/playground/test")
+def playground_test(req: PlaygroundRequest):
+    """Run a registered model on an uploaded image (or first frame of an uploaded video).
+    Returns annotated image URL + detection list.
+    """
+    model = db.get_model(req.model_id)
+    if not model:
+        raise HTTPException(404, "Model not found")
+    upload = UPLOADED.get(req.image_id)
+    if not upload:
+        raise HTTPException(404, "Image/video not found (upload first)")
+
+    src_path = Path(upload["path"])
+    if upload.get("kind") == "video" or src_path.suffix.lower() in ALLOWED_VIDEO_EXTS:
+        # Grab first frame
+        cap = cv2.VideoCapture(str(src_path))
+        ok, frame = cap.read()
+        cap.release()
+        if not ok:
+            raise HTTPException(400, "Could not read first frame from video.")
+        sample = OUTPUTS / f"_pg_sample_{uuid.uuid4().hex[:8]}.jpg"
+        cv2.imwrite(str(sample), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        image_path = str(sample)
+    else:
+        image_path = str(src_path)
+
+    annotated, detections = predict_on_image(
+        model.path, image_path,
+        conf=req.conf, iou=req.iou, classes=req.classes,
+        device="cuda" if GPU_AVAILABLE else "cpu",
+        draw_masks=req.draw_masks, draw_keypoints=req.draw_keypoints,
+    )
+    out_name = f"_pg_result_{uuid.uuid4().hex[:8]}.jpg"
+    out_path = OUTPUTS / out_name
+    cv2.imwrite(str(out_path), annotated, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    return {
+        "annotated_url": f"/files/outputs/{out_name}",
+        "detections": detections,
+        "n_detections": len(detections),
+    }
+
 
 @app.get("/", response_class=HTMLResponse)
 def index():

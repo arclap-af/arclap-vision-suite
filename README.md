@@ -2,21 +2,33 @@
 
 Privacy-safe local processor for timelapse videos and image batches. Drag a video into a browser tab (or point at a folder of 60k+ images) and pick what you want done:
 
-- **Blur faces only** — fastest; people stay visible as silhouettes. Optional `--include-vehicles` blurs cars/buses/trucks too (license plates, decals).
+### Cleanup modes
+- **Blur faces only** — fastest; people stay visible as silhouettes. Optional `--include-vehicles` blurs cars/buses/trucks too. Exclude regions (`--exclude-region`) to keep your own logo intact. Custom-model support (`--custom-model`) lets you redact site-specific objects.
 - **Remove people completely** — slower; plate-mode inpainting from neighboring frames.
 - **Drop dark frames only** — no AI, just trims night/dusk segments.
 - **Stabilize camera shake** — two-pass ffmpeg vidstab to remove drift / jitter.
 - **Normalize color & exposure** — histogram-match every frame to a stable reference for a consistent look across hours of changing light.
+- **PPE compliance check** — flag missing hard hats / hi-vis (custom-model recommended). Outputs an annotated video plus a per-frame CSV report.
+- **Site analytics dashboard** — turn the timelapse into business intelligence: activity heatmap, people-count chart, peak/average stats.
 
-Everything runs on your machine — videos never leave the box. Uses an NVIDIA GPU when present, falls back to CPU.
+### YOLO Model Playground
+A dedicated **Models** tab lets you upload any YOLOv8/v11 `.pt` file (detection, segmentation, pose, OBB, classification), auto-detects the task and class names, and runs live inference on a sample image with annotated bounding boxes / masks / keypoints. Uploaded models are also usable in the main wizard via the custom-model flag.
 
 ### Workflow features
-
 - **Folder input** — point at a server-local folder of 60k+ JPGs/PNGs and they're processed in place (no upload).
-- **Persistent jobs** — a SQLite store at `_data/jobs.db` keeps every run. Close the browser, re-open, history is intact.
+- **Persistent jobs** — a SQLite store at `_data/jobs.db` keeps every run. Close the browser, re-open, history is intact. The **History** tab shows every job ever run with re-open / view-log buttons.
 - **Job queue** — single GPU worker serializes submissions so multiple jobs can't OOM each other.
-- **Project workspaces** — group jobs under named projects with per-project default settings.
+- **Projects** — group jobs under named workspaces with per-project default settings.
+- **Recipes** — export current wizard settings as JSON, share with colleagues, import on the other side.
 - **Watch folder** — `python watcher.py --watch ./incoming --mode blur` polls a directory and auto-submits any new video as a job.
+- **Notifications** — webhook + email on job completion (SMTP via `ARCLAP_SMTP_*` env vars).
+- **Audit reports** — every finished job writes an HTML privacy attestation alongside the output (open in browser → Print → Save as PDF).
+- **Watermarks / title cards** — `python overlay.py --logo logo.png --title "Day 14"` adds branding to a finished video.
+
+### UI
+Modern dark theme by default with a light theme toggle, English/German locale switch, keyboard shortcuts (Cmd/Ctrl+Enter to run), and a multi-tab layout (Wizard / Models / History / Projects).
+
+Everything runs on your machine — videos and images never leave the box. Uses an NVIDIA GPU when present, falls back to CPU.
 
 ---
 
@@ -140,14 +152,20 @@ scripts/setup.py            Cross-platform Python install logic
 app.py                      FastAPI backend (preferred web UI)
 gui.py                      Gradio backend (alternative web UI)
 core/
-  db.py                     SQLite job + project persistence
+  db.py                     SQLite jobs / projects / models persistence
   queue.py                  Single-worker GPU job queue + runner
+  playground.py             YOLO model inspection + live inference / annotation
+  notify.py                 Webhook, email, audit-report HTML
 clean.py                    Rolling-median person-removal pipeline (v1)
 clean_v2.py                 Plate-mode inpainting pipeline (v2)
-clean_blur.py               Head-blur (v3) — supports --include-vehicles
+clean_blur.py               Head-blur (v3) — supports --include-vehicles, --exclude-region, --custom-model
 stabilize.py                Camera-shake stabilization (ffmpeg vidstab)
 color_normalize.py          Color & exposure normalization
+ppe_check.py                PPE compliance detection + annotated output + CSV
+analytics.py                Activity heatmap + people-count dashboard
+overlay.py                  Watermarks, title cards, burn-in date
 watcher.py                  Watch-folder daemon that auto-submits jobs
+ROADMAP.md                  What's deliberately out-of-scope (and why)
 static/
   index.html                Single-page wizard frontend
   style.css                 Modern dark UI styling

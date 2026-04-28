@@ -20,12 +20,23 @@
       <p class="subtitle">Privacy-safe timelapse processor — runs locally on your GPU</p>
     </div>
   </div>
+  <nav class="topnav">
+    <button class="topnav-btn active" data-page="wizard">Wizard</button>
+    <button class="topnav-btn" data-page="models">Models</button>
+    <button class="topnav-btn" data-page="history">History</button>
+    <button class="topnav-btn" data-page="projects">Projects</button>
+  </nav>
   <div class="header-right">
+    <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark">◐</button>
+    <select id="locale-toggle" class="locale-select" title="Language">
+      <option value="en">EN</option>
+      <option value="de">DE</option>
+    </select>
     <span id="gpu-badge" class="badge badge-muted">Detecting…</span>
   </div>
 </header>
 
-<main class="container">
+<main class="container" id="page-wizard">
 
   <!-- Stepper -->
   <nav class="stepper" id="stepper">
@@ -180,6 +191,33 @@
           <span class="goal-meta">Medium · histogram-match per frame</span>
         </div>
       </label>
+      <label class="goal-card" data-mode="ppe">
+        <input type="radio" name="goal" value="ppe" />
+        <div class="goal-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M12 2 L4 7 v6 c0 5 3.5 8 8 9 5-1 8-4 8-9 V7 z"/>
+          </svg>
+        </div>
+        <div class="goal-body">
+          <h3>PPE compliance check</h3>
+          <p>Detect missing hard hats / hi-vis. Annotated video + CSV report.</p>
+          <span class="goal-meta">Site safety · custom-model recommended</span>
+        </div>
+      </label>
+      <label class="goal-card" data-mode="analytics">
+        <input type="radio" name="goal" value="analytics" />
+        <div class="goal-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M3 3v18h18"/>
+            <path d="M7 14l4-4 4 3 5-7"/>
+          </svg>
+        </div>
+        <div class="goal-body">
+          <h3>Site analytics dashboard</h3>
+          <p>Activity heatmap + people-count chart. JPEG + CSV outputs.</p>
+          <span class="goal-meta">Business intelligence · turn timelapse into insight</span>
+        </div>
+      </label>
     </div>
     <div class="slider-row" id="conf-row" style="margin-top:18px">
       <label for="conf">Person detection sensitivity</label>
@@ -237,6 +275,20 @@
       </button>
       <button class="btn btn-ghost hidden" id="btn-stop-run">Stop</button>
     </div>
+    <details class="notify-row">
+      <summary>Notify me when this finishes (optional)</summary>
+      <div class="notify-fields">
+        <label class="text-row">
+          <span>Webhook URL</span>
+          <input type="text" id="notify-webhook" placeholder="https://hooks.example.com/your-endpoint" />
+        </label>
+        <label class="text-row">
+          <span>Email address</span>
+          <input type="email" id="notify-email" placeholder="you@arclap.ch" />
+        </label>
+        <p class="muted small">Email needs <code>ARCLAP_SMTP_HOST</code>/<code>USER</code>/<code>PASS</code> env vars set on the server.</p>
+      </div>
+    </details>
     <div class="result hidden" id="result-block">
       <h4>Result</h4>
       <video id="result-video" controls></video>
@@ -253,6 +305,127 @@
     <pre id="log-output"></pre>
   </section>
 
+</main>
+
+<!-- ====== Models Page ====== -->
+<main class="container hidden" id="page-models">
+  <section class="card">
+    <div class="card-header">
+      <h2>YOLO Model Playground</h2>
+      <p>Upload any YOLOv8 / YOLOv11 <code>.pt</code> file (detection, segmentation, pose, OBB, classification). Test it locally on a sample image and see annotated detections.</p>
+    </div>
+    <div class="dropzone" id="model-dropzone">
+      <input type="file" id="model-file-input" accept=".pt,.pth" hidden />
+      <div class="dropzone-content">
+        <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+          <polyline points="14 2 14 8 20 8"></polyline>
+          <line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/>
+        </svg>
+        <p class="dropzone-title">Drop a <code>.pt</code> file or <span class="link">browse</span></p>
+        <p class="dropzone-hint">Auto-detects task, class names and parameter count · max 2 GB</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h2>Registered models</h2>
+      <p>All your uploaded models. Click "Test" to run inference on a sample image.</p>
+    </div>
+    <div id="model-list" class="model-grid">
+      <p class="muted">No models registered yet.</p>
+    </div>
+  </section>
+
+  <section class="card hidden" id="model-test-panel">
+    <div class="card-header">
+      <h2>Test "<span id="test-model-name"></span>"</h2>
+      <p>Upload an image (or pick a video — first frame will be used) and run inference.</p>
+    </div>
+    <div class="test-grid">
+      <div>
+        <div class="dropzone small" id="test-image-dropzone">
+          <input type="file" id="test-image-input" accept="image/*,video/*" hidden />
+          <div class="dropzone-content">
+            <p class="dropzone-title">Drop image or video</p>
+            <p class="dropzone-hint">JPG / PNG / MP4 / MOV</p>
+          </div>
+        </div>
+        <div class="test-controls">
+          <label>Confidence
+            <input type="range" id="test-conf" min="5" max="95" step="1" value="25"/>
+            <span id="test-conf-value">0.25</span>
+          </label>
+          <label>IoU
+            <input type="range" id="test-iou" min="10" max="95" step="1" value="45"/>
+            <span id="test-iou-value">0.45</span>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" id="test-draw-masks" checked/> Draw masks
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" id="test-draw-keypoints" checked/> Draw keypoints
+          </label>
+          <button class="btn btn-primary btn-lg" id="btn-test-run" disabled>Run inference</button>
+        </div>
+      </div>
+      <div>
+        <h4>Result</h4>
+        <img id="test-result-image" class="test-result" alt="" />
+        <div id="test-result-table" class="muted small"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ====== History Page ====== -->
+<main class="container hidden" id="page-history">
+  <section class="card">
+    <div class="card-header">
+      <h2>Job history</h2>
+      <p>Every job ever run — current and past, grouped by project.</p>
+      <div class="history-controls">
+        <select id="history-project-filter">
+          <option value="">All projects</option>
+        </select>
+        <button class="btn btn-ghost btn-small" id="btn-refresh-history">Refresh</button>
+      </div>
+    </div>
+    <div id="history-list">
+      <p class="muted">Loading…</p>
+    </div>
+  </section>
+</main>
+
+<!-- ====== Projects Page ====== -->
+<main class="container hidden" id="page-projects">
+  <section class="card">
+    <div class="card-header">
+      <h2>Projects</h2>
+      <p>Group your work by site, client, or campaign. Each project keeps its own job history and default settings.</p>
+    </div>
+    <div class="project-create">
+      <input type="text" id="new-project-name" placeholder="New project name" />
+      <button class="btn btn-primary" id="btn-create-project">Create project</button>
+    </div>
+    <div id="project-list" class="project-grid">
+      <p class="muted">No projects yet.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h2>Recipe import / export</h2>
+      <p>Save your wizard settings as a JSON recipe and share with the team.</p>
+    </div>
+    <div class="recipe-row">
+      <button class="btn btn-secondary" id="btn-export-recipe">Export current settings</button>
+      <input type="file" id="recipe-import-input" accept=".json" hidden />
+      <button class="btn btn-secondary" id="btn-import-recipe">Import recipe…</button>
+    </div>
+    <pre id="recipe-output" class="recipe-output muted small hidden"></pre>
+  </section>
 </main>
 
 <!-- Toast container -->

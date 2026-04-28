@@ -43,6 +43,27 @@ class ProjectRow:
 
 
 @dataclass
+class ModelRow:
+    """A user-uploaded YOLO model registered for testing / use."""
+    id: str
+    name: str
+    path: str           # absolute on-disk path
+    task: str = "detect"  # detect | segment | pose | obb | classify
+    classes_json: str = "{}"
+    n_classes: int = 0
+    size_bytes: int = 0
+    notes: str = ""
+    created_at: float = field(default_factory=time.time)
+
+    @property
+    def classes(self) -> dict[int, str]:
+        try:
+            return {int(k): v for k, v in json.loads(self.classes_json or "{}").items()}
+        except (json.JSONDecodeError, ValueError):
+            return {}
+
+
+@dataclass
 class JobRow:
     id: str
     project_id: str | None
@@ -117,10 +138,62 @@ class DB:
                     started_at    REAL,
                     finished_at   REAL
                 );
+                CREATE TABLE IF NOT EXISTS models (
+                    id            TEXT PRIMARY KEY,
+                    name          TEXT NOT NULL UNIQUE,
+                    path          TEXT NOT NULL,
+                    task          TEXT NOT NULL DEFAULT 'detect',
+                    classes_json  TEXT NOT NULL DEFAULT '{}',
+                    n_classes     INTEGER NOT NULL DEFAULT 0,
+                    size_bytes    INTEGER NOT NULL DEFAULT 0,
+                    notes         TEXT NOT NULL DEFAULT '',
+                    created_at    REAL NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status);
                 CREATE INDEX IF NOT EXISTS jobs_project ON jobs(project_id);
                 CREATE INDEX IF NOT EXISTS jobs_created ON jobs(created_at);
             """)
+            self._conn.commit()
+
+    # ---- models --------------------------------------------------------
+
+    def create_model(self, *, name: str, path: str, task: str,
+                     classes: dict[int, str], size_bytes: int,
+                     notes: str = "") -> ModelRow:
+        row = ModelRow(
+            id=uuid.uuid4().hex[:12],
+            name=name, path=path, task=task,
+            classes_json=json.dumps({str(k): v for k, v in classes.items()}),
+            n_classes=len(classes), size_bytes=size_bytes, notes=notes,
+        )
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO models
+                   (id, name, path, task, classes_json, n_classes, size_bytes, notes, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (row.id, row.name, row.path, row.task, row.classes_json,
+                 row.n_classes, row.size_bytes, row.notes, row.created_at),
+            )
+            self._conn.commit()
+        return row
+
+    def list_models(self) -> list[ModelRow]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM models ORDER BY created_at DESC"
+            ).fetchall()
+            return [ModelRow(**dict(r)) for r in rows]
+
+    def get_model(self, model_id: str) -> ModelRow | None:
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT * FROM models WHERE id = ?", (model_id,)
+            ).fetchone()
+            return ModelRow(**dict(r)) if r else None
+
+    def delete_model(self, model_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM models WHERE id = ?", (model_id,))
             self._conn.commit()
 
     # ---- projects ------------------------------------------------------

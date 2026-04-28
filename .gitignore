@@ -25,6 +25,22 @@ env/
 *.mkv
 *.webm
 
+# Source images / timelapse frame folders that may be dropped alongside the project
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tiff
+*.webp
+*.heic
+# Common naming patterns for camera dumps / site folders
+[0-9][0-9]-SITE-*/
+01-SITE-*/
+incoming/
+
+# Custom user-uploaded model weights live in _models/
+_models/
+
 # Runtime artifacts
 _uploads/
 _outputs/

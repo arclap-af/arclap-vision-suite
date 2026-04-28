@@ -281,6 +281,12 @@ async function startJob({ test }) {
   if (!state.fileId) { toast('No file uploaded', 'error'); return; }
   if (!state.goal)   { toast('Pick a goal first', 'error'); return; }
 
+  const notify = {};
+  const wh = $('notify-webhook')?.value.trim();
+  const em = $('notify-email')?.value.trim();
+  if (wh) notify.webhook = wh;
+  if (em) notify.email = em;
+
   const body = {
     kind: state.uploadKind || 'video',
     input_ref: state.fileId,
@@ -289,6 +295,7 @@ async function startJob({ test }) {
     settings: {
       min_brightness: parseInt(minBSlider.value),
       conf: parseInt(confSlider.value) / 100,
+      ...(Object.keys(notify).length ? { notify } : {}),
     },
   };
   if (!test) body.output_name = $('output-name').value.trim() || 'cleaned.mp4';
@@ -371,3 +378,419 @@ async function stopJob() {
 // ---- Misc ------------------------------------------------------------------
 
 $('btn-clear-log').addEventListener('click', () => { $('log-output').textContent = ''; });
+
+// =============================================================================
+// Multi-page navigation
+// =============================================================================
+
+const PAGES = ['wizard', 'models', 'history', 'projects'];
+
+function showPage(name) {
+  PAGES.forEach(p => {
+    const el = $('page-' + p);
+    if (el) el.classList.toggle('hidden', p !== name);
+  });
+  document.querySelectorAll('.topnav-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.page === name);
+  });
+  if (name === 'models') refreshModels();
+  if (name === 'history') refreshHistory();
+  if (name === 'projects') { refreshProjects(); }
+}
+
+document.querySelectorAll('.topnav-btn').forEach(b => {
+  b.addEventListener('click', () => showPage(b.dataset.page));
+});
+
+// =============================================================================
+// Theme + Locale
+// =============================================================================
+
+const STRINGS = {
+  en: {
+    'wizard': 'Wizard', 'models': 'Models', 'history': 'History', 'projects': 'Projects',
+    'no_models': 'No models registered yet.',
+    'no_projects': 'No projects yet.',
+    'no_history': 'No jobs yet.',
+  },
+  de: {
+    'wizard': 'Assistent', 'models': 'Modelle', 'history': 'Verlauf', 'projects': 'Projekte',
+    'no_models': 'Noch keine Modelle registriert.',
+    'no_projects': 'Noch keine Projekte.',
+    'no_history': 'Noch keine Jobs.',
+  },
+};
+let currentLocale = localStorage.getItem('arclap_locale') || 'en';
+function t(key) { return (STRINGS[currentLocale] || STRINGS.en)[key] || key; }
+
+function applyLocale() {
+  document.querySelectorAll('.topnav-btn').forEach(b => {
+    b.textContent = t(b.dataset.page);
+  });
+}
+
+$('locale-toggle').value = currentLocale;
+$('locale-toggle').addEventListener('change', e => {
+  currentLocale = e.target.value;
+  localStorage.setItem('arclap_locale', currentLocale);
+  applyLocale();
+});
+
+// Theme
+const initialTheme = localStorage.getItem('arclap_theme') || 'dark';
+document.documentElement.setAttribute('data-theme', initialTheme);
+$('theme-toggle').textContent = initialTheme === 'light' ? '◑' : '◐';
+$('theme-toggle').addEventListener('click', () => {
+  const current = document.documentElement.getAttribute('data-theme');
+  const next = current === 'light' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('arclap_theme', next);
+  $('theme-toggle').textContent = next === 'light' ? '◑' : '◐';
+});
+
+// Keyboard shortcut: Ctrl/Cmd + Enter on the wizard runs the full job
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    if (!$('page-wizard').classList.contains('hidden') && state.fileId && state.goal) {
+      $('btn-run').click();
+    }
+  }
+});
+
+// =============================================================================
+// Models page
+// =============================================================================
+
+let selectedTestModelId = null;
+let testImageId = null;
+
+async function refreshModels() {
+  try {
+    const r = await fetch('/api/models').then(r => r.json());
+    const list = $('model-list');
+    if (!r.length) {
+      list.innerHTML = `<p class="muted">${t('no_models')}</p>`;
+      return;
+    }
+    list.innerHTML = r.map(m => `
+      <div class="model-card">
+        <div class="model-card-header">
+          <h3>${escapeHtml(m.name)}</h3>
+          <span class="model-card-task">${m.task}</span>
+        </div>
+        <dl class="model-card-meta">
+          <dt>Classes</dt><dd>${m.n_classes}</dd>
+          <dt>Size</dt><dd>${m.size_mb} MB</dd>
+        </dl>
+        <div class="model-card-classes">
+          ${Object.entries(m.classes).slice(0, 8).map(([k, v]) => `${k}: ${escapeHtml(v)}`).join('  ·  ')}
+          ${Object.keys(m.classes).length > 8 ? '  …' : ''}
+        </div>
+        <div class="model-card-actions">
+          <button class="btn btn-primary" data-test-id="${m.id}" data-test-name="${escapeHtml(m.name)}">Test</button>
+          <button class="btn btn-ghost" data-delete-id="${m.id}">Delete</button>
+        </div>
+      </div>
+    `).join('');
+    list.querySelectorAll('[data-test-id]').forEach(b => {
+      b.addEventListener('click', () => openTestPanel(b.dataset.testId, b.dataset.testName));
+    });
+    list.querySelectorAll('[data-delete-id]').forEach(b => {
+      b.addEventListener('click', async () => {
+        if (!confirm('Delete this model?')) return;
+        await fetch(`/api/models/${b.dataset.deleteId}`, { method: 'DELETE' });
+        toast('Model deleted', 'success');
+        refreshModels();
+      });
+    });
+  } catch (err) {
+    toast('Could not load models: ' + err.message, 'error');
+  }
+}
+
+// Model upload dropzone
+const modelDz = $('model-dropzone');
+const modelFileInput = $('model-file-input');
+modelDz.addEventListener('click', () => modelFileInput.click());
+modelDz.addEventListener('dragover', e => { e.preventDefault(); modelDz.classList.add('dragover'); });
+modelDz.addEventListener('dragleave', () => modelDz.classList.remove('dragover'));
+modelDz.addEventListener('drop', e => {
+  e.preventDefault();
+  modelDz.classList.remove('dragover');
+  if (e.dataTransfer.files.length) uploadModel(e.dataTransfer.files[0]);
+});
+modelFileInput.addEventListener('change', e => {
+  if (e.target.files.length) uploadModel(e.target.files[0]);
+});
+
+async function uploadModel(file) {
+  toast(`Uploading ${file.name} (this may take a moment for large models)…`);
+  const form = new FormData();
+  form.append('file', file);
+  form.append('notes', '');
+  try {
+    const r = await fetch('/api/models/upload', { method: 'POST', body: form });
+    if (!r.ok) {
+      const err = await r.json();
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const data = await r.json();
+    toast(`Registered model "${data.name}" (${data.task}, ${data.n_classes} classes)`, 'success');
+    refreshModels();
+  } catch (err) {
+    toast('Upload failed: ' + err.message, 'error');
+  }
+}
+
+function openTestPanel(modelId, modelName) {
+  selectedTestModelId = modelId;
+  $('test-model-name').textContent = modelName;
+  $('model-test-panel').classList.remove('hidden');
+  $('model-test-panel').scrollIntoView({ behavior: 'smooth' });
+}
+
+// Test image dropzone
+const testDz = $('test-image-dropzone');
+const testInput = $('test-image-input');
+testDz.addEventListener('click', () => testInput.click());
+testDz.addEventListener('dragover', e => { e.preventDefault(); testDz.classList.add('dragover'); });
+testDz.addEventListener('dragleave', () => testDz.classList.remove('dragover'));
+testDz.addEventListener('drop', e => {
+  e.preventDefault();
+  testDz.classList.remove('dragover');
+  if (e.dataTransfer.files.length) uploadTestImage(e.dataTransfer.files[0]);
+});
+testInput.addEventListener('change', e => {
+  if (e.target.files.length) uploadTestImage(e.target.files[0]);
+});
+
+async function uploadTestImage(file) {
+  const isImage = file.type.startsWith('image/');
+  const endpoint = isImage ? '/api/upload-image' : '/api/upload';
+  const form = new FormData();
+  form.append('file', file);
+  toast(`Uploading test sample…`);
+  try {
+    const r = await fetch(endpoint, { method: 'POST', body: form });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    testImageId = data.id;
+    $('btn-test-run').disabled = false;
+    toast(`Sample loaded: ${data.name || file.name}`, 'success');
+  } catch (err) {
+    toast('Test upload failed: ' + err.message, 'error');
+  }
+}
+
+const testConf = $('test-conf');
+const testIou = $('test-iou');
+testConf.addEventListener('input', () => $('test-conf-value').textContent = (testConf.value / 100).toFixed(2));
+testIou.addEventListener('input', () => $('test-iou-value').textContent = (testIou.value / 100).toFixed(2));
+
+$('btn-test-run').addEventListener('click', async () => {
+  if (!selectedTestModelId || !testImageId) { toast('Pick a model and image first', 'error'); return; }
+  const btn = $('btn-test-run');
+  btn.classList.add('loading');
+  try {
+    const r = await fetch('/api/playground/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model_id: selectedTestModelId,
+        image_id: testImageId,
+        conf: parseInt(testConf.value) / 100,
+        iou: parseInt(testIou.value) / 100,
+        draw_masks: $('test-draw-masks').checked,
+        draw_keypoints: $('test-draw-keypoints').checked,
+      }),
+    });
+    if (!r.ok) {
+      const err = await r.json();
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const data = await r.json();
+    $('test-result-image').src = data.annotated_url + '?t=' + Date.now();
+    $('test-result-table').innerHTML = `
+      <strong>${data.n_detections} detections</strong><br>
+      ${data.detections.slice(0, 20).map(d =>
+        `${escapeHtml(d.label)} (${d.confidence.toFixed(2)})`).join('  ·  ')}
+      ${data.detections.length > 20 ? `  …+${data.detections.length - 20} more` : ''}
+    `;
+    toast(`${data.n_detections} detections`, 'success');
+  } catch (err) {
+    toast('Inference failed: ' + err.message, 'error');
+  } finally {
+    btn.classList.remove('loading');
+  }
+});
+
+// =============================================================================
+// History page
+// =============================================================================
+
+async function refreshHistory() {
+  try {
+    const projectId = $('history-project-filter').value;
+    const url = '/api/jobs' + (projectId ? `?project_id=${projectId}` : '');
+    const jobs = await fetch(url).then(r => r.json());
+    const list = $('history-list');
+    if (!jobs.length) {
+      list.innerHTML = `<p class="muted">${t('no_history')}</p>`;
+      return;
+    }
+    list.innerHTML = jobs.map(j => {
+      const when = j.created_at ? new Date(j.created_at * 1000).toLocaleString() : '';
+      const dur = j.finished_at && j.started_at
+        ? `${Math.round(j.finished_at - j.started_at)}s` : '';
+      const filename = j.input_ref ? j.input_ref.split(/[\\\/]/).pop() : '';
+      return `
+        <div class="history-row">
+          <div class="status ${j.status}">${j.status}</div>
+          <div>
+            <div><strong>${escapeHtml(j.mode)}</strong> · <span class="muted">${escapeHtml(filename)}</span></div>
+            <div class="when">${when}</div>
+          </div>
+          <div class="mode">${dur}</div>
+          <div class="actions">
+            ${j.output_url ? `<a class="btn btn-secondary" href="${j.output_url}" target="_blank">Open</a>` : ''}
+            <button class="btn btn-ghost" data-view-job="${j.id}">Log</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+    list.querySelectorAll('[data-view-job]').forEach(b => {
+      b.addEventListener('click', async () => {
+        const j = await fetch(`/api/jobs/${b.dataset.viewJob}`).then(r => r.json());
+        const w = window.open('', '_blank');
+        w.document.write(`<pre style="background:#0b0e14;color:#eef2f7;padding:20px;font-family:monospace">${escapeHtml(j.log || '(no log)')}</pre>`);
+      });
+    });
+  } catch (err) {
+    toast('Could not load history: ' + err.message, 'error');
+  }
+}
+
+$('btn-refresh-history').addEventListener('click', refreshHistory);
+$('history-project-filter').addEventListener('change', refreshHistory);
+
+// =============================================================================
+// Projects page
+// =============================================================================
+
+async function refreshProjects() {
+  try {
+    const projects = await fetch('/api/projects').then(r => r.json());
+    const list = $('project-list');
+    const filter = $('history-project-filter');
+    // Update history filter dropdown
+    filter.innerHTML = '<option value="">All projects</option>' +
+      projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+    if (!projects.length) {
+      list.innerHTML = `<p class="muted">${t('no_projects')}</p>`;
+      return;
+    }
+    list.innerHTML = projects.map(p => {
+      const when = new Date(p.created_at * 1000).toLocaleDateString();
+      return `
+        <div class="project-card">
+          <h3>${escapeHtml(p.name)}</h3>
+          <div class="meta">created ${when}</div>
+          <div class="meta">${Object.keys(p.settings || {}).length} settings saved</div>
+          <div class="actions">
+            <button class="btn btn-ghost" data-delete-project="${p.id}">Delete</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+    list.querySelectorAll('[data-delete-project]').forEach(b => {
+      b.addEventListener('click', async () => {
+        if (!confirm('Delete this project? Job history will remain but lose project link.')) return;
+        await fetch(`/api/projects/${b.dataset.deleteProject}`, { method: 'DELETE' });
+        refreshProjects();
+      });
+    });
+  } catch (err) {
+    toast('Could not load projects: ' + err.message, 'error');
+  }
+}
+
+$('btn-create-project').addEventListener('click', async () => {
+  const name = $('new-project-name').value.trim();
+  if (!name) { toast('Enter a project name', 'error'); return; }
+  try {
+    await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, settings: {} }),
+    });
+    $('new-project-name').value = '';
+    toast(`Project "${name}" created`, 'success');
+    refreshProjects();
+  } catch (err) {
+    toast('Create failed: ' + err.message, 'error');
+  }
+});
+
+// =============================================================================
+// Recipe import / export
+// =============================================================================
+
+$('btn-export-recipe').addEventListener('click', () => {
+  const recipe = {
+    version: 1,
+    goal: state.goal,
+    min_brightness: parseInt($('min-brightness').value),
+    conf: parseInt($('conf').value) / 100,
+    exported_at: new Date().toISOString(),
+  };
+  const text = JSON.stringify(recipe, null, 2);
+  $('recipe-output').textContent = text;
+  $('recipe-output').classList.remove('hidden');
+  // Also trigger download
+  const blob = new Blob([text], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `arclap_recipe_${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+$('btn-import-recipe').addEventListener('click', () => $('recipe-import-input').click());
+$('recipe-import-input').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  try {
+    const recipe = JSON.parse(text);
+    if (recipe.min_brightness != null) {
+      $('min-brightness').value = recipe.min_brightness;
+      $('min-brightness-value').textContent = recipe.min_brightness;
+    }
+    if (recipe.conf != null) {
+      $('conf').value = Math.round(recipe.conf * 100);
+      $('conf-value').textContent = recipe.conf.toFixed(2);
+    }
+    if (recipe.goal) {
+      const radio = document.querySelector(`input[name="goal"][value="${recipe.goal}"]`);
+      if (radio) { radio.checked = true; radio.dispatchEvent(new Event('change')); }
+    }
+    toast('Recipe imported. Switch to Wizard tab to use.', 'success');
+    showPage('wizard');
+  } catch (err) {
+    toast('Invalid recipe file: ' + err.message, 'error');
+  }
+});
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+// Apply locale on load
+applyLocale();
