@@ -3602,6 +3602,328 @@ def swiss_train(req: SwissTrainRequest):
     }
 
 
+# ============================================================================
+# Production CV engineering — held-out evaluation, ONNX export, benchmark,
+# auto-annotate UI binding, frames-from-video extractor.
+# ============================================================================
+
+EVAL_DIR = DATA / "eval"
+EVAL_DIR.mkdir(exist_ok=True)
+
+
+class SwissEvalRequest(BaseModel):
+    version_name: str                   # e.g. "swiss_detector_v3" or "swiss_detector_v2"
+    test_folder: str                    # absolute server path
+    iou_threshold: float = 0.5
+    conf_threshold: float = 0.25
+    image_size: int = 640
+
+
+@app.post("/api/swiss/evaluate")
+def swiss_evaluate(req: SwissEvalRequest):
+    """Kick off held-out evaluation as a subprocess. UI polls via
+    /api/swiss/eval-status/{eval_id}."""
+    model_path = MODELS_DIR / f"{req.version_name}.pt"
+    if not model_path.is_file():
+        raise HTTPException(404, f"Model not found: {model_path}")
+    test_folder = Path(req.test_folder).expanduser()
+    if not test_folder.is_dir():
+        raise HTTPException(400, f"test_folder not found: {test_folder}")
+
+    eval_id = uuid.uuid4().hex[:12]
+    out_path = EVAL_DIR / f"{eval_id}.json"
+    cmd = [
+        PYTHON, "scripts/cv_evaluate.py",
+        "--model", str(model_path),
+        "--images", str(test_folder),
+        "--out", str(out_path),
+        "--iou", f"{req.iou_threshold:.3f}",
+        "--conf", f"{req.conf_threshold:.3f}",
+        "--imgsz", str(int(req.image_size)),
+    ]
+    if GPU_AVAILABLE:
+        cmd += ["--device", "cuda"]
+    proc = subprocess.Popen(
+        cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    def _drain():
+        try:
+            for _ in proc.stdout:
+                pass
+        finally:
+            proc.wait()
+    threading.Thread(target=_drain, daemon=True).start()
+
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "eval_started",
+        "eval_id": eval_id,
+        "version": req.version_name,
+        "test_folder": str(test_folder),
+    })
+    return {
+        "ok": True,
+        "eval_id": eval_id,
+        "pid": proc.pid,
+        "report_path": str(out_path),
+    }
+
+
+@app.get("/api/swiss/eval-status/{eval_id}")
+def swiss_eval_status(eval_id: str):
+    """Poll: returns progress + (when done) the full report payload."""
+    report_path = EVAL_DIR / f"{eval_id}.json"
+    progress_path = EVAL_DIR / f"{eval_id}.json.progress"
+    if report_path.is_file():
+        try:
+            return {"status": "done", "report": json.loads(report_path.read_text(encoding="utf-8"))}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+    if progress_path.is_file():
+        try:
+            return {"status": "running", "progress": json.loads(progress_path.read_text(encoding="utf-8"))}
+        except Exception:
+            return {"status": "running", "progress": {}}
+    return {"status": "running", "progress": {}}
+
+
+@app.get("/api/swiss/eval-list")
+def swiss_eval_list():
+    """List historical eval reports (most-recent first)."""
+    out = []
+    for p in sorted(EVAL_DIR.glob("*.json"), key=lambda x: -x.stat().st_mtime):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            out.append({
+                "eval_id": p.stem,
+                "model": data.get("model", ""),
+                "images": data.get("images", ""),
+                "n_images": data.get("n_images", 0),
+                "n_with_labels": data.get("n_images_with_labels", 0),
+                "map50": data.get("map50", 0),
+                "finished_at": data.get("finished_at", 0),
+            })
+        except Exception:
+            continue
+    return {"reports": out}
+
+
+# ----------------------------------------------------------------------------
+# Frames-from-video extractor — drag a timelapse video, sample N frames into
+# the Swiss staging dir or any folder.
+# ----------------------------------------------------------------------------
+
+class SwissFramesRequest(BaseModel):
+    video_path: str        # absolute path
+    n_frames: int = 60     # how many evenly-spaced frames to extract
+    target_class: str | None = None   # if set, frames go into staging/<class.de>
+    target_dir: str | None = None     # explicit override
+    image_size: int = 0     # 0 = native, otherwise resize longest edge
+
+
+@app.post("/api/swiss/extract-frames")
+def swiss_extract_frames(req: SwissFramesRequest):
+    """Extract evenly-spaced frames from a video into the Swiss staging
+    folder (or target_dir if given). Uses cv2 — fast, no ffmpeg subshell
+    needed."""
+    src = Path(req.video_path).expanduser()
+    if not src.is_file():
+        raise HTTPException(404, f"video not found: {src}")
+
+    if req.target_dir:
+        out_dir = Path(req.target_dir).expanduser()
+    elif req.target_class:
+        # Resolve class name (DE) — accept either de or en input
+        classes = swiss_core.load_classes(ROOT)
+        cls = next((c for c in classes
+                    if c.de == req.target_class or c.en == req.target_class
+                    or c.id == (int(req.target_class) if str(req.target_class).isdigit() else -1)),
+                   None)
+        if cls is None:
+            raise HTTPException(404, f"class not found: {req.target_class}")
+        out_dir = swiss_core.staging_root(ROOT) / cls.de
+    else:
+        out_dir = swiss_core.staging_root(ROOT) / "_video_extracts"
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    cap = cv2.VideoCapture(str(src))
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    if total <= 0:
+        cap.release()
+        raise HTTPException(400, "video has no frames or codec unreadable")
+
+    n = min(int(req.n_frames), total)
+    indices = [int(i * (total - 1) / max(1, n - 1)) for i in range(n)]
+    written = 0
+    for idx in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            continue
+        if req.image_size > 0:
+            h, w = frame.shape[:2]
+            scale = req.image_size / max(h, w)
+            if scale < 1:
+                frame = cv2.resize(frame, (int(w * scale), int(h * scale)),
+                                    interpolation=cv2.INTER_AREA)
+        existing = sum(1 for f in out_dir.iterdir() if f.is_file())
+        dst = out_dir / f"{src.stem}_f{existing:05d}.jpg"
+        cv2.imwrite(str(dst), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        written += 1
+    cap.release()
+
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "frames_extracted",
+        "video": str(src),
+        "n_extracted": written,
+        "out_dir": str(out_dir),
+    })
+    return {"ok": True, "n_extracted": written, "out_dir": str(out_dir)}
+
+
+# ----------------------------------------------------------------------------
+# ONNX export — production deployment path
+# ----------------------------------------------------------------------------
+
+class SwissExportOnnxRequest(BaseModel):
+    version_name: str
+    image_size: int = 640
+    dynamic_batch: bool = True
+    half: bool = False        # FP16 for size/speed
+    simplify: bool = True
+
+
+@app.post("/api/swiss/export-onnx")
+def swiss_export_onnx(req: SwissExportOnnxRequest):
+    """Export a trained model to ONNX. The Ultralytics .export() handles
+    the conversion + simplification. Output goes next to the .pt file."""
+    model_path = MODELS_DIR / f"{req.version_name}.pt"
+    if not model_path.is_file():
+        raise HTTPException(404, f"Model not found: {model_path}")
+
+    try:
+        from ultralytics import YOLO
+    except ImportError as e:
+        raise HTTPException(500, f"ultralytics import failed: {e}")
+
+    try:
+        model = YOLO(str(model_path))
+        out = model.export(
+            format="onnx",
+            imgsz=int(req.image_size),
+            dynamic=bool(req.dynamic_batch),
+            simplify=bool(req.simplify),
+            half=bool(req.half),
+        )
+    except Exception as e:
+        raise HTTPException(500, f"ONNX export failed: {type(e).__name__}: {e}")
+
+    out_path = Path(out) if out else model_path.with_suffix(".onnx")
+    if not out_path.is_file():
+        # Some Ultralytics versions return None — pick the .onnx neighbour
+        candidates = list(model_path.parent.glob(f"{model_path.stem}*.onnx"))
+        if candidates:
+            out_path = candidates[0]
+    if not out_path.is_file():
+        raise HTTPException(500, "ONNX file not produced by export")
+
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "onnx_exported",
+        "version": req.version_name,
+        "out_path": str(out_path),
+        "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
+        "fp16": req.half,
+    })
+    return {
+        "ok": True,
+        "version": req.version_name,
+        "out_path": str(out_path),
+        "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
+        "fp16": req.half,
+        "imgsz": req.image_size,
+    }
+
+
+# ----------------------------------------------------------------------------
+# Inference benchmark — ms/img + FPS at multiple batch sizes
+# ----------------------------------------------------------------------------
+
+class SwissBenchmarkRequest(BaseModel):
+    version_name: str
+    image_size: int = 640
+    batch_sizes: list[int] = Field(default_factory=lambda: [1, 4, 8, 16])
+    iterations: int = 30
+    warmup: int = 5
+
+
+@app.post("/api/swiss/benchmark")
+def swiss_benchmark(req: SwissBenchmarkRequest):
+    """Time the model at a range of batch sizes. Synthetic random tensors —
+    measures pure forward-pass cost so I/O doesn't pollute the numbers."""
+    model_path = MODELS_DIR / f"{req.version_name}.pt"
+    if not model_path.is_file():
+        raise HTTPException(404, f"Model not found: {model_path}")
+
+    try:
+        import torch
+        from ultralytics import YOLO
+    except ImportError as e:
+        raise HTTPException(500, f"torch/ultralytics import failed: {e}")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = YOLO(str(model_path))
+    # Force model onto device + eval mode by running a dummy inference
+    dummy = torch.zeros(1, 3, req.image_size, req.image_size).to(device)
+    _ = model.model.to(device)(dummy)
+
+    rows = []
+    for bs in req.batch_sizes:
+        x = torch.randn(bs, 3, req.image_size, req.image_size).to(device)
+        # Warmup
+        for _ in range(req.warmup):
+            _ = model.model(x)
+        if device == "cuda":
+            torch.cuda.synchronize()
+        # Time
+        t_per_iter = []
+        for _ in range(req.iterations):
+            if device == "cuda":
+                torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            _ = model.model(x)
+            if device == "cuda":
+                torch.cuda.synchronize()
+            t_per_iter.append((time.perf_counter() - t0) * 1000)
+        ms = sum(t_per_iter) / len(t_per_iter)
+        ms_p99 = sorted(t_per_iter)[int(0.99 * (len(t_per_iter) - 1))]
+        rows.append({
+            "batch_size": bs,
+            "ms_per_batch": round(ms, 2),
+            "ms_p99_batch": round(ms_p99, 2),
+            "ms_per_image": round(ms / bs, 2),
+            "fps": round(1000 * bs / ms, 1),
+        })
+
+    # GPU memory
+    gpu_mem_mb = None
+    if device == "cuda":
+        try:
+            gpu_mem_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
+        except Exception:
+            pass
+
+    return {
+        "version": req.version_name,
+        "device": device,
+        "image_size": req.image_size,
+        "rows": rows,
+        "gpu_max_memory_mb": gpu_mem_mb,
+        "n_parameters": int(sum(p.numel() for p in model.model.parameters())),
+    }
+
+
 if __name__ == "__main__":
     print(f"Arclap Vision Suite — {GPU_NAME} ({'GPU' if GPU_AVAILABLE else 'CPU'})")
     print("Starting at http://127.0.0.1:8000 (browser will open automatically).")

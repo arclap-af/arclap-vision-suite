@@ -2431,6 +2431,91 @@ code { background: var(--bg-2); padding: 1px 6px; border-radius: 4px; font-famil
   resize: vertical;
 }
 
+/* Production CV tools — three-panel grid */
+.cv-tools-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 14px;
+}
+.cv-tool-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.cv-tool-card h4 { margin: 0; font-size: 14.5px; }
+.cv-tool-card p.muted { margin: 0; }
+.cv-tool-card .filter-grid { gap: 8px; margin: 0; }
+.cv-tool-card .text-row { gap: 4px; }
+.cv-tool-card input, .cv-tool-card select {
+  width: 100%; box-sizing: border-box;
+}
+.cv-tool-card .btn { align-self: flex-start; }
+
+/* Eval report */
+.cv-eval-report {
+  margin-top: 14px;
+  padding: 14px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+}
+.cv-eval-headline {
+  display: flex; align-items: center; gap: 22px;
+  flex-wrap: wrap;
+}
+.cv-eval-bignum {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 14px 24px;
+  background: linear-gradient(135deg, var(--color-brand) 0%, var(--arc-red-700, #C62828) 100%);
+  border-radius: var(--radius-3);
+  color: white;
+}
+.cv-eval-bignum span { font-size: 36px; font-weight: 700; line-height: 1; font-family: var(--font-mono); }
+.cv-eval-bignum small { font-size: 11px; letter-spacing: 0.08em; margin-top: 4px; opacity: 0.9; }
+.cv-eval-stats { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.cv-eval-stats strong { color: var(--color-text-strong); font-family: var(--font-mono); }
+
+.cv-eval-table-wrap { overflow-x: auto; }
+.cv-eval-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 13px;
+}
+.cv-eval-table th, .cv-eval-table td {
+  padding: 6px 10px; text-align: left;
+  border-bottom: 1px solid var(--color-border);
+}
+.cv-eval-table th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-text-muted); }
+.cv-eval-table td.num, .cv-eval-table th.num { text-align: right; font-family: var(--font-mono); }
+.cv-eval-table tbody tr:hover { background: var(--color-surface-2, transparent); }
+.cv-eval-cid {
+  font-family: var(--font-mono); font-size: 11px;
+  background: var(--color-surface-2, var(--color-border));
+  padding: 1px 6px; border-radius: 4px;
+}
+.cv-eval-fail-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+.cv-eval-fail-list {
+  font-size: 12px; font-family: var(--font-mono);
+  max-height: 200px; overflow-y: auto;
+  padding-left: 18px;
+}
+.cv-eval-fail-list li { word-break: break-all; padding: 2px 0; }
+
+/* Versions row — eval/onnx/bench buttons */
+.swiss-version-info {
+  display: flex; flex-direction: column; gap: 2px;
+}
+.swiss-version-actions {
+  display: flex; align-items: center; gap: 4px;
+}
+.swiss-version-actions .btn { padding: 4px 8px; font-size: 12px; }
+
 /* Folder picker — input + Browse button on one row */
 .folder-input-row {
   display: flex; gap: 8px; align-items: stretch;

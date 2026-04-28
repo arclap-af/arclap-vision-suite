@@ -1484,10 +1484,92 @@
   <section class="card">
     <div class="card-header">
       <h3>📊 Versions</h3>
-      <p>Every trained Swiss detector that lives in <code>_models/</code>. Click <em>Activate</em> to make a version the default for the Filter and other tabs.</p>
+      <p>Every trained Swiss detector that lives in <code>_models/</code>. Click <em>Activate</em> to make a version the default for the Filter and other tabs. Use <em>Evaluate</em> to measure mAP@50 + per-class precision/recall on a held-out folder you trust. Use <em>Export ONNX</em> to ship to production. <em>Benchmark</em> measures inference speed at multiple batch sizes.</p>
     </div>
     <div id="swiss-versions" class="swiss-versions">
       <p class="muted small" style="padding:14px">Loading versions…</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h3>🧪 Production CV tools</h3>
+      <p>Professional CV-engineering workflow: extract frames from a video into staging, auto-label new images using the active model, and evaluate any version against a held-out test set with industry-standard metrics (mAP@50, per-class precision/recall, confusion matrix).</p>
+    </div>
+
+    <div class="cv-tools-grid">
+      <div class="cv-tool-card">
+        <h4>🎞️ Extract frames from video</h4>
+        <p class="muted small">Sample evenly-spaced frames from any video (timelapse, walkaround, drone). Frames go straight into a class staging folder ready for annotation.</p>
+        <label class="text-row">
+          <span>Video file (server path)</span>
+          <input type="text" id="cv-frames-video" placeholder="C:\path\to\walkthrough.mp4" />
+        </label>
+        <div class="filter-grid">
+          <label class="text-row">
+            <span>How many frames</span>
+            <input type="number" id="cv-frames-n" value="60" min="1" max="2000" />
+          </label>
+          <label class="text-row">
+            <span>Target class</span>
+            <select id="cv-frames-class">
+              <option value="">— extract to staging/_video_extracts —</option>
+            </select>
+          </label>
+        </div>
+        <button class="btn btn-secondary btn-small" id="btn-cv-frames-go">🎞️ Extract</button>
+        <span class="muted small" id="cv-frames-status"></span>
+      </div>
+
+      <div class="cv-tool-card">
+        <h4>🤖 Auto-annotate folder</h4>
+        <p class="muted small">Run the active Swiss model over a folder of new images, write YOLO-format labels alongside, and merge into the managed dataset for the next training run. Best for "I have 500 new frames, give me a head-start before manual review".</p>
+        <label class="text-row">
+          <span>Source folder</span>
+          <input type="text" id="cv-auto-folder" placeholder="C:\path\to\new_frames" />
+        </label>
+        <div class="filter-grid">
+          <label class="text-row">
+            <span>Split</span>
+            <select id="cv-auto-split">
+              <option value="train" selected>train</option>
+              <option value="val">val</option>
+            </select>
+          </label>
+          <label class="text-row">
+            <span>Min confidence</span>
+            <input type="number" id="cv-auto-conf" value="0.30" min="0" max="1" step="0.05" />
+          </label>
+        </div>
+        <button class="btn btn-secondary btn-small" id="btn-cv-auto-go">🤖 Auto-label</button>
+        <span class="muted small" id="cv-auto-status"></span>
+      </div>
+
+      <div class="cv-tool-card">
+        <h4>📊 Held-out evaluation</h4>
+        <p class="muted small">Pick a version and a folder of <em>labelled</em> test images (.txt YOLO labels next to each image). Computes per-class precision/recall/F1, mAP@50, and a confusion matrix. <strong>This is how you honestly answer "is v3 better than v2?"</strong></p>
+        <div class="filter-grid">
+          <label class="text-row">
+            <span>Version to evaluate</span>
+            <select id="cv-eval-version"></select>
+          </label>
+          <label class="text-row">
+            <span>Test folder</span>
+            <input type="text" id="cv-eval-folder" placeholder="C:\path\to\test_set" />
+          </label>
+          <label class="text-row">
+            <span>IoU threshold</span>
+            <input type="number" id="cv-eval-iou" value="0.5" min="0.1" max="0.95" step="0.05" />
+          </label>
+          <label class="text-row">
+            <span>Confidence threshold</span>
+            <input type="number" id="cv-eval-conf" value="0.25" min="0" max="1" step="0.05" />
+          </label>
+        </div>
+        <button class="btn btn-primary btn-small" id="btn-cv-eval-go">📊 Run evaluation</button>
+        <span class="muted small" id="cv-eval-status"></span>
+        <div id="cv-eval-report" class="cv-eval-report hidden"></div>
+      </div>
     </div>
   </section>
 
@@ -1752,6 +1834,6 @@
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-28-j-multi-source-search"></script>
+<script src="/static/app.js?v=2026-04-29-a-cv-pro-tools"></script>
 </body>
 </html>

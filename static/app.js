@@ -3266,10 +3266,34 @@ async function loadSwissState() {
     renderSwissDataBars();
     renderSwissVersions();
     renderSwissActivity();
+    populateCvToolDropdowns();
   } catch (e) {
     $('swiss-hero').innerHTML =
       `<div class="swiss-hero-loading" style="color:var(--color-error,#e53935)">Couldn't load Swiss state: ${escapeHtml(e.message)}</div>`;
     toast('Swiss state failed to load: ' + e.message, 'error');
+  }
+}
+
+function populateCvToolDropdowns() {
+  if (!swissState) return;
+  // Class dropdown for frames extractor
+  const classSel = $('cv-frames-class');
+  if (classSel) {
+    const cur = classSel.value;
+    classSel.innerHTML = '<option value="">— extract to staging/_video_extracts —</option>'
+      + (swissState.classes || []).filter(c => c.active).map(c =>
+          `<option value="${escapeHtml(c.de)}">${escapeHtml(c.en)} (${escapeHtml(c.de)})</option>`
+        ).join('');
+    classSel.value = cur;
+  }
+  // Versions dropdown for evaluation
+  const verSel = $('cv-eval-version');
+  if (verSel) {
+    const cur = verSel.value;
+    verSel.innerHTML = (swissState.versions || []).map(v =>
+      `<option value="${escapeHtml(v.name)}" ${v.is_active ? 'selected' : ''}>${escapeHtml(v.name)} ${v.is_active ? '(active)' : ''}</option>`
+    ).join('');
+    if (cur) verSel.value = cur;
   }
 }
 
@@ -3414,15 +3438,33 @@ function renderSwissVersions() {
       : `<button class="btn btn-secondary btn-small" data-act="activate" data-name="${escapeHtml(v.name)}">Set active</button>`;
     return `
       <div class="swiss-version-row ${v.is_active ? 'active' : ''}">
-        <div>
+        <div class="swiss-version-info">
           <strong>${escapeHtml(v.name)}</strong>
           <span class="muted small">${v.n_classes} classes · ${map} · ${when}</span>
+          ${v.notes ? `<span class="muted small">${escapeHtml(v.notes)}</span>` : ''}
         </div>
-        <div>${activeBadge}</div>
+        <div class="swiss-version-actions">
+          <button class="btn btn-ghost btn-small" data-act="evaluate" data-name="${escapeHtml(v.name)}" title="Evaluate on a held-out test set (mAP@50 + per-class P/R)">📊 Eval</button>
+          <button class="btn btn-ghost btn-small" data-act="export-onnx" data-name="${escapeHtml(v.name)}" title="Export to ONNX for production deployment">📤 ONNX</button>
+          <button class="btn btn-ghost btn-small" data-act="benchmark" data-name="${escapeHtml(v.name)}" title="Measure inference ms/image at multiple batch sizes">⏱️ Bench</button>
+          ${activeBadge}
+        </div>
       </div>`;
   }).join('');
-  $('swiss-versions').querySelectorAll('button[data-act="activate"]').forEach(b => {
-    b.addEventListener('click', () => swissActivateVersion(b.dataset.name));
+  $('swiss-versions').querySelectorAll('button[data-act]').forEach(b => {
+    b.addEventListener('click', () => {
+      const name = b.dataset.name;
+      const act = b.dataset.act;
+      if (act === 'activate') swissActivateVersion(name);
+      if (act === 'evaluate') {
+        $('cv-eval-version').value = name;
+        showPage('swiss');
+        document.querySelector('#cv-eval-folder').focus();
+        toast('Pick a test folder, then Run evaluation.', 'info');
+      }
+      if (act === 'export-onnx') swissExportOnnx(name);
+      if (act === 'benchmark') swissBenchmark(name);
+    });
   });
 }
 
@@ -3843,3 +3885,259 @@ document.addEventListener('keydown', e => {
     if (!$('swiss-web-modal').classList.contains('hidden')) closeSwissWebModal();
   }
 });
+
+// =============================================================================
+// Production CV tools — frames-from-video, auto-annotate, held-out evaluation,
+// ONNX export, inference benchmark.
+// =============================================================================
+
+async function cvExtractFrames() {
+  const video = $('cv-frames-video').value.trim();
+  if (!video) { toast('Enter a video path', 'error'); return; }
+  const body = {
+    video_path: video,
+    n_frames: parseInt($('cv-frames-n').value) || 60,
+    target_class: $('cv-frames-class').value || null,
+  };
+  $('btn-cv-frames-go').disabled = true;
+  $('cv-frames-status').textContent = 'Extracting…';
+  try {
+    const r = await fetch('/api/swiss/extract-frames', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    $('cv-frames-status').textContent =
+      `Extracted ${d.n_extracted} frames → ${d.out_dir}`;
+    toast(`Extracted ${d.n_extracted} frames`, 'success');
+    await loadSwissState();
+  } catch (e) {
+    $('cv-frames-status').textContent = '';
+    toast('Frame extract failed: ' + e.message, 'error');
+  } finally {
+    $('btn-cv-frames-go').disabled = false;
+  }
+}
+
+async function cvAutoAnnotate() {
+  const folder = $('cv-auto-folder').value.trim();
+  if (!folder) { toast('Enter a source folder', 'error'); return; }
+  const body = {
+    folder,
+    split: $('cv-auto-split').value,
+    conf: parseFloat($('cv-auto-conf').value) || 0.30,
+  };
+  $('btn-cv-auto-go').disabled = true;
+  $('cv-auto-status').textContent = 'Running model on folder — this can take minutes…';
+  try {
+    const r = await fetch('/api/swiss/auto-annotate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    $('cv-auto-status').textContent =
+      `Auto-labelled ${d.n_labels} frames (${d.n_images} images merged) using ${d.model}.`;
+    toast('Auto-annotation done', 'success');
+    await loadSwissState();
+  } catch (e) {
+    $('cv-auto-status').textContent = '';
+    toast('Auto-annotate failed: ' + e.message, 'error');
+  } finally {
+    $('btn-cv-auto-go').disabled = false;
+  }
+}
+
+let cvEvalPollHandle = null;
+
+async function cvEvaluateRun() {
+  const ver = $('cv-eval-version').value;
+  const folder = $('cv-eval-folder').value.trim();
+  if (!ver || !folder) { toast('Pick a version + a test folder', 'error'); return; }
+  const body = {
+    version_name: ver,
+    test_folder: folder,
+    iou_threshold: parseFloat($('cv-eval-iou').value) || 0.5,
+    conf_threshold: parseFloat($('cv-eval-conf').value) || 0.25,
+  };
+  $('btn-cv-eval-go').disabled = true;
+  $('cv-eval-status').textContent = 'Starting evaluation…';
+  $('cv-eval-report').classList.add('hidden');
+  try {
+    const r = await fetch('/api/swiss/evaluate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    if (cvEvalPollHandle) clearInterval(cvEvalPollHandle);
+    cvEvalPollHandle = setInterval(() => pollEvalStatus(d.eval_id), 2000);
+    pollEvalStatus(d.eval_id);
+  } catch (e) {
+    $('cv-eval-status').textContent = '';
+    toast('Eval failed to start: ' + e.message, 'error');
+    $('btn-cv-eval-go').disabled = false;
+  }
+}
+
+async function pollEvalStatus(evalId) {
+  try {
+    const r = await fetch(`/api/swiss/eval-status/${evalId}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.status === 'running') {
+      const p = d.progress || {};
+      $('cv-eval-status').textContent =
+        p.done ? `Evaluating: ${p.done} / ${p.total} (${p.rate_per_sec || 0} img/s · ${p.elapsed_sec || 0}s elapsed)`
+               : 'Starting…';
+    } else if (d.status === 'done') {
+      clearInterval(cvEvalPollHandle); cvEvalPollHandle = null;
+      $('cv-eval-status').textContent = '✓ Evaluation complete.';
+      $('btn-cv-eval-go').disabled = false;
+      renderEvalReport(d.report);
+    } else if (d.status === 'error') {
+      clearInterval(cvEvalPollHandle); cvEvalPollHandle = null;
+      $('cv-eval-status').textContent = '';
+      toast('Eval error: ' + (d.error || 'unknown'), 'error');
+      $('btn-cv-eval-go').disabled = false;
+    }
+  } catch {}
+}
+
+function renderEvalReport(report) {
+  const wrap = $('cv-eval-report');
+  if (!report) return;
+  wrap.classList.remove('hidden');
+  const top = `
+    <div class="cv-eval-headline">
+      <div class="cv-eval-bignum">
+        <span>${(report.map50 * 100).toFixed(1)}%</span>
+        <small>mAP@50</small>
+      </div>
+      <div class="cv-eval-stats">
+        <div><strong>${report.n_images}</strong> images · <strong>${report.n_images_with_labels}</strong> with labels</div>
+        <div>Macro precision <strong>${(report.macro_precision * 100).toFixed(1)}%</strong></div>
+        <div>Macro recall <strong>${(report.macro_recall * 100).toFixed(1)}%</strong></div>
+        <div>Macro F1 <strong>${(report.macro_f1 * 100).toFixed(1)}%</strong></div>
+        <div class="muted small">IoU ≥ ${report.iou_threshold} · conf ≥ ${report.conf_threshold}</div>
+      </div>
+    </div>`;
+  const classRows = (report.classes || [])
+    .filter(c => c.n_gt > 0 || c.n_pred > 0)
+    .sort((a, b) => b.n_gt - a.n_gt)
+    .map(c => `
+      <tr>
+        <td><span class="cv-eval-cid">#${c.class_id}</span> ${escapeHtml(c.class_name)}</td>
+        <td class="num">${c.n_gt}</td>
+        <td class="num">${c.tp}</td>
+        <td class="num">${c.fp}</td>
+        <td class="num">${c.fn}</td>
+        <td class="num">${(c.precision * 100).toFixed(1)}%</td>
+        <td class="num">${(c.recall * 100).toFixed(1)}%</td>
+        <td class="num">${(c.f1 * 100).toFixed(1)}%</td>
+        <td class="num"><strong>${(c.ap50 * 100).toFixed(1)}%</strong></td>
+      </tr>`).join('');
+  const fp = (report.false_positives || []).slice(0, 10).map(p =>
+    `<li><span class="muted small">${escapeHtml(p.class_name)} (${p.score.toFixed(2)})</span> ${escapeHtml(p.path)}</li>`).join('');
+  const fn = (report.false_negatives || []).slice(0, 10).map(p =>
+    `<li><span class="muted small">${escapeHtml(p.class_name)}</span> ${escapeHtml(p.path)}</li>`).join('');
+  wrap.innerHTML = `
+    ${top}
+    <h4 style="margin-top:18px">Per-class metrics</h4>
+    <div class="cv-eval-table-wrap">
+      <table class="cv-eval-table">
+        <thead><tr>
+          <th>Class</th><th class="num">GT</th><th class="num">TP</th>
+          <th class="num">FP</th><th class="num">FN</th>
+          <th class="num">P</th><th class="num">R</th><th class="num">F1</th>
+          <th class="num">AP@50</th>
+        </tr></thead>
+        <tbody>${classRows || '<tr><td colspan="9" class="muted small" style="text-align:center;padding:14px">No labelled GT found in test folder.</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="cv-eval-fail-row">
+      <div>
+        <h4>Top false positives (model said yes, label said no)</h4>
+        <ul class="cv-eval-fail-list">${fp || '<li class="muted small">none</li>'}</ul>
+      </div>
+      <div>
+        <h4>Top false negatives (label said yes, model missed)</h4>
+        <ul class="cv-eval-fail-list">${fn || '<li class="muted small">none</li>'}</ul>
+      </div>
+    </div>`;
+}
+
+async function swissExportOnnx(versionName) {
+  if (!confirm(`Export ${versionName} to ONNX? Output goes next to the .pt file.`)) return;
+  toast(`Exporting ${versionName} to ONNX…`, 'info');
+  try {
+    const r = await fetch('/api/swiss/export-onnx', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        version_name: versionName,
+        image_size: 640,
+        dynamic_batch: true,
+        simplify: true,
+        half: false,
+      }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    toast(`✓ ONNX exported: ${d.size_mb} MB`, 'success');
+    alert(`ONNX file ready:\n\n${d.out_path}\n\nSize: ${d.size_mb} MB · imgsz ${d.imgsz}\n\nUse it with TensorRT, OpenVINO, ONNX Runtime, or any standard inference server.`);
+  } catch (e) {
+    toast('ONNX export failed: ' + e.message, 'error');
+  }
+}
+
+async function swissBenchmark(versionName) {
+  toast(`Benchmarking ${versionName}…`, 'info');
+  try {
+    const r = await fetch('/api/swiss/benchmark', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        version_name: versionName,
+        image_size: 640,
+        batch_sizes: [1, 4, 8, 16],
+        iterations: 30,
+        warmup: 5,
+      }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    const lines = d.rows.map(r =>
+      `Batch ${r.batch_size}: ${r.ms_per_image} ms/img · ${r.fps} FPS (P99 batch ${r.ms_p99_batch} ms)`
+    ).join('\n');
+    alert(
+      `Benchmark — ${d.version} on ${d.device.toUpperCase()}\n\n` +
+      `${lines}\n\n` +
+      `Image size: ${d.image_size}\n` +
+      `Parameters: ${(d.n_parameters / 1e6).toFixed(1)} M\n` +
+      (d.gpu_max_memory_mb ? `Peak GPU memory: ${d.gpu_max_memory_mb} MB` : '')
+    );
+    toast(`Benchmark done: ${d.rows[0].fps} FPS @ batch 1`, 'success');
+  } catch (e) {
+    toast('Benchmark failed: ' + e.message, 'error');
+  }
+}
+
+// Wire CV tool buttons
+if ($('btn-cv-frames-go')) $('btn-cv-frames-go').addEventListener('click', cvExtractFrames);
+if ($('btn-cv-auto-go'))   $('btn-cv-auto-go').addEventListener('click', cvAutoAnnotate);
+if ($('btn-cv-eval-go'))   $('btn-cv-eval-go').addEventListener('click', cvEvaluateRun);
