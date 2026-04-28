@@ -1641,6 +1641,7 @@
     <button class="swiss-subtab" data-stab="compare">⚖️ Compare</button>
     <button class="swiss-subtab" data-stab="deploy">🚀 Deploy</button>
     <button class="swiss-subtab" data-stab="review">👁️ Review queue</button>
+    <button class="swiss-subtab" data-stab="events">🎯 Events</button>
     <button class="swiss-subtab" data-stab="activity">🕒 Activity</button>
   </nav>
 
@@ -2076,6 +2077,61 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
     </div>
   </section>
 
+  <!-- ===== Events sub-tab — detection picture viewer ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="events">
+    <div class="card-header">
+      <h3>🎯 Detection events</h3>
+      <p>Every detection drawn by every camera, saved as a cropped picture + metadata. Filter by camera, class, date, confidence — review what the model is actually seeing on each site. Promote good crops to training data, discard false positives.</p>
+    </div>
+
+    <!-- Stats hero -->
+    <div id="events-stats" class="events-stats-hero">
+      <div class="muted small">Loading stats…</div>
+    </div>
+
+    <!-- Filter bar -->
+    <div class="events-filter-bar">
+      <label class="text-row" style="min-width:200px">
+        <span>Camera</span>
+        <select id="ev-filter-camera"><option value="">All cameras</option></select>
+      </label>
+      <label class="text-row" style="min-width:200px">
+        <span>Class</span>
+        <select id="ev-filter-class"><option value="">All classes</option></select>
+      </label>
+      <label class="text-row">
+        <span>Min confidence</span>
+        <input type="range" id="ev-filter-min-conf" min="0" max="100" step="1" value="0" />
+        <span id="ev-filter-min-conf-value" class="muted small">0.00</span>
+      </label>
+      <label class="text-row">
+        <span>Status</span>
+        <select id="ev-filter-status">
+          <option value="new" selected>New</option>
+          <option value="promoted_training">Promoted to training</option>
+          <option value="discarded">Discarded</option>
+          <option value="all">All</option>
+        </select>
+      </label>
+      <button class="btn btn-ghost btn-small" id="btn-events-refresh">🔄 Refresh</button>
+    </div>
+
+    <!-- Bulk actions -->
+    <div class="actions" style="margin-bottom:10px">
+      <span class="muted small" id="events-selected-count">0 selected</span>
+      <select id="ev-bulk-class" style="margin-left:8px;min-width:200px">
+        <option value="">— pick a class —</option>
+      </select>
+      <button class="btn btn-primary btn-small" id="btn-events-promote">📍 Promote to training</button>
+      <button class="btn btn-ghost btn-small" id="btn-events-discard">🗑️ Discard (false positive)</button>
+    </div>
+
+    <!-- Detection picture grid -->
+    <div id="events-grid" class="events-grid">
+      <p class="muted small" style="padding:14px">No events yet — start a camera session with detect mode.</p>
+    </div>
+  </section>
+
   <!-- ===== Activity sub-tab ===== -->
   <section class="card swiss-stab-pane hidden" data-stab-pane="activity">
     <div class="card-header">
@@ -2338,6 +2394,6 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-30-a-tier0"></script>
+<script src="/static/app.js?v=2026-04-30-b-tier1-events"></script>
 </body>
 </html>

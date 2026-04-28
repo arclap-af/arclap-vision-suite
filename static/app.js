@@ -3951,7 +3951,177 @@ if ($('btn-review-bulk-promote')) $('btn-review-bulk-promote').addEventListener(
 document.addEventListener('click', e => {
   const t = e.target.closest('.swiss-subtab');
   if (t && t.dataset.stab === 'review') loadReviewQueue();
+  if (t && t.dataset.stab === 'events') loadEventsPage();
 });
+
+// =============================================================================
+// 🎯 Detection Events page
+// =============================================================================
+
+let eventsSelected = new Set();
+
+async function loadEventsPage() {
+  await populateEventsFilters();
+  await Promise.all([loadEventsStats(), loadEventsList()]);
+}
+
+async function populateEventsFilters() {
+  // Camera dropdown
+  try {
+    const d = await fetch('/api/cameras').then(r => r.json());
+    const opts = ['<option value="">All cameras</option>'].concat(
+      (d.cameras || []).map(c =>
+        `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)} (${escapeHtml(c.site || '')})</option>`));
+    if ($('ev-filter-camera')) $('ev-filter-camera').innerHTML = opts.join('');
+  } catch {}
+  // Class dropdown — from swiss state
+  if (swissState && $('ev-filter-class')) {
+    $('ev-filter-class').innerHTML = '<option value="">All classes</option>' +
+      (swissState.classes || []).map(c =>
+        `<option value="${c.id}">#${c.id} ${escapeHtml(c.en)}</option>`).join('');
+  }
+  // Bulk-promote class dropdown
+  if (swissState && $('ev-bulk-class')) {
+    $('ev-bulk-class').innerHTML = '<option value="">— pick a class —</option>' +
+      (swissState.classes || []).filter(c => c.active).map(c =>
+        `<option value="${c.id}">#${c.id} ${escapeHtml(c.en)} (${escapeHtml(c.de)})</option>`).join('');
+  }
+}
+
+async function loadEventsStats() {
+  try {
+    const today = await fetch('/api/events/stats?since_hours=24').then(r => r.json());
+    const week = await fetch('/api/events/stats?since_hours=168').then(r => r.json());
+    const all = await fetch('/api/events/stats').then(r => r.json());
+    const topClasses = Object.entries(today.top_classes || {}).slice(0, 5)
+      .map(([n, c]) => `<span class="ev-chip">${escapeHtml(n)}: ${c}</span>`).join(' ');
+    $('events-stats').innerHTML = `
+      <div class="ev-stat-card">
+        <div class="eyebrow">TODAY</div>
+        <div class="bignum">${(today.total || 0).toLocaleString()}</div>
+        <div class="sub">detections</div>
+      </div>
+      <div class="ev-stat-card">
+        <div class="eyebrow">THIS WEEK</div>
+        <div class="bignum">${(week.total || 0).toLocaleString()}</div>
+        <div class="sub">detections</div>
+      </div>
+      <div class="ev-stat-card">
+        <div class="eyebrow">ALL TIME</div>
+        <div class="bignum">${(all.total || 0).toLocaleString()}</div>
+        <div class="sub">${Object.keys(all.per_camera || {}).length} cameras · ${(all.per_status || {}).promoted_training || 0} promoted to training</div>
+      </div>
+      <div class="ev-stat-card wide">
+        <div class="eyebrow">TOP CLASSES (TODAY)</div>
+        <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px">
+          ${topClasses || '<span class="muted small">none yet</span>'}
+        </div>
+      </div>`;
+  } catch (e) {
+    $('events-stats').innerHTML = `<p class="muted small" style="color:#dc2626">Stats failed: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function loadEventsList() {
+  const params = new URLSearchParams();
+  const cam = $('ev-filter-camera').value; if (cam) params.set('camera_id', cam);
+  const cls = $('ev-filter-class').value; if (cls !== '') params.set('class_id', cls);
+  const conf = parseInt($('ev-filter-min-conf').value) / 100;
+  if (conf > 0) params.set('min_conf', conf);
+  params.set('status', $('ev-filter-status').value);
+  params.set('limit', 100);
+  try {
+    const d = await fetch('/api/events/list?' + params.toString()).then(r => r.json());
+    renderEventsGrid(d.events || []);
+  } catch (e) {
+    $('events-grid').innerHTML = `<p class="muted small" style="color:#dc2626">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderEventsGrid(events) {
+  eventsSelected = new Set();
+  $('events-selected-count').textContent = '0 selected';
+  if (!events.length) {
+    $('events-grid').innerHTML = '<p class="muted small" style="padding:14px">No events match this filter.</p>';
+    return;
+  }
+  $('events-grid').innerHTML = events.map(e => {
+    const t = e.timestamp ? new Date(e.timestamp * 1000).toLocaleTimeString() : '—';
+    return `
+    <div class="ev-tile" data-id="${e.id}" data-status="${escapeHtml(e.status || 'new')}">
+      <img src="${e.crop_url}" loading="lazy" alt=""
+           onerror="this.style.background='var(--color-surface)';this.alt='(unavailable)'" />
+      <div class="ev-tile-tick">
+        <input type="checkbox" data-id="${e.id}" />
+      </div>
+      <div class="ev-tile-meta">
+        <strong>${escapeHtml(e.class_name || '?')}</strong>
+        <span class="ev-conf">${(e.confidence || 0).toFixed(2)}</span>
+        <span class="muted small">${t}</span>
+        ${e.track_id != null ? `<span class="muted small">#${e.track_id}</span>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+  $('events-grid').querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const id = parseInt(cb.dataset.id);
+      if (cb.checked) eventsSelected.add(id);
+      else eventsSelected.delete(id);
+      $('events-selected-count').textContent = `${eventsSelected.size} selected`;
+    });
+  });
+}
+
+async function eventsBulkPromote() {
+  if (!eventsSelected.size) { toast('Select events first', 'error'); return; }
+  const cid = parseInt($('ev-bulk-class').value);
+  if (isNaN(cid)) { toast('Pick a target class first', 'error'); return; }
+  try {
+    const r = await fetch('/api/events/bulk', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event_ids: [...eventsSelected],
+        action: 'promote_training',
+        class_id: cid,
+      }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    toast(`Promoted ${d.updated} events to training data`, 'success');
+    loadEventsPage();
+  } catch (e) {
+    toast('Promote failed: ' + e.message, 'error');
+  }
+}
+
+async function eventsBulkDiscard() {
+  if (!eventsSelected.size) { toast('Select events first', 'error'); return; }
+  if (!confirm(`Discard ${eventsSelected.size} events as false positives?`)) return;
+  try {
+    const r = await fetch('/api/events/bulk', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_ids: [...eventsSelected], action: 'discard' }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    toast('Discarded', 'success');
+    loadEventsPage();
+  } catch (e) {
+    toast('Discard failed: ' + e.message, 'error');
+  }
+}
+
+if ($('btn-events-refresh')) $('btn-events-refresh').addEventListener('click', loadEventsList);
+if ($('btn-events-promote')) $('btn-events-promote').addEventListener('click', eventsBulkPromote);
+if ($('btn-events-discard')) $('btn-events-discard').addEventListener('click', eventsBulkDiscard);
+['ev-filter-camera', 'ev-filter-class', 'ev-filter-status'].forEach(id => {
+  if ($(id)) $(id).addEventListener('change', loadEventsList);
+});
+if ($('ev-filter-min-conf')) {
+  $('ev-filter-min-conf').addEventListener('input', () => {
+    $('ev-filter-min-conf-value').textContent = ($('ev-filter-min-conf').value / 100).toFixed(2);
+  });
+  $('ev-filter-min-conf').addEventListener('change', loadEventsList);
+}
 
 // =============================================================================
 // Swiss Detector tab — full lifecycle of the multi-class construction model

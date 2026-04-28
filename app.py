@@ -42,6 +42,7 @@ from core import swiss as swiss_core
 from core import cameras as camera_registry
 from core import discovery as discovery_core
 from core import zones as zones_core
+from core import events as events_core
 
 PYTHON = sys.executable
 ROOT = Path(__file__).parent.resolve()
@@ -5531,6 +5532,136 @@ def zones_save_endpoint(camera_id: str, req: ZonesSaveRequest):
         ))
     zones_core.save_zones(ROOT, camera_id, out)
     return {"ok": True, "n_zones": len(out)}
+
+
+# ============================================================================
+# Detection events — Pinterest-grid viewer with rich filters + bulk actions
+# ============================================================================
+
+@app.get("/api/events/stats")
+def events_stats_endpoint(since_hours: float | None = None):
+    since_ts = (time.time() - since_hours * 3600) if since_hours else None
+    return events_core.stats(ROOT, since_ts=since_ts)
+
+
+@app.get("/api/events/list")
+def events_list_endpoint(
+    camera_id: str | None = None,
+    site: str | None = None,
+    class_id: int | None = None,
+    min_conf: float = 0.0, max_conf: float = 1.0,
+    min_ts: float | None = None, max_ts: float | None = None,
+    zone_name: str | None = None,
+    track_id: int | None = None,
+    status: str = "new",
+    limit: int = 100, offset: int = 0,
+):
+    rows = events_core.query_events(
+        ROOT, camera_id=camera_id, site=site, class_id=class_id,
+        min_conf=min_conf, max_conf=max_conf,
+        min_ts=min_ts, max_ts=max_ts,
+        zone_name=zone_name, track_id=track_id,
+        status=status, limit=limit, offset=offset,
+    )
+    # Augment with served URLs
+    for r in rows:
+        r["crop_url"] = f"/api/events/{r['id']}/crop"
+        r["frame_url"] = f"/api/events/{r['id']}/frame" if r.get("frame_path") else None
+    return {"events": rows, "n": len(rows)}
+
+
+@app.get("/api/events/{event_id}/crop")
+def events_crop(event_id: int):
+    conn = events_core.open_db(ROOT)
+    try:
+        row = conn.execute("SELECT crop_path FROM events WHERE id = ?",
+                            (event_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row or not row[0] or not Path(row[0]).is_file():
+        raise HTTPException(404)
+    return FileResponse(row[0])
+
+
+@app.get("/api/events/{event_id}/frame")
+def events_frame(event_id: int):
+    conn = events_core.open_db(ROOT)
+    try:
+        row = conn.execute("SELECT frame_path FROM events WHERE id = ?",
+                            (event_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row or not row[0] or not Path(row[0]).is_file():
+        raise HTTPException(404)
+    return FileResponse(row[0])
+
+
+@app.get("/api/events/{event_id}")
+def events_detail_endpoint(event_id: int):
+    rows = events_core.query_events(ROOT, status="all", limit=1)
+    # The query above doesn't filter by id — replace with direct lookup:
+    conn = events_core.open_db(ROOT)
+    try:
+        conn.row_factory = _sqlite3.Row
+        ev = conn.execute("SELECT * FROM events WHERE id = ?",
+                            (event_id,)).fetchone()
+    finally:
+        conn.close()
+    if not ev:
+        raise HTTPException(404)
+    e = dict(ev)
+    e["crop_url"] = f"/api/events/{e['id']}/crop"
+    e["frame_url"] = f"/api/events/{e['id']}/frame" if e.get("frame_path") else None
+    e["neighbors"] = [
+        {**n, "crop_url": f"/api/events/{n['id']}/crop"}
+        for n in events_core.get_neighbors(ROOT, event_id, count=12)
+    ]
+    return e
+
+
+class EventsBulkRequest(BaseModel):
+    event_ids: list[int]
+    action: str = Field(pattern="^(promote_training|discard|new)$")
+    class_id: int | None = None      # for promote_training, the target class
+
+
+@app.post("/api/events/bulk")
+def events_bulk_endpoint(req: EventsBulkRequest):
+    n_updated = 0
+    if req.action == "promote_training":
+        if req.class_id is None:
+            raise HTTPException(400, "class_id required for promote_training")
+        # Copy crops into staging/<class.de>/, mark as promoted
+        classes = swiss_core.load_classes(ROOT)
+        cls = next((c for c in classes if c.id == req.class_id), None)
+        if cls is None:
+            raise HTTPException(404, f"No class with id {req.class_id}")
+        staging = ROOT / "_datasets" / "swiss_construction" / "staging" / cls.de
+        staging.mkdir(parents=True, exist_ok=True)
+        existing = sum(1 for _ in staging.iterdir()) if staging.is_dir() else 0
+        conn = events_core.open_db(ROOT)
+        try:
+            placeholders = ",".join("?" * len(req.event_ids))
+            rows = conn.execute(
+                f"SELECT id, crop_path FROM events WHERE id IN ({placeholders})",
+                req.event_ids,
+            ).fetchall()
+            for ev_id, crop_path in rows:
+                if crop_path and Path(crop_path).is_file():
+                    dst = staging / f"{cls.de}_event_{existing:05d}.jpg"
+                    existing += 1
+                    try:
+                        shutil.copy2(crop_path, dst)
+                    except Exception:
+                        continue
+        finally:
+            conn.close()
+        n_updated = events_core.update_status(ROOT, req.event_ids, "promoted_training")
+    elif req.action == "discard":
+        n_updated = events_core.update_status(ROOT, req.event_ids, "discarded")
+    elif req.action == "new":
+        n_updated = events_core.update_status(ROOT, req.event_ids, "new")
+    return {"ok": True, "updated": n_updated}
 
 
 if __name__ == "__main__":

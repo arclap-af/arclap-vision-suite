@@ -59,5 +59,11 @@ def build(job, ctx):
         cmd += ["--camera-id", s["camera_id"]]
     if s.get("zones_file"):
         cmd += ["--zones-file", s["zones_file"]]
+    # Detection event crop saver (Tier 1) — on by default in detect mode
+    if s.get("save_event_crops", True) and s.get("rtsp_mode", "detect") == "detect":
+        cmd += ["--save-event-crops"]
+        if s.get("events_out_dir"):
+            cmd += ["--events-out-dir", s["events_out_dir"]]
     return cmd
+
 

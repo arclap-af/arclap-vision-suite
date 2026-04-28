@@ -90,6 +90,11 @@ def parse_args():
                    help="Path to zones JSON (per-camera polygon rules).")
     p.add_argument("--suite-root", default="",
                    help="Suite root path (for writing discovery DB / crops).")
+    p.add_argument("--save-event-crops", action="store_true",
+                   help="For every detection above conf, save a crop JPG + DB row")
+    p.add_argument("--events-out-dir", default="",
+                   help="Where to save event crops + context frames (defaults "
+                        "to <output_dir>/events/<date>/)")
     return p.parse_args()
 
 
@@ -421,9 +426,25 @@ def main():
     if snap_dir:
         snap_dir.mkdir(parents=True, exist_ok=True)
 
-    # ---- Discovery + zones setup ----
+    # ---- Discovery + zones + events setup ----
     suite_root = Path(args.suite_root) if args.suite_root else Path(__file__).parent.resolve()
     discovery_enabled = args.suite_root != "" and args.discovery_rate > 0
+    events_module = None
+    events_out_root = None
+    if args.save_event_crops and args.suite_root:
+        try:
+            sys.path.insert(0, str(suite_root))
+            from core import events as events_module  # noqa
+        except Exception:
+            events_module = None
+    if events_module is not None:
+        if args.events_out_dir:
+            events_out_root = Path(args.events_out_dir)
+        elif out_path is not None:
+            events_out_root = out_path.parent / "events"
+        else:
+            events_out_root = suite_root / "_outputs" / "events"
+        events_out_root.mkdir(parents=True, exist_ok=True)
     if discovery_enabled:
         try:
             sys.path.insert(0, str(suite_root))
@@ -682,6 +703,62 @@ def main():
                 if new_events:
                     state["last_detection_at"] = time.time()
                 state["frame_classes"] = classes_this_frame
+
+                # ---- Detection events: save crops + DB rows ----
+                if events_module and events_out_root and new_events:
+                    import datetime as _dt
+                    date_dir = events_out_root / _dt.datetime.now().strftime("%Y-%m-%d")
+                    date_dir.mkdir(parents=True, exist_ok=True)
+                    rows_to_insert = []
+                    # Save 1 full annotated frame per detected-second for context
+                    sec_bucket = int(time.time())
+                    if state.get("_last_context_sec") != sec_bucket:
+                        state["_last_context_sec"] = sec_bucket
+                        ctx_path = date_dir / f"frame_{sec_bucket}.jpg"
+                        try:
+                            cv2.imwrite(str(ctx_path), annotated,
+                                         [cv2.IMWRITE_JPEG_QUALITY, 75])
+                            state["_last_context_path"] = str(ctx_path)
+                        except Exception:
+                            pass
+                    ctx_path_str = state.get("_last_context_path", "")
+                    for ev_idx, e in enumerate(new_events):
+                        try:
+                            crop = frame[
+                                max(0, int(e["y1"])): int(e["y2"]),
+                                max(0, int(e["x1"])): int(e["x2"]),
+                            ]
+                            if crop.size == 0:
+                                continue
+                            crop_name = (
+                                f"crop_{int(time.time() * 1000)}_{ev_idx}_"
+                                f"{e['class_name']}_{int(e['confidence'] * 100)}.jpg"
+                            )
+                            crop_path = date_dir / crop_name
+                            cv2.imwrite(str(crop_path), crop,
+                                         [cv2.IMWRITE_JPEG_QUALITY, 88])
+                            rows_to_insert.append({
+                                "camera_id": args.camera_id or args.url,
+                                "site": "",
+                                "timestamp": time.time(),
+                                "frame_idx": frame_idx,
+                                "class_id": e["class_id"],
+                                "class_name": e["class_name"],
+                                "confidence": e["confidence"],
+                                "x1": e["x1"], "y1": e["y1"],
+                                "x2": e["x2"], "y2": e["y2"],
+                                "track_id": e.get("track_id"),
+                                "zone_name": None,   # filled by zone evaluator below
+                                "crop_path": str(crop_path),
+                                "frame_path": ctx_path_str,
+                            })
+                        except Exception as _e:
+                            print(f"[live] event-save error: {_e}", flush=True)
+                    if rows_to_insert:
+                        try:
+                            events_module.add_events(suite_root, rows_to_insert)
+                        except Exception as _e:
+                            print(f"[live] events DB error: {_e}", flush=True)
 
                 # ---- Discovery: save uncertain detections (low-conf) ----
                 if discovery_enabled and _disc and last_result is not None:
