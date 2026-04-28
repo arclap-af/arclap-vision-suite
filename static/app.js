@@ -3978,23 +3978,133 @@ if ($('swiss-import-zip-input')) {
 if ($('btn-swiss-import-fdrive')) {
   $('btn-swiss-import-fdrive').addEventListener('click', swissImportFromFDrive);
 }
-if ($('btn-swiss-import-folder')) {
-  $('btn-swiss-import-folder').addEventListener('click', () => {
-    $('swiss-folder-import-row').classList.toggle('hidden');
-    if (!$('swiss-folder-import-row').classList.contains('hidden')) {
-      $('swiss-folder-import-path').focus();
+// New simpler flow: button → folder browser → inspect → confirm → import
+let swissPendingImportPath = null;
+
+function pickFolderForImport() {
+  // Open folder browser modal pointing to a hidden input we'll read on close
+  if (!$('swiss-hidden-import-path')) {
+    const hidden = document.createElement('input');
+    hidden.type = 'hidden';
+    hidden.id = 'swiss-hidden-import-path';
+    document.body.appendChild(hidden);
+  }
+  // Hook a one-shot listener on the input so we know when modal commits
+  const hidden = $('swiss-hidden-import-path');
+  hidden.value = '';
+  const onPicked = () => {
+    hidden.removeEventListener('input', onPicked);
+    const path = hidden.value.trim();
+    if (path) inspectAndShowFolder(path);
+  };
+  hidden.addEventListener('input', onPicked);
+  openFolderModal('swiss-hidden-import-path');
+}
+
+async function inspectAndShowFolder(path) {
+  swissPendingImportPath = path;
+  $('swiss-inspect-panel').classList.remove('hidden');
+  $('swiss-inspect-path').textContent = path;
+  $('swiss-inspect-stats').innerHTML = '<p class="muted small">Inspecting…</p>';
+  $('swiss-inspect-warning').classList.add('hidden');
+  try {
+    const r = await fetch(`/api/swiss/dataset/inspect-folder?path=${encodeURIComponent(path)}`);
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
     }
-  });
+    const d = await r.json();
+    renderInspectStats(d);
+  } catch (e) {
+    $('swiss-inspect-stats').innerHTML =
+      `<p class="muted small" style="color:#dc2626">Inspect failed: ${escapeHtml(e.message)}</p>`;
+    $('btn-swiss-inspect-import').disabled = true;
+  }
 }
-if ($('btn-swiss-folder-browse')) {
-  $('btn-swiss-folder-browse').addEventListener('click', () => openFolderModal('swiss-folder-import-path'));
+
+function renderInspectStats(d) {
+  const layoutLabel = {
+    ultralytics: '✓ Ultralytics layout (images/&lt;split&gt;/, labels/&lt;split&gt;/)',
+    cvat: '✓ CVAT-style layout (&lt;split&gt;/images/, &lt;split&gt;/labels/)',
+    flat: '⚠️ Flat bag — files at root',
+    recursive_unsplit: '⚠️ Recursive — no train/val structure',
+  };
+  const layouts = (d.layouts_detected || [])
+    .map(l => `<span class="chip">${layoutLabel[l] || l}</span>`).join(' ');
+
+  const splitRows = Object.entries(d.splits || {}).map(([k, v]) =>
+    `<tr>
+       <td><strong>${escapeHtml(k)}</strong></td>
+       <td class="num">${v.n_images.toLocaleString()}</td>
+       <td class="num">${v.n_labels.toLocaleString()}</td>
+       <td class="muted small">${escapeHtml(v.img_path)}</td>
+     </tr>`).join('');
+
+  const samples = (d.samples || []).map(s =>
+    `<code style="font-size:11px">${escapeHtml(s)}</code>`).join(' · ');
+
+  $('swiss-inspect-stats').innerHTML = `
+    <div class="inspect-bignum">
+      <div>
+        <span>${(d.total_images || 0).toLocaleString()}</span>
+        <small>images</small>
+      </div>
+      <div>
+        <span>${(d.total_labels || 0).toLocaleString()}</span>
+        <small>label files</small>
+      </div>
+      ${d.has_run_artifacts ? `
+      <div>
+        <span>${d.n_run_artifacts}</span>
+        <small>training artifacts</small>
+      </div>` : ''}
+    </div>
+    <p class="muted small">${layouts || 'No layout detected'}</p>
+    ${splitRows ? `
+    <table class="cv-eval-table" style="margin-top:8px">
+      <thead><tr><th>Split</th><th class="num">Images</th><th class="num">Labels</th><th>Folder</th></tr></thead>
+      <tbody>${splitRows}</tbody>
+    </table>` : ''}
+    ${samples ? `<p class="muted small" style="margin-top:8px">Samples: ${samples}</p>` : ''}`;
+
+  if (d.warning) {
+    $('swiss-inspect-warning').classList.remove('hidden');
+    $('swiss-inspect-warning').textContent = d.warning;
+  }
+  $('btn-swiss-inspect-import').disabled = !d.importable;
 }
-if ($('btn-swiss-folder-import-go')) {
-  $('btn-swiss-folder-import-go').addEventListener('click', () => {
-    const p = $('swiss-folder-import-path').value.trim();
-    if (!p) { toast('Pick or paste a folder path first', 'error'); return; }
-    swissImportFromFolder(p);
-  });
+
+async function commitFolderImport() {
+  if (!swissPendingImportPath) return;
+  $('btn-swiss-inspect-import').disabled = true;
+  $('btn-swiss-inspect-import').textContent = 'Importing…';
+  try {
+    await swissImportFromFolder(swissPendingImportPath);
+    closeInspectPanel();
+  } catch (e) {
+    // toast already shown by swissImportFromFolder
+  } finally {
+    $('btn-swiss-inspect-import').disabled = false;
+    $('btn-swiss-inspect-import').textContent = '⬇️ Import this folder';
+  }
+}
+
+function closeInspectPanel() {
+  $('swiss-inspect-panel').classList.add('hidden');
+  swissPendingImportPath = null;
+}
+
+if ($('btn-swiss-pick-folder')) {
+  $('btn-swiss-pick-folder').addEventListener('click', pickFolderForImport);
+}
+if ($('btn-swiss-inspect-close')) {
+  $('btn-swiss-inspect-close').addEventListener('click', closeInspectPanel);
+}
+if ($('btn-swiss-inspect-import')) {
+  $('btn-swiss-inspect-import').addEventListener('click', commitFolderImport);
+}
+if ($('btn-swiss-inspect-pick-other')) {
+  $('btn-swiss-inspect-pick-other').addEventListener('click', pickFolderForImport);
 }
 if ($('btn-swiss-train')) {
   $('btn-swiss-train').addEventListener('click', swissTrainNewVersion);
@@ -4361,6 +4471,253 @@ async function stopBulkCollect() {
 
 if ($('btn-bulk-collect')) $('btn-bulk-collect').addEventListener('click', startBulkCollect);
 if ($('btn-bulk-stop'))    $('btn-bulk-stop').addEventListener('click', stopBulkCollect);
+
+// =============================================================================
+// Hyperparameter sweep
+// =============================================================================
+
+let sweepId = null;
+let sweepPollHandle = null;
+
+function parseListInts(s, fallback) {
+  if (!s) return fallback;
+  return s.split(',').map(x => parseInt(x.trim())).filter(n => !isNaN(n));
+}
+
+async function startSwissSweep() {
+  const epochs = parseListInts($('sweep-epochs').value, [50]);
+  const batch = parseListInts($('sweep-batch').value, [16]);
+  const imgsz = parseListInts($('sweep-imgsz').value, [640]);
+  const total = epochs.length * batch.length * imgsz.length;
+  if (!total) { toast('Empty sweep grid', 'error'); return; }
+  if (!confirm(`Run ${total} training variants in sequence (epochs × batch × imgsz)? This can take a long time. Each variant fine-tunes from active.`)) return;
+  $('btn-swiss-sweep').disabled = true;
+  $('swiss-sweep-status').textContent = 'Starting…';
+  try {
+    const r = await fetch('/api/swiss/sweep', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        base: 'active',
+        epochs_list: epochs, batch_list: batch, imgsz_list: imgsz,
+        auto_promote_best: $('sweep-promote').checked,
+      }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    sweepId = d.sweep_id;
+    sweepPollHandle = setInterval(pollSweepStatus, 5000);
+    pollSweepStatus();
+  } catch (e) {
+    $('swiss-sweep-status').textContent = '';
+    toast('Sweep failed: ' + e.message, 'error');
+    $('btn-swiss-sweep').disabled = false;
+  }
+}
+
+async function pollSweepStatus() {
+  if (!sweepId) return;
+  try {
+    const r = await fetch(`/api/swiss/sweep/${sweepId}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.status === 'running') {
+      $('swiss-sweep-status').textContent =
+        `Variant ${d.current_idx} of ${d.grid.length} · ${d.results.length} done`;
+    } else if (d.status === 'done') {
+      clearInterval(sweepPollHandle);
+      sweepPollHandle = null;
+      $('btn-swiss-sweep').disabled = false;
+      const best = d.best;
+      $('swiss-sweep-status').innerHTML = best
+        ? `✓ Sweep done. Best: <strong>${escapeHtml(best.version_name)}</strong> with mAP@50 ${(best.map50 * 100).toFixed(1)}% (${JSON.stringify(best.params)})${d.auto_promote_best ? ' · auto-promoted to active' : ''}.`
+        : `✓ Sweep done but no successful runs.`;
+      loadSwissState();
+    } else if (d.status === 'error') {
+      clearInterval(sweepPollHandle); sweepPollHandle = null;
+      $('btn-swiss-sweep').disabled = false;
+      $('swiss-sweep-status').textContent = 'Error: ' + (d.error || '');
+    }
+    // Render results table
+    if (d.results && d.results.length) {
+      const wrap = $('swiss-sweep-results');
+      const rows = d.results.slice().sort((a, b) => (b.map50 || 0) - (a.map50 || 0));
+      wrap.innerHTML = `
+        <table class="cv-eval-table" style="margin-top:8px">
+          <thead><tr><th>Version</th><th>Epochs</th><th>Batch</th><th>Imgsz</th><th class="num">mAP@50</th></tr></thead>
+          <tbody>${rows.map(r => `
+            <tr>
+              <td>${escapeHtml(r.version_name)}${d.best && r.version_name === d.best.version_name ? ' 🏆' : ''}</td>
+              <td>${r.params.epochs}</td>
+              <td>${r.params.batch}</td>
+              <td>${r.params.imgsz}</td>
+              <td class="num"><strong>${r.map50 != null ? (r.map50 * 100).toFixed(1) + '%' : '—'}</strong></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+  } catch {}
+}
+
+if ($('btn-swiss-sweep')) $('btn-swiss-sweep').addEventListener('click', startSwissSweep);
+
+// =============================================================================
+// TensorRT export
+// =============================================================================
+
+async function swissTensorRTExport() {
+  const ver = $('trt-version').value;
+  const prec = $('trt-precision').value;
+  const ws = parseFloat($('trt-workspace').value) || 4;
+  if (!ver) { toast('Pick a version', 'error'); return; }
+  if (!confirm(`Build TensorRT engine for ${ver} (${prec.toUpperCase()})? This locks the engine to your current GPU + TRT version.`)) return;
+  $('btn-swiss-trt-export').disabled = true;
+  $('swiss-trt-status').textContent = 'Building engine — this can take 1-5 min on first run…';
+  try {
+    const body = {
+      version_name: ver,
+      image_size: 640,
+      half: prec === 'fp16',
+      int8: prec === 'int8',
+      workspace_gb: ws,
+    };
+    const r = await fetch('/api/swiss/export-tensorrt', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    $('swiss-trt-status').innerHTML =
+      `✓ Engine built: <code>${escapeHtml(d.out_path)}</code> (${d.size_mb} MB)`;
+    alert(`TensorRT engine ready:\n\n${d.out_path}\n\nSize: ${d.size_mb} MB · ${prec.toUpperCase()}\n\nThis engine is locked to your current GPU + driver + TRT version. Use Ultralytics YOLO("${d.out_path.split(/[\\\/]/).pop()}") to load it for inference.`);
+  } catch (e) {
+    $('swiss-trt-status').textContent = '';
+    toast('TensorRT export failed: ' + e.message, 'error');
+  } finally {
+    $('btn-swiss-trt-export').disabled = false;
+  }
+}
+
+if ($('btn-swiss-trt-export')) $('btn-swiss-trt-export').addEventListener('click', swissTensorRTExport);
+
+// =============================================================================
+// Drift detection
+// =============================================================================
+
+async function setDriftBaseline() {
+  const ver = $('drift-baseline-version').value;
+  const folder = $('drift-baseline-folder').value.trim();
+  const name = $('drift-baseline-name').value.trim() || 'default';
+  if (!ver || !folder) { toast('Pick version + folder', 'error'); return; }
+  $('btn-drift-baseline').disabled = true;
+  $('drift-baseline-status').textContent = 'Computing baseline (runs model on every image)…';
+  try {
+    const r = await fetch('/api/swiss/drift/baseline', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version_name: ver, sample_folder: folder, name }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    $('drift-baseline-status').innerHTML =
+      `✓ Baseline saved (${d.baseline.n_images} images, ${(d.baseline.frac_with_any * 100).toFixed(1)}% had any detection).`;
+    toast('Baseline saved', 'success');
+  } catch (e) {
+    $('drift-baseline-status').textContent = '';
+    toast('Baseline failed: ' + e.message, 'error');
+  } finally {
+    $('btn-drift-baseline').disabled = false;
+  }
+}
+
+async function checkDrift() {
+  const ver = $('drift-check-version').value;
+  const folder = $('drift-check-folder').value.trim();
+  const name = $('drift-check-name').value.trim() || 'default';
+  if (!ver || !folder) { toast('Pick version + folder', 'error'); return; }
+  $('btn-drift-check').disabled = true;
+  $('drift-check-status').textContent = 'Running…';
+  $('drift-report').innerHTML = '';
+  try {
+    const r = await fetch('/api/swiss/drift/check', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version_name: ver, sample_folder: folder, baseline_name: name }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    $('drift-check-status').textContent = `${d.n_images} images checked.`;
+    renderDriftReport(d);
+  } catch (e) {
+    $('drift-check-status').textContent = '';
+    toast('Drift check failed: ' + e.message, 'error');
+  } finally {
+    $('btn-drift-check').disabled = false;
+  }
+}
+
+function renderDriftReport(d) {
+  const banner = d.any_flagged
+    ? `<div class="drift-banner drift-warn">⚠️ Drift detected — ${d.overall_drift_pct.toFixed(0)}% relative shift on flagged classes.</div>`
+    : `<div class="drift-banner drift-ok">✓ No significant drift detected (max ${d.overall_drift_pct.toFixed(0)}% relative shift).</div>`;
+  const rows = d.drift_per_class.map(c => `
+    <tr ${c.flagged ? 'class="drift-flagged"' : ''}>
+      <td>${escapeHtml(c.name)}</td>
+      <td class="num">${(c.baseline_rate).toFixed(3)}</td>
+      <td class="num">${(c.current_rate).toFixed(3)}</td>
+      <td class="num"><strong>${c.delta_pp > 0 ? '+' : ''}${c.delta_pp}pp</strong></td>
+      <td class="num"><strong>${c.rel_delta_pct > 0 ? '+' : ''}${c.rel_delta_pct.toFixed(1)}%</strong></td>
+      <td>${c.flagged ? '🚩' : ''}</td>
+    </tr>`).join('');
+  $('drift-report').innerHTML = `
+    ${banner}
+    <table class="cv-eval-table">
+      <thead><tr>
+        <th>Class</th>
+        <th class="num">Baseline rate</th>
+        <th class="num">Current rate</th>
+        <th class="num">Δ pp</th>
+        <th class="num">Rel %</th>
+        <th>Flag</th>
+      </tr></thead>
+      <tbody>${rows || '<tr><td colspan="6" class="muted">no class data</td></tr>'}</tbody>
+    </table>`;
+}
+
+if ($('btn-drift-baseline')) $('btn-drift-baseline').addEventListener('click', setDriftBaseline);
+if ($('btn-drift-check'))    $('btn-drift-check').addEventListener('click', checkDrift);
+
+// Populate version dropdowns for TensorRT + drift when state loads
+function populateProductionDropdowns() {
+  if (!swissState) return;
+  const versions = swissState.versions || [];
+  const opts = versions.map(v =>
+    `<option value="${escapeHtml(v.name)}" ${v.is_active ? 'selected' : ''}>${escapeHtml(v.name)} ${v.is_active ? '(active)' : ''}</option>`
+  ).join('');
+  for (const id of ['trt-version', 'drift-baseline-version', 'drift-check-version']) {
+    if ($(id)) {
+      const cur = $(id).value;
+      $(id).innerHTML = opts;
+      if (cur) $(id).value = cur;
+    }
+  }
+}
+
+// Hook into existing loadSwissState — populate the new dropdowns too
+const _origLoadSwissState = loadSwissState;
+loadSwissState = async function() {
+  await _origLoadSwissState();
+  populateProductionDropdowns();
+};
 
 // =============================================================================
 // Training charts — read results.csv + render Chart.js plots

@@ -3576,6 +3576,160 @@ def swiss_import_zip(file: UploadFile = File(...)):
     return {"ok": True, "imported_images": n_imgs, "imported_labels": n_lbls}
 
 
+@app.get("/api/swiss/dataset/inspect-folder")
+def swiss_inspect_folder(path: str):
+    """Look at a folder WITHOUT importing anything — return what's in there
+    so the UI can show 'detected 1,234 images, 1,234 labels, Ultralytics
+    layout, 80% train / 20% val' before the user commits to copying files."""
+    src = Path(path).expanduser()
+    try:
+        src = src.resolve()
+    except OSError as e:
+        raise HTTPException(400, f"Cannot resolve: {e}")
+    if not src.is_dir():
+        raise HTTPException(400, f"Not a directory: {src}")
+
+    img_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+    def _count_in(d: Path, exts: set[str]) -> int:
+        if not d.is_dir():
+            return 0
+        try:
+            return sum(1 for f in d.iterdir()
+                        if f.is_file() and f.suffix.lower() in exts)
+        except (PermissionError, OSError):
+            return 0
+
+    layouts_found = []
+    splits = {}
+
+    # Layout 1: Ultralytics standard <root>/images/{train,val}/  + <root>/labels/{train,val}/
+    for split in ("train", "val", "valid"):
+        canon = "val" if split == "valid" else split
+        img_dir = src / "images" / split
+        lbl_dir = src / "labels" / split
+        n_img = _count_in(img_dir, img_exts)
+        n_lbl = _count_in(lbl_dir, {".txt"})
+        if n_img > 0 or n_lbl > 0:
+            splits.setdefault(canon, {"n_images": 0, "n_labels": 0,
+                                       "img_path": "", "lbl_path": ""})
+            splits[canon]["n_images"] += n_img
+            splits[canon]["n_labels"] += n_lbl
+            splits[canon]["img_path"] = str(img_dir)
+            splits[canon]["lbl_path"] = str(lbl_dir)
+            if "ultralytics" not in layouts_found:
+                layouts_found.append("ultralytics")
+
+    # Layout 2: CVAT-ish <root>/{train,val}/{images,labels}/
+    if not splits:
+        for split in ("train", "val", "valid"):
+            canon = "val" if split == "valid" else split
+            img_dir = src / split / "images"
+            lbl_dir = src / split / "labels"
+            n_img = _count_in(img_dir, img_exts)
+            n_lbl = _count_in(lbl_dir, {".txt"})
+            if n_img > 0 or n_lbl > 0:
+                splits.setdefault(canon, {"n_images": 0, "n_labels": 0,
+                                          "img_path": "", "lbl_path": ""})
+                splits[canon]["n_images"] += n_img
+                splits[canon]["n_labels"] += n_lbl
+                splits[canon]["img_path"] = str(img_dir)
+                splits[canon]["lbl_path"] = str(lbl_dir)
+                if "cvat" not in layouts_found:
+                    layouts_found.append("cvat")
+
+    # Layout 3: flat bag of images at the root
+    flat = 0
+    if not splits:
+        try:
+            flat = sum(1 for f in src.iterdir()
+                        if f.is_file() and f.suffix.lower() in img_exts)
+        except (PermissionError, OSError):
+            flat = 0
+        if flat > 0:
+            layouts_found.append("flat")
+            splits["train"] = {
+                "n_images": flat,
+                "n_labels": _count_in(src, {".txt"}),
+                "img_path": str(src),
+                "lbl_path": str(src),
+            }
+
+    # Layout 4: recursive (just count everything if nothing detected)
+    rec_count = 0
+    if not splits:
+        try:
+            rec_count = sum(1 for p in src.rglob("*")
+                             if p.is_file() and p.suffix.lower() in img_exts)
+        except (PermissionError, OSError):
+            rec_count = 0
+        if rec_count > 0:
+            layouts_found.append("recursive_unsplit")
+
+    total_images = sum(s["n_images"] for s in splits.values()) or rec_count
+    total_labels = sum(s["n_labels"] for s in splits.values())
+
+    # Detect a results.csv hinting at training-run artifacts
+    has_artifacts = (src / "results.csv").is_file()
+    n_artifacts = 0
+    if has_artifacts:
+        artifact_exts = {".csv", ".png", ".jpg", ".jpeg", ".yaml", ".yml", ".json"}
+        try:
+            n_artifacts = sum(1 for f in src.iterdir()
+                               if f.is_file() and f.suffix.lower() in artifact_exts)
+        except (PermissionError, OSError):
+            n_artifacts = 0
+
+    # Sample 3 image filenames to display
+    samples = []
+    for s in splits.values():
+        if not s["img_path"]:
+            continue
+        try:
+            for f in Path(s["img_path"]).iterdir():
+                if f.is_file() and f.suffix.lower() in img_exts:
+                    samples.append(f.name)
+                if len(samples) >= 3:
+                    break
+        except (PermissionError, OSError):
+            pass
+        if len(samples) >= 3:
+            break
+    if not samples and rec_count > 0:
+        try:
+            for p in src.rglob("*"):
+                if p.is_file() and p.suffix.lower() in img_exts:
+                    samples.append(p.name)
+                if len(samples) >= 3:
+                    break
+        except (PermissionError, OSError):
+            pass
+
+    return {
+        "ok": True,
+        "path": str(src),
+        "layouts_detected": layouts_found,
+        "splits": splits,
+        "total_images": total_images,
+        "total_labels": total_labels,
+        "has_run_artifacts": has_artifacts,
+        "n_run_artifacts": n_artifacts,
+        "samples": samples[:3],
+        "importable": total_images > 0,
+        "warning": (
+            "No standard layout detected — files are loose at the root. They "
+            "will be imported into 'train' as a flat bag (matched by filename "
+            "stem to .txt labels)."
+            if "flat" in layouts_found else
+            "Recursive search found images but no train/val structure. Cannot "
+            "import directly — restructure the folder as <root>/images/train/, "
+            "<root>/images/val/, etc., or move files to a flat root directory."
+            if "recursive_unsplit" in layouts_found else
+            None
+        ),
+    }
+
+
 class SwissImportFolderRequest(BaseModel):
     path: str
     include_artifacts: bool = True   # also pull training-run artifacts if present
@@ -3962,6 +4116,451 @@ def swiss_train(req: SwissTrainRequest):
 
 EVAL_DIR = DATA / "eval"
 EVAL_DIR.mkdir(exist_ok=True)
+
+SWEEP_DIR = DATA / "sweep"
+SWEEP_DIR.mkdir(exist_ok=True)
+DRIFT_DIR = DATA / "drift"
+DRIFT_DIR.mkdir(exist_ok=True)
+
+
+# ----------------------------------------------------------------------------
+# Hyperparameter sweep — train multiple variants in sequence, pick best mAP
+# ----------------------------------------------------------------------------
+
+class SwissSweepRequest(BaseModel):
+    """Cartesian product of these lists is run in sequence. Each combination
+    becomes its own training job; the best-performing one (by mAP@50) is
+    auto-promoted to active."""
+    base: str = "active"   # "active" or stock filename or absolute path
+    epochs_list: list[int] = Field(default_factory=lambda: [30, 50])
+    batch_list: list[int] = Field(default_factory=lambda: [16])
+    imgsz_list: list[int] = Field(default_factory=lambda: [640])
+    auto_promote_best: bool = True
+
+
+_swiss_sweep_jobs: dict[str, dict] = {}
+
+
+@app.post("/api/swiss/sweep")
+def swiss_sweep_start(req: SwissSweepRequest):
+    """Spawn a background sweep that trains every combination of (epochs,
+    batch, imgsz) sequentially, recording mAP per run. Optional auto-promote
+    sets the best run as active when sweep completes."""
+    swiss_core.ensure_initialized(ROOT)
+    classes = [c for c in swiss_core.load_classes(ROOT) if c.active]
+    if not classes:
+        raise HTTPException(400, "No active classes.")
+    stats = swiss_core.dataset_stats(ROOT)
+    if stats["train_images"] < 10:
+        raise HTTPException(400, "Dataset too small (<10 train images).")
+
+    # Resolve base
+    if req.base == "active":
+        active = swiss_core.active_version(ROOT)
+        if not active:
+            raise HTTPException(400, "No active model to fine-tune from.")
+        base_path = active["path"]
+    elif Path(req.base).is_absolute() and Path(req.base).is_file():
+        base_path = req.base
+    else:
+        base_path = req.base
+
+    # Build the grid
+    grid = []
+    for e in req.epochs_list:
+        for b in req.batch_list:
+            for s in req.imgsz_list:
+                grid.append({"epochs": int(e), "batch": int(b), "imgsz": int(s)})
+    if not grid:
+        raise HTTPException(400, "Empty parameter grid.")
+
+    sweep_id = uuid.uuid4().hex[:12]
+    _swiss_sweep_jobs[sweep_id] = {
+        "id": sweep_id,
+        "started_at": time.time(),
+        "status": "running",
+        "base": base_path,
+        "grid": grid,
+        "current_idx": 0,
+        "results": [],   # [{params, version_name, map50, finished_at}]
+        "best": None,
+        "auto_promote_best": req.auto_promote_best,
+    }
+    threading.Thread(
+        target=_swiss_sweep_thread,
+        args=(sweep_id, base_path, grid, req.auto_promote_best),
+        daemon=True,
+    ).start()
+    return {"ok": True, "sweep_id": sweep_id, "n_runs": len(grid)}
+
+
+def _swiss_sweep_thread(sweep_id: str, base_path: str, grid: list[dict],
+                         auto_promote: bool):
+    sweep = _swiss_sweep_jobs.get(sweep_id)
+    if not sweep:
+        return
+    try:
+        out_root = ROOT / "_runs" / "swiss_train"
+        out_root.mkdir(parents=True, exist_ok=True)
+        data_yaml = swiss_core.write_data_yaml(ROOT)
+
+        for idx, params in enumerate(grid):
+            sweep["current_idx"] = idx + 1
+            run_name = swiss_core.next_version_name(ROOT)
+            cmd = [
+                PYTHON, "scripts/swiss_train.py",
+                "--base", str(base_path),
+                "--data", str(data_yaml),
+                "--out-root", str(out_root),
+                "--run-name", run_name,
+                "--models-dir", str(MODELS_DIR),
+                "--epochs", str(params["epochs"]),
+                "--batch", str(params["batch"]),
+                "--imgsz", str(params["imgsz"]),
+                "--notes", f"sweep {sweep_id} run {idx+1}/{len(grid)}",
+            ]
+            sweep.setdefault("running_run", run_name)
+            # Run synchronously inside this background thread — so the
+            # next variant only starts after the current one finishes
+            proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+            sweep.pop("running_run", None)
+
+            # Read mAP from the .meta.json the train script wrote
+            meta_path = MODELS_DIR / f"{run_name}.meta.json"
+            map50 = None
+            if meta_path.is_file():
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    map50 = meta.get("map50")
+                except Exception:
+                    pass
+            sweep["results"].append({
+                "idx": idx,
+                "params": params,
+                "version_name": run_name,
+                "map50": map50,
+                "returncode": proc.returncode,
+                "finished_at": time.time(),
+            })
+            # Track best
+            if map50 is not None:
+                if sweep["best"] is None or map50 > (sweep["best"]["map50"] or 0):
+                    sweep["best"] = {
+                        "version_name": run_name,
+                        "map50": map50,
+                        "params": params,
+                    }
+
+        if auto_promote and sweep["best"]:
+            try:
+                swiss_core.set_active(ROOT, sweep["best"]["version_name"])
+                swiss_core.append_ingestion(ROOT, {
+                    "kind": "sweep_completed",
+                    "sweep_id": sweep_id,
+                    "n_runs": len(grid),
+                    "best_version": sweep["best"]["version_name"],
+                    "best_map50": sweep["best"]["map50"],
+                    "auto_promoted": True,
+                })
+            except Exception:
+                pass
+        sweep["status"] = "done"
+        sweep["finished_at"] = time.time()
+    except Exception as e:
+        sweep["status"] = "error"
+        sweep["error"] = f"{type(e).__name__}: {e}"
+
+
+@app.get("/api/swiss/sweep/{sweep_id}")
+def swiss_sweep_status(sweep_id: str):
+    sweep = _swiss_sweep_jobs.get(sweep_id)
+    if not sweep:
+        raise HTTPException(404, "Sweep not found")
+    return sweep
+
+
+# ----------------------------------------------------------------------------
+# TensorRT export — FP16 / INT8 native engine for NVIDIA deployment
+# ----------------------------------------------------------------------------
+
+class SwissTensorRTRequest(BaseModel):
+    version_name: str
+    image_size: int = 640
+    half: bool = True            # FP16 (default — best speed/accuracy tradeoff)
+    int8: bool = False           # INT8 quantization (requires calibration data)
+    calibration_folder: str | None = None    # for INT8: path to representative images
+    workspace_gb: float = 4.0    # GPU memory the builder may use
+
+
+@app.post("/api/swiss/export-tensorrt")
+def swiss_export_tensorrt(req: SwissTensorRTRequest):
+    """Native TensorRT engine export. Generates a .engine file next to the
+    .pt — much smaller and faster than ONNX at runtime, but locked to the
+    specific GPU + driver + TRT version that built it."""
+    model_path = MODELS_DIR / f"{req.version_name}.pt"
+    if not model_path.is_file():
+        raise HTTPException(404, f"Model not found: {model_path}")
+    try:
+        from ultralytics import YOLO
+    except ImportError as e:
+        raise HTTPException(500, f"ultralytics import failed: {e}")
+    try:
+        import tensorrt   # noqa: F401  — just verify it's installed
+    except ImportError:
+        raise HTTPException(
+            501,
+            "TensorRT not installed. On Windows with CUDA 12.4: "
+            "pip install tensorrt --extra-index-url "
+            "https://pypi.nvidia.com . Or use the ONNX export and run "
+            "trtexec --onnx=model.onnx --saveEngine=model.engine --fp16 "
+            "from a CUDA toolkit shell.")
+
+    export_kwargs = {
+        "format": "engine",
+        "imgsz": int(req.image_size),
+        "half": bool(req.half) and not bool(req.int8),
+        "int8": bool(req.int8),
+        "workspace": float(req.workspace_gb),
+    }
+    if req.int8:
+        if not req.calibration_folder:
+            raise HTTPException(400, "INT8 requires calibration_folder.")
+        # Ultralytics builds a calibration cache from a YAML data file —
+        # easiest is to pass the existing managed dataset's data.yaml so it
+        # uses val/ images for calibration
+        export_kwargs["data"] = str(swiss_core.write_data_yaml(ROOT))
+
+    try:
+        model = YOLO(str(model_path))
+        out = model.export(**export_kwargs)
+    except Exception as e:
+        raise HTTPException(500, f"TensorRT export failed: {type(e).__name__}: {e}")
+
+    out_path = Path(out) if out else model_path.with_suffix(".engine")
+    if not out_path.is_file():
+        cands = list(model_path.parent.glob(f"{model_path.stem}*.engine"))
+        if cands:
+            out_path = cands[0]
+    if not out_path.is_file():
+        raise HTTPException(500, "Engine file not produced.")
+
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "tensorrt_exported",
+        "version": req.version_name,
+        "out_path": str(out_path),
+        "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
+        "fp16": req.half and not req.int8,
+        "int8": req.int8,
+    })
+    return {
+        "ok": True,
+        "out_path": str(out_path),
+        "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
+        "fp16": req.half and not req.int8,
+        "int8": req.int8,
+    }
+
+
+# ----------------------------------------------------------------------------
+# Drift detection — baseline + drift-check
+# ----------------------------------------------------------------------------
+
+class SwissDriftBaselineRequest(BaseModel):
+    version_name: str
+    sample_folder: str      # representative recent images (the "this is normal" set)
+    conf_threshold: float = 0.3
+    name: str = "default"
+
+
+@app.post("/api/swiss/drift/baseline")
+def swiss_drift_baseline(req: SwissDriftBaselineRequest):
+    """Sets a baseline: per-class detection rate across a representative
+    folder of images. Used to detect drift later when these rates change
+    significantly on new data."""
+    model_path = MODELS_DIR / f"{req.version_name}.pt"
+    if not model_path.is_file():
+        raise HTTPException(404, f"Model not found: {model_path}")
+    folder = Path(req.sample_folder).expanduser()
+    if not folder.is_dir():
+        raise HTTPException(400, f"Folder not found: {folder}")
+
+    images = [p for p in folder.rglob("*")
+              if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}]
+    if not images:
+        raise HTTPException(400, "No images in folder.")
+    if len(images) > 1000:
+        images = images[:1000]   # cap to keep this snappy
+
+    from ultralytics import YOLO
+    model = YOLO(str(model_path))
+    names = getattr(model, "names", {}) or {}
+
+    per_class_counts: dict[int, int] = {}
+    n_images_with_any = 0
+    avg_dets_per_image = 0
+    for img in images:
+        try:
+            res = model.predict(str(img), conf=req.conf_threshold, verbose=False)[0]
+        except Exception:
+            continue
+        boxes = getattr(res, "boxes", None)
+        n_dets = 0 if boxes is None else len(boxes)
+        if n_dets > 0:
+            n_images_with_any += 1
+            cls_arr = boxes.cls.cpu().numpy().astype(int)
+            for c in cls_arr:
+                per_class_counts[int(c)] = per_class_counts.get(int(c), 0) + 1
+        avg_dets_per_image += n_dets
+
+    n = max(1, len(images))
+    baseline = {
+        "name": req.name,
+        "version_name": req.version_name,
+        "sample_folder": str(folder),
+        "n_images": len(images),
+        "n_images_with_any": n_images_with_any,
+        "frac_with_any": round(n_images_with_any / n, 4),
+        "avg_dets_per_image": round(avg_dets_per_image / n, 3),
+        "per_class_rate": {
+            str(cid): {
+                "name": names.get(cid, str(cid)),
+                "rate_per_image": round(cnt / n, 4),
+                "total_count": cnt,
+            }
+            for cid, cnt in per_class_counts.items()
+        },
+        "conf_threshold": req.conf_threshold,
+        "computed_at": time.time(),
+    }
+    out = DRIFT_DIR / f"{req.version_name}__{req.name}.json"
+    out.write_text(json.dumps(baseline, indent=2), encoding="utf-8")
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "drift_baseline_set",
+        "version": req.version_name,
+        "name": req.name,
+        "n_images": len(images),
+    })
+    return {"ok": True, "baseline_file": str(out), "baseline": baseline}
+
+
+class SwissDriftCheckRequest(BaseModel):
+    version_name: str
+    sample_folder: str
+    baseline_name: str = "default"
+    conf_threshold: float = 0.3
+
+
+@app.post("/api/swiss/drift/check")
+def swiss_drift_check(req: SwissDriftCheckRequest):
+    """Compute per-class detection rates on a new folder and compare to the
+    baseline. Returns drift scores: positive % = class detected MORE than
+    baseline, negative = LESS. Anything beyond ±30% relative is flagged."""
+    baseline_path = DRIFT_DIR / f"{req.version_name}__{req.baseline_name}.json"
+    if not baseline_path.is_file():
+        raise HTTPException(404,
+                             f"Baseline not found: {baseline_path}. "
+                             "Set a baseline first via POST /api/swiss/drift/baseline.")
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+
+    # Compute current rates on the new folder
+    model_path = MODELS_DIR / f"{req.version_name}.pt"
+    if not model_path.is_file():
+        raise HTTPException(404, f"Model not found.")
+    folder = Path(req.sample_folder).expanduser()
+    if not folder.is_dir():
+        raise HTTPException(400, f"Folder not found: {folder}")
+    images = [p for p in folder.rglob("*")
+              if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}]
+    if not images:
+        raise HTTPException(400, "No images.")
+    if len(images) > 1000:
+        images = images[:1000]
+
+    from ultralytics import YOLO
+    model = YOLO(str(model_path))
+    names = getattr(model, "names", {}) or {}
+
+    per_class_counts: dict[int, int] = {}
+    n_with_any = 0
+    avg_dets = 0
+    for img in images:
+        try:
+            res = model.predict(str(img), conf=req.conf_threshold, verbose=False)[0]
+        except Exception:
+            continue
+        boxes = getattr(res, "boxes", None)
+        n = 0 if boxes is None else len(boxes)
+        if n > 0:
+            n_with_any += 1
+            cls_arr = boxes.cls.cpu().numpy().astype(int)
+            for c in cls_arr:
+                per_class_counts[int(c)] = per_class_counts.get(int(c), 0) + 1
+        avg_dets += n
+
+    n_images = max(1, len(images))
+    cur_frac_any = n_with_any / n_images
+    cur_avg_dets = avg_dets / n_images
+
+    drift_per_class = []
+    all_class_ids = set(per_class_counts.keys()) | {
+        int(k) for k in baseline.get("per_class_rate", {})
+    }
+    for cid in sorted(all_class_ids):
+        cur_rate = per_class_counts.get(cid, 0) / n_images
+        base_rate = (baseline["per_class_rate"].get(str(cid), {})
+                     .get("rate_per_image", 0))
+        delta_pp = (cur_rate - base_rate) * 100   # absolute percentage points
+        rel_delta = ((cur_rate - base_rate) / base_rate * 100
+                     if base_rate > 0 else (100 if cur_rate > 0 else 0))
+        drift_per_class.append({
+            "class_id": cid,
+            "name": names.get(cid, str(cid)),
+            "baseline_rate": round(base_rate, 4),
+            "current_rate": round(cur_rate, 4),
+            "delta_pp": round(delta_pp, 2),
+            "rel_delta_pct": round(rel_delta, 1),
+            "flagged": abs(rel_delta) >= 30 and (base_rate > 0.05 or cur_rate > 0.05),
+        })
+
+    # Overall drift score: max abs relative drift among "real" classes
+    overall_drift = max((abs(d["rel_delta_pct"]) for d in drift_per_class
+                         if d["flagged"]), default=0)
+    return {
+        "ok": True,
+        "version_name": req.version_name,
+        "baseline_name": req.baseline_name,
+        "n_images": len(images),
+        "current": {
+            "frac_with_any": round(cur_frac_any, 4),
+            "avg_dets_per_image": round(cur_avg_dets, 3),
+        },
+        "baseline": {
+            "frac_with_any": baseline.get("frac_with_any"),
+            "avg_dets_per_image": baseline.get("avg_dets_per_image"),
+            "n_images": baseline.get("n_images"),
+        },
+        "drift_per_class": drift_per_class,
+        "overall_drift_pct": overall_drift,
+        "any_flagged": any(d["flagged"] for d in drift_per_class),
+    }
+
+
+@app.get("/api/swiss/drift/baselines/{version_name}")
+def swiss_drift_baselines(version_name: str):
+    """List all saved baselines for a model version."""
+    out = []
+    for p in DRIFT_DIR.glob(f"{version_name}__*.json"):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            out.append({
+                "name": d.get("name"),
+                "n_images": d.get("n_images"),
+                "computed_at": d.get("computed_at"),
+                "frac_with_any": d.get("frac_with_any"),
+            })
+        except Exception:
+            continue
+    return {"baselines": out}
 
 
 class SwissEvalRequest(BaseModel):

@@ -302,19 +302,31 @@ def ensure_initialized(suite_root: Path) -> dict[str, Any]:
     return {"created": created, "dataset_root": str(droot)}
 
 
+# Version-name prefix. Originally "swiss_detector_v"; renamed to "CSI_V"
+# (Construction Site Intelligence v1, v2, …). Both prefixes are accepted
+# during discovery so older trained files aren't orphaned, but new
+# versions always use the modern prefix.
+VERSION_PREFIX = "CSI_V"
+_LEGACY_PREFIXES = ("swiss_detector_v",)
+
+
+def _all_known_prefixes() -> tuple[str, ...]:
+    return (VERSION_PREFIX, *_LEGACY_PREFIXES)
+
+
 def _autodetect_active(suite_root: Path) -> dict | None:
-    """If classes.json + a swiss_detector_v*.pt exist, pin the highest version
-    as active. Used when initialising a fresh install where we bundled v2."""
+    """If classes.json + a CSI_V*.pt (or legacy swiss_detector_v*.pt) exist,
+    pin the highest version as active. Used when initialising a fresh
+    install where we bundled CSI_V1."""
     mroot = models_root(suite_root)
     if not mroot.is_dir():
         return None
-    candidates = sorted(
-        mroot.glob("swiss_detector_v*.pt"),
-        key=lambda p: _version_key(p.stem),
-        reverse=True,
-    )
+    candidates = []
+    for prefix in _all_known_prefixes():
+        candidates.extend(mroot.glob(f"{prefix}*.pt"))
     if not candidates:
         return None
+    candidates.sort(key=lambda p: _version_key(p.stem), reverse=True)
     pick = candidates[0]
     return {
         "name": pick.stem,
@@ -324,20 +336,21 @@ def _autodetect_active(suite_root: Path) -> dict | None:
 
 
 def _version_key(stem: str) -> tuple:
-    """Sort key for swiss_detector_vN — extracts integer N for ordering."""
-    if not stem.startswith("swiss_detector_v"):
-        return (0, stem)
-    tail = stem[len("swiss_detector_v"):]
-    digits = ""
-    for ch in tail:
-        if ch.isdigit():
-            digits += ch
-        else:
-            break
-    try:
-        return (1, int(digits) if digits else 0, tail)
-    except Exception:
-        return (0, stem)
+    """Sort key — extracts integer N from CSI_VN or swiss_detector_vN."""
+    for prefix in _all_known_prefixes():
+        if stem.startswith(prefix):
+            tail = stem[len(prefix):]
+            digits = ""
+            for ch in tail:
+                if ch.isdigit():
+                    digits += ch
+                else:
+                    break
+            try:
+                return (1, int(digits) if digits else 0, tail)
+            except Exception:
+                return (0, stem)
+    return (0, stem)
 
 
 # ---------------------------------------------------------------------------
@@ -507,15 +520,19 @@ def dataset_stats(suite_root: Path) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def list_versions(suite_root: Path) -> list[SwissVersionMeta]:
-    """Discover all swiss_detector_v*.pt files. Reads sidecar metadata
-    when present (results.json from training runs) for mAP/epochs."""
+    """Discover all CSI_V*.pt (and legacy swiss_detector_v*.pt) files.
+    Reads sidecar metadata when present (results.json from training
+    runs) for mAP/epochs."""
     out: list[SwissVersionMeta] = []
     mroot = models_root(suite_root)
     if not mroot.is_dir():
         return out
     active = active_version(suite_root)
-    for p in sorted(mroot.glob("swiss_detector_v*.pt"),
-                    key=lambda x: _version_key(x.stem)):
+    candidates = []
+    for prefix in _all_known_prefixes():
+        candidates.extend(mroot.glob(f"{prefix}*.pt"))
+    candidates.sort(key=lambda x: _version_key(x.stem))
+    for p in candidates:
         meta_path = p.with_suffix(".meta.json")
         meta_extra: dict = {}
         if meta_path.is_file():
@@ -578,15 +595,18 @@ def next_version_name(suite_root: Path) -> str:
     versions = list_versions(suite_root)
     nums = []
     for v in versions:
-        try:
-            tail = v.name[len("swiss_detector_v"):]
-            digits = "".join(ch for ch in tail if ch.isdigit())
-            if digits:
-                nums.append(int(digits))
-        except Exception:
-            continue
-    nxt = max(nums) + 1 if nums else 2
-    return f"swiss_detector_v{nxt}"
+        for prefix in _all_known_prefixes():
+            if v.name.startswith(prefix):
+                tail = v.name[len(prefix):]
+                digits = "".join(ch for ch in tail if ch.isdigit())
+                if digits:
+                    try:
+                        nums.append(int(digits))
+                    except ValueError:
+                        pass
+                break
+    nxt = max(nums) + 1 if nums else 1
+    return f"{VERSION_PREFIX}{nxt}"
 
 
 # ---------------------------------------------------------------------------

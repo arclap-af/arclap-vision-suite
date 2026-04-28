@@ -30,7 +30,7 @@
     <button class="topnav-btn" data-page="train">Train</button>
     <button class="topnav-btn" data-page="live">Live RTSP</button>
     <button class="topnav-btn" data-page="filter">Filter</button>
-    <button class="topnav-btn" data-page="swiss">🏗️ Swiss Detector</button>
+    <button class="topnav-btn" data-page="swiss">🏗️ CSI_V1</button>
     <button class="topnav-btn" data-page="history">History</button>
     <button class="topnav-btn" data-page="projects">Projects</button>
   </nav>
@@ -1402,8 +1402,12 @@
 <main class="container hidden" id="page-swiss">
   <!-- Always-visible status hero -->
   <section class="card swiss-hero-card-wrap">
+    <div class="card-header" style="margin-bottom:8px">
+      <h2 style="margin:0">🏗️ CSI_V1 — Construction Site Intelligence</h2>
+      <p style="margin:4px 0 0">Multi-class detector for Swiss construction sites. Manage taxonomy, training data, versions, evaluation, and deployment from one tab — no folders to navigate.</p>
+    </div>
     <div id="swiss-hero" class="swiss-hero-grid">
-      <div class="swiss-hero-loading">Loading Swiss Detector state…</div>
+      <div class="swiss-hero-loading">Loading CSI state…</div>
     </div>
   </section>
 
@@ -1484,22 +1488,23 @@
     <div class="swiss-data-controls">
       <button class="btn btn-secondary btn-small" id="btn-swiss-import-zip">📁 Upload Roboflow / CVAT zip</button>
       <input type="file" id="swiss-import-zip-input" accept=".zip" hidden />
-      <button class="btn btn-secondary btn-small" id="btn-swiss-import-folder">📂 Import from any folder…</button>
+      <button class="btn btn-primary btn-small" id="btn-swiss-pick-folder">📂 Choose folder &amp; import</button>
       <button class="btn btn-ghost btn-small" id="btn-swiss-import-fdrive">⬇️ Import from F:\\ Construction Site Intelligence</button>
       <span class="muted small" id="swiss-import-status"></span>
     </div>
 
-    <!-- Folder import inline form (shown when clicking 'Import from any folder') -->
-    <div id="swiss-folder-import-row" class="swiss-folder-import-row hidden">
-      <label class="text-row" style="flex:1">
-        <span>Server-local folder</span>
-        <div class="folder-input-row">
-          <input type="text" id="swiss-folder-import-path" placeholder="C:\path\to\dataset  (with images/{train,val} + labels/{train,val})" />
-          <button class="btn btn-secondary btn-small" id="btn-swiss-folder-browse" type="button">📁 Browse…</button>
-        </div>
-        <span class="muted small">Standard YOLO layout: <code>&lt;root&gt;/images/{train,val}/</code> + <code>&lt;root&gt;/labels/{train,val}/</code>. CVAT layout (<code>&lt;root&gt;/{train,val}/{images,labels}</code>) and flat-bag layouts also work.</span>
-      </label>
-      <button class="btn btn-primary btn-small" id="btn-swiss-folder-import-go">⬇️ Import</button>
+    <!-- Inspect / confirm panel — shown after user picks a folder -->
+    <div id="swiss-inspect-panel" class="swiss-inspect-panel hidden">
+      <div class="swiss-inspect-head">
+        <h4>📁 <span id="swiss-inspect-path"></span></h4>
+        <button class="btn btn-ghost btn-small" id="btn-swiss-inspect-close" type="button">✕</button>
+      </div>
+      <div id="swiss-inspect-stats" class="swiss-inspect-stats"></div>
+      <div id="swiss-inspect-warning" class="swiss-inspect-warning hidden"></div>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn btn-primary" id="btn-swiss-inspect-import">⬇️ Import this folder</button>
+        <button class="btn btn-ghost btn-small" id="btn-swiss-inspect-pick-other">Pick a different folder</button>
+      </div>
     </div>
     <div id="swiss-data-bars" class="swiss-data-bars">
       <p class="muted small" style="padding:14px">No data yet — import a dataset above.</p>
@@ -1594,6 +1599,32 @@
       <button class="btn btn-primary btn-lg" id="btn-swiss-train">🚀 Train new swiss_detector version</button>
       <span class="muted small" id="swiss-train-status"></span>
     </div>
+
+    <h3 style="margin-top:24px">🔬 Hyperparameter sweep</h3>
+    <p class="muted small" style="margin:0 0 8px">Train multiple variants in sequence with different params. The Suite picks the best one by mAP@50 and (optionally) auto-promotes it to active. Use comma-separated lists (e.g. <code>30, 50, 80</code>).</p>
+    <div class="filter-grid">
+      <label class="text-row">
+        <span>Epochs (comma-separated)</span>
+        <input type="text" id="sweep-epochs" value="30, 50" />
+      </label>
+      <label class="text-row">
+        <span>Batch sizes</span>
+        <input type="text" id="sweep-batch" value="16" />
+      </label>
+      <label class="text-row">
+        <span>Image sizes</span>
+        <input type="text" id="sweep-imgsz" value="640" />
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="sweep-promote" checked />
+        Auto-promote best mAP to active
+      </label>
+    </div>
+    <div class="actions" style="margin-top:10px">
+      <button class="btn btn-secondary btn-small" id="btn-swiss-sweep">🔬 Run sweep</button>
+      <span class="muted small" id="swiss-sweep-status"></span>
+    </div>
+    <div id="swiss-sweep-results" class="swiss-sweep-results"></div>
   </section>
 
   <!-- ===== Charts sub-tab — training engineering charts ===== -->
@@ -1729,6 +1760,71 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
         <button class="btn btn-secondary btn-small" id="btn-deploy-go-filter">▶ Open Filter tab</button>
       </div>
     </div>
+
+    <h3 style="margin-top:18px">⚡ TensorRT engine export (NVIDIA-only)</h3>
+    <p class="muted small" style="margin:0 0 8px">Native TensorRT <code>.engine</code> file — much smaller and faster than ONNX at runtime, but locked to the specific GPU + driver + TRT version that built it. <strong>FP16</strong> is the sweet spot. <strong>INT8</strong> needs calibration data (the Suite uses your val/ split automatically).</p>
+    <div class="filter-grid">
+      <label class="text-row">
+        <span>Version</span>
+        <select id="trt-version"></select>
+      </label>
+      <label class="text-row">
+        <span>Precision</span>
+        <select id="trt-precision">
+          <option value="fp16" selected>FP16 (recommended)</option>
+          <option value="int8">INT8 (smallest / fastest, slight accuracy loss)</option>
+          <option value="fp32">FP32 (full precision)</option>
+        </select>
+      </label>
+      <label class="text-row">
+        <span>Workspace (GB)</span>
+        <input type="number" id="trt-workspace" value="4" min="1" max="24" />
+      </label>
+    </div>
+    <div class="actions" style="margin-top:10px">
+      <button class="btn btn-secondary btn-small" id="btn-swiss-trt-export">⚡ Export TensorRT engine</button>
+      <span class="muted small" id="swiss-trt-status"></span>
+    </div>
+
+    <h3 style="margin-top:18px">📡 Drift detection</h3>
+    <p class="muted small" style="margin:0 0 8px">Detects when the active model's per-class detection rate drifts on new data — a leading indicator of accuracy degradation. <strong>Step 1:</strong> set a baseline on a representative sample. <strong>Step 2:</strong> run drift-check on a recent batch and see which classes shifted &gt;30%.</p>
+    <div class="cv-tools-grid">
+      <div class="cv-tool-card">
+        <h4>1️⃣ Set baseline</h4>
+        <label class="text-row">
+          <span>Version</span>
+          <select id="drift-baseline-version"></select>
+        </label>
+        <label class="text-row">
+          <span>Sample folder (representative recent images)</span>
+          <input type="text" id="drift-baseline-folder" placeholder="C:\path\to\baseline_sample" />
+        </label>
+        <label class="text-row">
+          <span>Baseline name</span>
+          <input type="text" id="drift-baseline-name" value="default" />
+        </label>
+        <button class="btn btn-secondary btn-small" id="btn-drift-baseline">📌 Set baseline</button>
+        <span class="muted small" id="drift-baseline-status"></span>
+      </div>
+      <div class="cv-tool-card">
+        <h4>2️⃣ Check drift</h4>
+        <label class="text-row">
+          <span>Version</span>
+          <select id="drift-check-version"></select>
+        </label>
+        <label class="text-row">
+          <span>Recent folder to check</span>
+          <input type="text" id="drift-check-folder" placeholder="C:\path\to\recent_batch" />
+        </label>
+        <label class="text-row">
+          <span>Baseline name</span>
+          <input type="text" id="drift-check-name" value="default" />
+        </label>
+        <button class="btn btn-primary btn-small" id="btn-drift-check">🔍 Check drift</button>
+        <span class="muted small" id="drift-check-status"></span>
+      </div>
+    </div>
+    <div id="drift-report" class="drift-report"></div>
   </section>
 
   <!-- ===== Activity sub-tab ===== -->
@@ -1993,6 +2089,6 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-29-e-folder-import"></script>
+<script src="/static/app.js?v=2026-04-29-g-csi-rebrand"></script>
 </body>
 </html>

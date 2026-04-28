@@ -1,8 +1,8 @@
 {
   "name": "swiss_construction_v2",
-  "title": "Swiss Construction (16 classes)",
-  "description": "Preset matched 1:1 to swiss_detector_v2.pt — a YOLOv8 detector trained on 1250 Swiss timelapse frames. Bilingual EN/DE labels with brand colours per class. Pick this preset whenever the Filter scan was done with the Swiss Construction Detector.",
-  "model_match": "swiss_detector_v2.pt",
+  "title": "CSI_V1 — Swiss Construction (16 classes)",
+  "description": "Preset matched 1:1 to CSI_V1.pt — a YOLOv8 detector trained on 1250 Swiss timelapse frames. Bilingual EN/DE labels with brand colours per class. Pick this preset whenever the Filter scan was done with the Construction Site Intelligence detector.",
+  "model_match": "CSI_V1.pt",
   "n_classes": 16,
   "layers": [
     {"id": 1, "title": "Cranes & lifts", "range": [0, 1]},

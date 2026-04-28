@@ -41,12 +41,12 @@ env/
 incoming/
 
 # Custom user-uploaded model weights live in _models/. We bundle exactly
-# one curated weights file (swiss_detector_v2.pt — 16-class Swiss
-# Construction Detector, ~50 MB) so a fresh clone has a working
+# one curated weights file (CSI_V1.pt — 16-class Construction Site
+# Intelligence detector, ~50 MB) so a fresh clone has a working
 # multi-class detector out of the box. Other .pt files dropped by the
 # user stay local-only.
 _models/*
-!_models/swiss_detector_v2.pt
+!_models/CSI_V1.pt
 
 # Reference image library — sampled 3 per class (~13 MB) so users can
 # see what the model thinks each class looks like.
