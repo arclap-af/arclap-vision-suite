@@ -1397,24 +1397,49 @@
 </main>
 
 <!-- ============================================================
-     Swiss Detector — full lifecycle of the multi-class construction model
+     Swiss Detector — full lifecycle, redesigned with sub-tabs
      ============================================================ -->
 <main class="container hidden" id="page-swiss">
-  <section class="card">
-    <div class="card-header">
-      <h2>🏗️ Swiss Construction Detector</h2>
-      <p>One place to manage the Swiss multi-class detector — its taxonomy, training data, and trained versions. Add a new class, collect images from the web, drop a Roboflow zip, retrain, activate. No folders to navigate.</p>
-    </div>
-
-    <div id="swiss-hero" class="swiss-hero">
+  <!-- Always-visible status hero -->
+  <section class="card swiss-hero-card-wrap">
+    <div id="swiss-hero" class="swiss-hero-grid">
       <div class="swiss-hero-loading">Loading Swiss Detector state…</div>
     </div>
   </section>
 
-  <section class="card">
+  <!-- Sub-tab navigation -->
+  <nav class="swiss-subtabs">
+    <button class="swiss-subtab active" data-stab="overview">📊 Overview</button>
+    <button class="swiss-subtab" data-stab="classes">📋 Classes</button>
+    <button class="swiss-subtab" data-stab="data">📦 Data</button>
+    <button class="swiss-subtab" data-stab="train">🧠 Train</button>
+    <button class="swiss-subtab" data-stab="evaluate">🧪 Evaluate</button>
+    <button class="swiss-subtab" data-stab="deploy">🚀 Deploy</button>
+    <button class="swiss-subtab" data-stab="activity">🕒 Activity</button>
+  </nav>
+
+  <!-- ===== Overview sub-tab ===== -->
+  <section class="card swiss-stab-pane" data-stab-pane="overview">
+    <div class="card-header">
+      <h3>What's in this Suite right now</h3>
+      <p>The big picture for the Swiss Construction Detector. Drill into a sub-tab for actions.</p>
+    </div>
+    <div id="swiss-overview" class="swiss-overview-grid">
+      <p class="muted small" style="padding:14px">Loading…</p>
+    </div>
+
+    <h3 style="margin-top:18px">📊 Versions</h3>
+    <p class="muted small" style="margin:0 0 10px">Every trained Swiss detector. Click <em>Activate</em> to make a version the default. Use action buttons for evaluation, ONNX export, and benchmarking.</p>
+    <div id="swiss-versions" class="swiss-versions">
+      <p class="muted small" style="padding:14px">Loading versions…</p>
+    </div>
+  </section>
+
+  <!-- ===== Classes sub-tab ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="classes">
     <div class="card-header">
       <h3>📋 Class taxonomy</h3>
-      <p>Every class the model could detect. Existing IDs are immutable so old annotations never break. Add a new class, then collect training data for it (Add data → Web search / Upload).</p>
+      <p>Every class the model could detect. IDs are immutable so old annotations never break. Add a class, then click 🔍 Web on its card to collect training images.</p>
     </div>
     <div class="swiss-class-toolbar">
       <button class="btn btn-primary btn-small" id="btn-swiss-add-class">+ Add new class</button>
@@ -1425,10 +1450,11 @@
     </div>
   </section>
 
-  <section class="card">
+  <!-- ===== Data sub-tab ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="data">
     <div class="card-header">
       <h3>📦 Training data</h3>
-      <p>The persistent dataset the next training run will use. Per-class counts include both train and val frames.</p>
+      <p>The persistent dataset the next training run will use. Add data via three sources: zip files, your existing F:\\ folder, or extract frames from videos.</p>
     </div>
     <div class="swiss-data-controls">
       <button class="btn btn-secondary btn-small" id="btn-swiss-import-zip">📁 Upload Roboflow / CVAT zip</button>
@@ -1439,12 +1465,62 @@
     <div id="swiss-data-bars" class="swiss-data-bars">
       <p class="muted small" style="padding:14px">No data yet — import a dataset above.</p>
     </div>
+
+    <div class="cv-tools-grid" style="margin-top:18px">
+      <div class="cv-tool-card">
+        <h4>🎞️ Extract frames from video</h4>
+        <p class="muted small">Sample evenly-spaced frames from any video (timelapse, walkaround, drone). Frames go straight into a class staging folder ready for annotation.</p>
+        <label class="text-row">
+          <span>Video file (server path)</span>
+          <input type="text" id="cv-frames-video" placeholder="C:\path\to\walkthrough.mp4" />
+        </label>
+        <div class="filter-grid">
+          <label class="text-row">
+            <span>How many frames</span>
+            <input type="number" id="cv-frames-n" value="60" min="1" max="2000" />
+          </label>
+          <label class="text-row">
+            <span>Target class</span>
+            <select id="cv-frames-class">
+              <option value="">— staging/_video_extracts —</option>
+            </select>
+          </label>
+        </div>
+        <button class="btn btn-secondary btn-small" id="btn-cv-frames-go">🎞️ Extract</button>
+        <span class="muted small" id="cv-frames-status"></span>
+      </div>
+
+      <div class="cv-tool-card">
+        <h4>🤖 Auto-annotate folder</h4>
+        <p class="muted small">Run the active Swiss model on a folder of new images, write YOLO-format labels alongside, merge into the managed dataset.</p>
+        <label class="text-row">
+          <span>Source folder</span>
+          <input type="text" id="cv-auto-folder" placeholder="C:\path\to\new_frames" />
+        </label>
+        <div class="filter-grid">
+          <label class="text-row">
+            <span>Split</span>
+            <select id="cv-auto-split">
+              <option value="train" selected>train</option>
+              <option value="val">val</option>
+            </select>
+          </label>
+          <label class="text-row">
+            <span>Min confidence</span>
+            <input type="number" id="cv-auto-conf" value="0.30" min="0" max="1" step="0.05" />
+          </label>
+        </div>
+        <button class="btn btn-secondary btn-small" id="btn-cv-auto-go">🤖 Auto-label</button>
+        <span class="muted small" id="cv-auto-status"></span>
+      </div>
+    </div>
   </section>
 
-  <section class="card">
+  <!-- ===== Train sub-tab ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="train">
     <div class="card-header">
       <h3>🧠 Train a new version</h3>
-      <p>Fine-tune from the active version (transfer learning) or start from a stock YOLO. Training output appears in the Versions list below; the UI lets you activate or roll back.</p>
+      <p>Fine-tune from the active version (transfer learning) or start from a stock YOLO. Training output appears in the Overview tab's Versions list; activate or roll back from there.</p>
     </div>
     <div class="swiss-train-grid">
       <label class="text-row">
@@ -1459,7 +1535,7 @@
       <label class="text-row">
         <span>Epochs</span>
         <input type="number" id="swiss-train-epochs" value="50" min="1" max="500" />
-        <span class="muted small">50 is a solid default. More epochs = longer training, often diminishing returns past 100.</span>
+        <span class="muted small">50 is a solid default. More epochs = longer, often diminishing returns past 100.</span>
       </label>
       <label class="text-row">
         <span>Batch size</span>
@@ -1481,99 +1557,65 @@
     </div>
   </section>
 
-  <section class="card">
+  <!-- ===== Evaluate sub-tab ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="evaluate">
     <div class="card-header">
-      <h3>📊 Versions</h3>
-      <p>Every trained Swiss detector that lives in <code>_models/</code>. Click <em>Activate</em> to make a version the default for the Filter and other tabs. Use <em>Evaluate</em> to measure mAP@50 + per-class precision/recall on a held-out folder you trust. Use <em>Export ONNX</em> to ship to production. <em>Benchmark</em> measures inference speed at multiple batch sizes.</p>
+      <h3>🧪 Held-out evaluation</h3>
+      <p>Pick a version and a folder of <em>labelled</em> test images (.txt YOLO labels next to each image). Computes per-class precision/recall/F1, mAP@50, and a confusion matrix. <strong>This is how you honestly answer "is v3 better than v2?"</strong></p>
     </div>
-    <div id="swiss-versions" class="swiss-versions">
-      <p class="muted small" style="padding:14px">Loading versions…</p>
+    <div class="filter-grid">
+      <label class="text-row">
+        <span>Version to evaluate</span>
+        <select id="cv-eval-version"></select>
+      </label>
+      <label class="text-row">
+        <span>Test folder</span>
+        <input type="text" id="cv-eval-folder" placeholder="C:\path\to\test_set" />
+      </label>
+      <label class="text-row">
+        <span>IoU threshold</span>
+        <input type="number" id="cv-eval-iou" value="0.5" min="0.1" max="0.95" step="0.05" />
+      </label>
+      <label class="text-row">
+        <span>Confidence threshold</span>
+        <input type="number" id="cv-eval-conf" value="0.25" min="0" max="1" step="0.05" />
+      </label>
     </div>
+    <div class="actions" style="margin-top:14px">
+      <button class="btn btn-primary btn-small" id="btn-cv-eval-go">📊 Run evaluation</button>
+      <span class="muted small" id="cv-eval-status"></span>
+    </div>
+    <div id="cv-eval-report" class="cv-eval-report hidden"></div>
   </section>
 
-  <section class="card">
+  <!-- ===== Deploy sub-tab ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="deploy">
     <div class="card-header">
-      <h3>🧪 Production CV tools</h3>
-      <p>Professional CV-engineering workflow: extract frames from a video into staging, auto-label new images using the active model, and evaluate any version against a held-out test set with industry-standard metrics (mAP@50, per-class precision/recall, confusion matrix).</p>
+      <h3>🚀 Deploy</h3>
+      <p>Production export paths. Click ONNX or Benchmark on any version row in the Overview tab. ONNX is your gateway to TensorRT (NVIDIA), OpenVINO (Intel), CoreML (Apple), or ONNX Runtime (any platform).</p>
     </div>
-
-    <div class="cv-tools-grid">
-      <div class="cv-tool-card">
-        <h4>🎞️ Extract frames from video</h4>
-        <p class="muted small">Sample evenly-spaced frames from any video (timelapse, walkaround, drone). Frames go straight into a class staging folder ready for annotation.</p>
-        <label class="text-row">
-          <span>Video file (server path)</span>
-          <input type="text" id="cv-frames-video" placeholder="C:\path\to\walkthrough.mp4" />
-        </label>
-        <div class="filter-grid">
-          <label class="text-row">
-            <span>How many frames</span>
-            <input type="number" id="cv-frames-n" value="60" min="1" max="2000" />
-          </label>
-          <label class="text-row">
-            <span>Target class</span>
-            <select id="cv-frames-class">
-              <option value="">— extract to staging/_video_extracts —</option>
-            </select>
-          </label>
-        </div>
-        <button class="btn btn-secondary btn-small" id="btn-cv-frames-go">🎞️ Extract</button>
-        <span class="muted small" id="cv-frames-status"></span>
+    <div class="deploy-quickref">
+      <div class="deploy-quickref-card">
+        <h4>📤 ONNX export</h4>
+        <p class="muted small">Output goes next to the <code>.pt</code> file. ~99 MB for a YOLOv8m. Dynamic batch + simplification on by default.</p>
+        <pre class="deploy-code">cd _models/
+trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
       </div>
-
-      <div class="cv-tool-card">
-        <h4>🤖 Auto-annotate folder</h4>
-        <p class="muted small">Run the active Swiss model over a folder of new images, write YOLO-format labels alongside, and merge into the managed dataset for the next training run. Best for "I have 500 new frames, give me a head-start before manual review".</p>
-        <label class="text-row">
-          <span>Source folder</span>
-          <input type="text" id="cv-auto-folder" placeholder="C:\path\to\new_frames" />
-        </label>
-        <div class="filter-grid">
-          <label class="text-row">
-            <span>Split</span>
-            <select id="cv-auto-split">
-              <option value="train" selected>train</option>
-              <option value="val">val</option>
-            </select>
-          </label>
-          <label class="text-row">
-            <span>Min confidence</span>
-            <input type="number" id="cv-auto-conf" value="0.30" min="0" max="1" step="0.05" />
-          </label>
-        </div>
-        <button class="btn btn-secondary btn-small" id="btn-cv-auto-go">🤖 Auto-label</button>
-        <span class="muted small" id="cv-auto-status"></span>
+      <div class="deploy-quickref-card">
+        <h4>⏱️ Inference benchmark</h4>
+        <p class="muted small">Measures ms/image at batch 1, 4, 8, 16 plus FPS, P99 latency, GPU memory. Synthetic tensors so I/O doesn't pollute numbers.</p>
+        <p class="muted small">Click <em>Bench</em> next to any version in Overview.</p>
       </div>
-
-      <div class="cv-tool-card">
-        <h4>📊 Held-out evaluation</h4>
-        <p class="muted small">Pick a version and a folder of <em>labelled</em> test images (.txt YOLO labels next to each image). Computes per-class precision/recall/F1, mAP@50, and a confusion matrix. <strong>This is how you honestly answer "is v3 better than v2?"</strong></p>
-        <div class="filter-grid">
-          <label class="text-row">
-            <span>Version to evaluate</span>
-            <select id="cv-eval-version"></select>
-          </label>
-          <label class="text-row">
-            <span>Test folder</span>
-            <input type="text" id="cv-eval-folder" placeholder="C:\path\to\test_set" />
-          </label>
-          <label class="text-row">
-            <span>IoU threshold</span>
-            <input type="number" id="cv-eval-iou" value="0.5" min="0.1" max="0.95" step="0.05" />
-          </label>
-          <label class="text-row">
-            <span>Confidence threshold</span>
-            <input type="number" id="cv-eval-conf" value="0.25" min="0" max="1" step="0.05" />
-          </label>
-        </div>
-        <button class="btn btn-primary btn-small" id="btn-cv-eval-go">📊 Run evaluation</button>
-        <span class="muted small" id="cv-eval-status"></span>
-        <div id="cv-eval-report" class="cv-eval-report hidden"></div>
+      <div class="deploy-quickref-card">
+        <h4>🌐 Use the active model in Filter</h4>
+        <p class="muted small">The Swiss model picked here is also the default in the Filter tab's bulk-scan dropdown. One model, one source of truth.</p>
+        <button class="btn btn-secondary btn-small" id="btn-deploy-go-filter">▶ Open Filter tab</button>
       </div>
     </div>
   </section>
 
-  <section class="card">
+  <!-- ===== Activity sub-tab ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="activity">
     <div class="card-header">
       <h3>🕒 Activity log</h3>
       <p>Every change to the taxonomy, every dataset import, every training run.</p>
@@ -1834,6 +1876,6 @@
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-29-a-cv-pro-tools"></script>
+<script src="/static/app.js?v=2026-04-29-b-swiss-redesign"></script>
 </body>
 </html>

@@ -2182,23 +2182,127 @@ code { background: var(--bg-2); padding: 1px 6px; border-radius: 4px; font-famil
    Swiss Detector tab — full lifecycle UI
    ============================================================================= */
 
-/* Hero card with active version */
-.swiss-hero-card {
-  padding: 18px 22px;
-  background: linear-gradient(135deg,
-    color-mix(in srgb, var(--color-brand) 8%, var(--color-surface)) 0%,
-    var(--color-surface) 100%);
+/* Hero — 6-card stat grid that's always visible at the top */
+.swiss-hero-card-wrap { padding: 18px 22px; }
+.swiss-hero-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+.swiss-hero-loading { color: var(--color-text-muted); padding: 14px; grid-column: 1 / -1; }
+.swiss-stat-card {
+  padding: 14px 16px;
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-3);
+  border-radius: var(--radius-2);
+  display: flex; flex-direction: column; gap: 4px;
 }
-.swiss-hero-row {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 14px; flex-wrap: wrap;
+.swiss-stat-card.hero-active {
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--color-brand) 12%, var(--color-surface)) 0%,
+    var(--color-surface) 100%);
+  border-color: var(--color-brand);
 }
-.swiss-hero-eyebrow { font-size: 11px; letter-spacing: 0.08em; color: var(--color-text-muted); }
-.swiss-hero-name { font-size: 22px; font-weight: 700; color: var(--color-text-strong); margin: 4px 0 6px; font-family: var(--font-mono); }
-.swiss-hero-meta { color: var(--color-text-muted); font-size: 13px; }
-.swiss-hero-loading { color: var(--color-text-muted); padding: 14px; }
+.swiss-stat-eyebrow {
+  font-size: 10.5px; letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+}
+.swiss-stat-bignum {
+  font-size: 22px; font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--color-text-strong);
+  line-height: 1.1;
+}
+.swiss-stat-bignum .swiss-stat-suffix {
+  font-size: 14px; color: var(--color-text-muted); font-weight: 500;
+}
+.swiss-stat-sub {
+  font-size: 11.5px; color: var(--color-text-muted);
+}
+
+.swiss-stat-card.hero-active .btn { align-self: flex-start; margin-top: 4px; }
+
+/* Status pill */
+.status-pill-card { display: flex; flex-direction: column; }
+.swiss-pill {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12.5px; font-weight: 600;
+  align-self: flex-start;
+}
+.swiss-pill.pill-ok { background: rgba(34, 197, 94, 0.15); color: #16a34a; }
+.swiss-pill.pill-warn { background: rgba(255, 152, 0, 0.18); color: #d97706; }
+.swiss-pill.pill-bad { background: rgba(239, 68, 68, 0.18); color: #dc2626; }
+
+/* Sub-tab navigation */
+.swiss-subtabs {
+  display: flex; gap: 2px;
+  border-bottom: 2px solid var(--color-border);
+  padding: 0 12px;
+  margin: 10px 0 14px;
+  flex-wrap: wrap;
+}
+.swiss-subtab {
+  background: transparent; border: none;
+  color: var(--color-text-muted);
+  padding: 10px 16px;
+  font-size: 13.5px; font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.12s, border-color 0.12s;
+}
+.swiss-subtab:hover { color: var(--color-text-strong); }
+.swiss-subtab.active {
+  color: var(--color-brand);
+  border-bottom-color: var(--color-brand);
+}
+
+/* Overview "what's in here" two-column */
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 18px;
+}
+.overview-list {
+  list-style: none; padding: 0;
+  margin: 6px 0 0;
+}
+.overview-list li {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--color-border);
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px;
+}
+.overview-list li:last-child { border-bottom: none; }
+
+/* Deploy quickref cards */
+.deploy-quickref {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+  margin-top: 12px;
+}
+.deploy-quickref-card {
+  padding: 14px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.deploy-quickref-card h4 { margin: 0; font-size: 14px; }
+.deploy-code {
+  background: var(--color-surface-2, var(--color-border));
+  color: var(--color-text-strong);
+  padding: 8px 12px;
+  border-radius: var(--radius-1);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  white-space: pre-wrap; word-break: break-all;
+  margin: 4px 0 0;
+}
 
 /* Class toolbar + summary */
 .swiss-class-toolbar {

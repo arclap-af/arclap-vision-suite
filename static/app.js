@@ -3303,34 +3303,109 @@ function renderSwissHero() {
   const a = s.active;
   const stats = s.stats || {};
   const classCount = (s.classes || []).filter(c => c.active).length;
+  const totalClasses = (s.classes || []).length;
   const trainCount = stats.train_images || 0;
   const valCount = stats.val_images || 0;
-  if (!a) {
-    $('swiss-hero').innerHTML = `
-      <div class="swiss-hero-card">
-        <div class="swiss-hero-headline">No active model yet</div>
-        <p class="muted small">No <code>swiss_detector_v*.pt</code> in <code>_models/</code>. Bundled v2 should auto-pin on first boot. If you cloned a fresh repo, double-check the file is there.</p>
-      </div>`;
-    return;
+  const stagingTotal = Object.values(stats.staging || {}).reduce((a, b) => a + b, 0);
+  const versions = s.versions || [];
+  const activeMeta = a ? versions.find(v => v.name === a.name) : null;
+  const map50 = activeMeta && activeMeta.map50 != null ? `${(activeMeta.map50 * 100).toFixed(1)}%` : '—';
+  const totalLabels = Object.values(stats.per_class_counts || {}).reduce((a, b) => a + b, 0);
+
+  // "Status pill": ready to retrain? worth re-evaluating?
+  let pillText = '✓ Up to date';
+  let pillClass = 'pill-ok';
+  if (stagingTotal > 0) {
+    pillText = `${stagingTotal} staged frames waiting`;
+    pillClass = 'pill-warn';
+  } else if (trainCount === 0) {
+    pillText = 'Empty dataset — import to begin';
+    pillClass = 'pill-warn';
   }
+  if (!a) {
+    pillText = 'No active model';
+    pillClass = 'pill-bad';
+  }
+
   $('swiss-hero').innerHTML = `
-    <div class="swiss-hero-card">
-      <div class="swiss-hero-row">
-        <div>
-          <div class="swiss-hero-eyebrow">ACTIVE VERSION</div>
-          <div class="swiss-hero-name">${escapeHtml(a.name)}</div>
-          <div class="swiss-hero-meta">
-            ${classCount} classes in registry · ${trainCount.toLocaleString()} train + ${valCount.toLocaleString()} val frames
-          </div>
-        </div>
-        <div class="swiss-hero-actions">
-          <a class="btn btn-secondary btn-small" href="javascript:void(0)" id="btn-swiss-go-filter">▶ Use in Filter</a>
-        </div>
-      </div>
+    <div class="swiss-stat-card hero-active">
+      <div class="swiss-stat-eyebrow">ACTIVE MODEL</div>
+      <div class="swiss-stat-bignum">${a ? escapeHtml(a.name) : '—'}</div>
+      <div class="swiss-stat-sub">${activeMeta ? activeMeta.n_classes + ' classes' : ''}</div>
+      <a class="btn btn-secondary btn-small" href="javascript:void(0)" id="btn-swiss-go-filter">▶ Use in Filter</a>
+    </div>
+    <div class="swiss-stat-card">
+      <div class="swiss-stat-eyebrow">mAP@50 (TRAINING)</div>
+      <div class="swiss-stat-bignum">${map50}</div>
+      <div class="swiss-stat-sub">From last train run</div>
+    </div>
+    <div class="swiss-stat-card">
+      <div class="swiss-stat-eyebrow">DATASET SIZE</div>
+      <div class="swiss-stat-bignum">${(trainCount + valCount).toLocaleString()}</div>
+      <div class="swiss-stat-sub">${trainCount.toLocaleString()} train · ${valCount.toLocaleString()} val · ${totalLabels.toLocaleString()} labels</div>
+    </div>
+    <div class="swiss-stat-card">
+      <div class="swiss-stat-eyebrow">CLASSES</div>
+      <div class="swiss-stat-bignum">${classCount}<span class="swiss-stat-suffix">/${totalClasses}</span></div>
+      <div class="swiss-stat-sub">active / total in registry</div>
+    </div>
+    <div class="swiss-stat-card">
+      <div class="swiss-stat-eyebrow">VERSIONS</div>
+      <div class="swiss-stat-bignum">${versions.length}</div>
+      <div class="swiss-stat-sub">${versions.length === 1 ? 'one trained version' : 'trained versions'}</div>
+    </div>
+    <div class="swiss-stat-card status-pill-card">
+      <div class="swiss-stat-eyebrow">STATUS</div>
+      <div class="swiss-pill ${pillClass}">${escapeHtml(pillText)}</div>
+      ${stagingTotal > 0 ? `<button class="btn btn-primary btn-small" id="btn-swiss-jump-train" style="margin-top:6px">→ Train now</button>` : ''}
     </div>`;
   if ($('btn-swiss-go-filter')) {
     $('btn-swiss-go-filter').addEventListener('click', () => showPage('filter'));
   }
+  if ($('btn-swiss-jump-train')) {
+    $('btn-swiss-jump-train').addEventListener('click', () => showSwissSubtab('train'));
+  }
+
+  // Render the Overview "what's in here" card
+  const ov = $('swiss-overview');
+  if (ov) {
+    const recentLog = (s.ingestion_log || []).slice(-5).reverse();
+    const top5Classes = (s.classes || [])
+      .map(c => ({...c, n: (stats.per_class_counts || {})[c.id] || 0}))
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 5);
+    ov.innerHTML = `
+      <div class="overview-grid">
+        <div>
+          <h4>Top 5 best-represented classes</h4>
+          ${top5Classes.length ? '<ul class="overview-list">' +
+            top5Classes.map(c => `<li><span class="swiss-bar-swatch" style="background:${c.color}"></span> <strong>${escapeHtml(c.en)}</strong> <span class="muted small">${escapeHtml(c.de)}</span> — ${c.n.toLocaleString()} labels</li>`).join('') +
+          '</ul>' : '<p class="muted small">No labels yet.</p>'}
+        </div>
+        <div>
+          <h4>Recent activity</h4>
+          ${recentLog.length ? '<ul class="overview-list">' +
+            recentLog.map(e => `<li class="muted small">${swissActivitySummary(e)}</li>`).join('') +
+          '</ul>' : '<p class="muted small">No activity yet.</p>'}
+        </div>
+      </div>`;
+  }
+}
+
+function showSwissSubtab(name) {
+  document.querySelectorAll('.swiss-subtab').forEach(b => {
+    b.classList.toggle('active', b.dataset.stab === name);
+  });
+  document.querySelectorAll('.swiss-stab-pane').forEach(p => {
+    p.classList.toggle('hidden', p.dataset.stabPane !== name);
+  });
+}
+document.addEventListener('click', e => {
+  const t = e.target.closest('.swiss-subtab');
+  if (t) showSwissSubtab(t.dataset.stab);
+});
+if (document.getElementById('btn-deploy-go-filter')) {
+  document.getElementById('btn-deploy-go-filter').addEventListener('click', () => showPage('filter'));
 }
 
 const SWISS_CATEGORY_ICONS = {
@@ -3457,9 +3532,9 @@ function renderSwissVersions() {
       const act = b.dataset.act;
       if (act === 'activate') swissActivateVersion(name);
       if (act === 'evaluate') {
-        $('cv-eval-version').value = name;
-        showPage('swiss');
-        document.querySelector('#cv-eval-folder').focus();
+        showSwissSubtab('evaluate');
+        if ($('cv-eval-version')) $('cv-eval-version').value = name;
+        if ($('cv-eval-folder')) $('cv-eval-folder').focus();
         toast('Pick a test folder, then Run evaluation.', 'info');
       }
       if (act === 'export-onnx') swissExportOnnx(name);
