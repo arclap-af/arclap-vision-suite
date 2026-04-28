@@ -421,6 +421,129 @@ def cleanup(req: RetentionRequest):
     }
 
 
+@app.get("/api/dashboard")
+def dashboard():
+    """One-call summary for the Dashboard / Home page."""
+    jobs = db.list_jobs(limit=200)
+    models = db.list_models()
+    projects = db.list_projects()
+    now = time.time()
+    last_24h = [j for j in jobs if (j.created_at or 0) > now - 86400]
+    by_status: dict[str, int] = {}
+    for j in jobs:
+        by_status[j.status] = by_status.get(j.status, 0) + 1
+
+    recent_outputs: list[dict] = []
+    for j in jobs[:12]:
+        if j.status == "done" and j.output_url:
+            recent_outputs.append({
+                "id": j.id, "mode": j.mode,
+                "output_url": j.output_url,
+                "created_at": j.created_at,
+                "name": Path(j.output_path).name,
+                "project_id": j.project_id,
+            })
+
+    info = {
+        "totals": {
+            "jobs": len(jobs),
+            "models": len(models),
+            "projects": len(projects),
+            "jobs_24h": len(last_24h),
+            "queue_pending": queue.pending(),
+            "running": runner.is_running() is not None,
+        },
+        "by_status": by_status,
+        "recent_outputs": recent_outputs[:6],
+        "gpu": {
+            "available": GPU_AVAILABLE,
+            "name": GPU_NAME,
+        },
+    }
+    if GPU_AVAILABLE:
+        try:
+            free, total = torch.cuda.mem_get_info()
+            info["gpu"]["memory_pct_used"] = round(100 * (total - free) / total, 1)
+            info["gpu"]["memory_used_mb"] = round((total - free) / (1024**2))
+            info["gpu"]["memory_total_mb"] = round(total / (1024**2))
+        except Exception:
+            pass
+
+    # Disk usage of the output dir
+    total_bytes = 0
+    file_count = 0
+    if OUTPUTS.exists():
+        for p in OUTPUTS.iterdir():
+            if p.is_file():
+                total_bytes += p.stat().st_size
+                file_count += 1
+    info["storage"] = {
+        "outputs_files": file_count,
+        "outputs_mb": round(total_bytes / (1024**2), 1),
+    }
+    return info
+
+
+@app.get("/api/projects/{project_id}/audit-zip")
+def project_audit_zip(project_id: str):
+    """Bundle every job's audit HTML + per-frame CSV / status JSON
+    for a project into a single zip download."""
+    proj = db.get_project(project_id)
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    jobs = db.list_jobs(project_id=project_id, limit=10000)
+
+    import io
+    import zipfile as _zf
+    buf = io.BytesIO()
+    with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as zf:
+        # Project metadata
+        meta = {
+            "project": {"id": proj.id, "name": proj.name,
+                        "settings": proj.settings,
+                        "created_at": proj.created_at},
+            "exported_at": time.time(),
+            "job_count": len(jobs),
+        }
+        zf.writestr("project.json", json.dumps(meta, indent=2))
+
+        for j in jobs:
+            d = j.output_path
+            siblings = [
+                Path(d),
+                Path(d).with_suffix(".audit.html"),
+                Path(d).with_suffix(".live_status.json"),
+                Path(d).with_suffix(".ppe_report.csv"),
+            ]
+            for path in siblings:
+                if path.is_file():
+                    arc = f"{j.id}/{path.name}"
+                    zf.write(path, arcname=arc)
+            zf.writestr(f"{j.id}/job.json", json.dumps(_job_to_dict(j), indent=2))
+
+    buf.seek(0)
+    headers = {"Content-Disposition": f'attachment; filename="audit_{proj.name}.zip"'}
+    return StreamingResponse(buf, media_type="application/zip", headers=headers)
+
+
+@app.post("/api/jobs/{job_id}/rerun")
+def rerun_job(job_id: str):
+    """Queue a fresh job using the same mode + settings + input as a previous one."""
+    src = db.get_job(job_id)
+    if not src:
+        raise HTTPException(404, "Job not found")
+    out_path = OUTPUTS / (Path(src.output_path).stem + "_rerun.mp4")
+    new_job = db.create_job(
+        kind=src.kind, mode=src.mode,
+        input_ref=src.input_ref,
+        output_path=str(out_path),
+        settings=src.settings,
+        project_id=src.project_id,
+    )
+    queue.submit(new_job.id)
+    return {"job_id": new_job.id}
+
+
 @app.get("/health")
 def health():
     """Liveness probe for Docker / k8s. Returns 200 when the worker is alive."""

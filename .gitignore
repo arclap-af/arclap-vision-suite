@@ -41,6 +41,11 @@ incoming/
 # Custom user-uploaded model weights live in _models/
 _models/
 
+# Design handoff bundle and any future design source-of-truth artefacts
+_design/
+_runs/
+_datasets/
+
 # Runtime artifacts
 _uploads/
 _outputs/

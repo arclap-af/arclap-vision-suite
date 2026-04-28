@@ -420,7 +420,7 @@ $('btn-clear-log').addEventListener('click', () => { $('log-output').textContent
 // Multi-page navigation
 // =============================================================================
 
-const PAGES = ['wizard', 'models', 'train', 'live', 'history', 'projects'];
+const PAGES = ['dashboard', 'wizard', 'models', 'train', 'live', 'history', 'projects'];
 
 function showPage(name) {
   PAGES.forEach(p => {
@@ -430,6 +430,8 @@ function showPage(name) {
   document.querySelectorAll('.topnav-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.page === name);
   });
+  localStorage.setItem('arclap_last_tab', name);
+  if (name === 'dashboard') refreshDashboard();
   if (name === 'models') { refreshSuggested(); refreshModels(); }
   if (name === 'history') refreshHistory();
   if (name === 'projects') { refreshProjects(); }
@@ -439,6 +441,10 @@ function showPage(name) {
 
 document.querySelectorAll('.topnav-btn').forEach(b => {
   b.addEventListener('click', () => showPage(b.dataset.page));
+});
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-quick-page]');
+  if (t) showPage(t.dataset.quickPage);
 });
 
 // =============================================================================
@@ -475,8 +481,8 @@ $('locale-toggle').addEventListener('change', e => {
   applyLocale();
 });
 
-// Theme
-const initialTheme = localStorage.getItem('arclap_theme') || 'dark';
+// Theme — default is now light per the Arclap design system
+const initialTheme = localStorage.getItem('arclap_theme') || 'light';
 document.documentElement.setAttribute('data-theme', initialTheme);
 $('theme-toggle').textContent = initialTheme === 'light' ? '◑' : '◐';
 $('theme-toggle').addEventListener('click', () => {
@@ -759,6 +765,7 @@ async function refreshHistory() {
           <div class="actions">
             ${j.output_url ? `<a class="btn btn-secondary" href="${j.output_url}" target="_blank">Open</a>` : ''}
             ${j.status === 'done' && (j.mode === 'blur' || j.mode === 'remove' || j.mode === 'darkonly') ? `<button class="btn btn-ghost" data-verify-job="${j.id}">Verify</button>` : ''}
+            ${j.status === 'done' || j.status === 'failed' ? `<button class="btn btn-ghost" data-rerun-job="${j.id}" title="Re-run with the same settings">Re-run</button>` : ''}
             <button class="btn btn-ghost" data-view-job="${j.id}">Log</button>
           </div>
         </div>
@@ -792,6 +799,19 @@ async function refreshHistory() {
         }
       });
     });
+    list.querySelectorAll('[data-rerun-job]').forEach(b => {
+      b.addEventListener('click', async () => {
+        try {
+          const r = await fetch(`/api/jobs/${b.dataset.rerunJob}/rerun`, { method: 'POST' });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const data = await r.json();
+          toast(`Re-run queued as ${data.job_id}`, 'success');
+          setTimeout(refreshHistory, 800);
+        } catch (e) {
+          toast('Re-run failed: ' + e.message, 'error');
+        }
+      });
+    });
   } catch (err) {
     toast('Could not load history: ' + err.message, 'error');
   }
@@ -813,7 +833,11 @@ async function refreshProjects() {
     filter.innerHTML = '<option value="">All projects</option>' +
       projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
     if (!projects.length) {
-      list.innerHTML = `<p class="muted">${t('no_projects')}</p>`;
+      list.innerHTML = `
+        <div class="empty-state" style="grid-column:1/-1">
+          <h3>${t('no_projects')}</h3>
+          <p>Projects group jobs by site, client, or campaign. Each one keeps its own history and default settings.</p>
+        </div>`;
       return;
     }
     list.innerHTML = projects.map(p => {
@@ -824,6 +848,8 @@ async function refreshProjects() {
           <div class="meta">created ${when}</div>
           <div class="meta">${Object.keys(p.settings || {}).length} settings saved</div>
           <div class="actions">
+            <a class="btn btn-secondary" href="/api/projects/${p.id}/audit-zip" download
+               title="Download every job's audit HTML + CSV/JSON as a single zip">Audit ZIP</a>
             <button class="btn btn-ghost" data-delete-project="${p.id}">Delete</button>
           </div>
         </div>
@@ -1099,6 +1125,183 @@ function escapeHtml(s) {
 
 // Apply locale on load
 applyLocale();
+
+// =============================================================================
+// Dashboard renderer
+// =============================================================================
+
+async function refreshDashboard() {
+  try {
+    const d = await fetch('/api/dashboard').then(r => r.json());
+    $('dash-jobs').textContent = d.totals.jobs;
+    $('dash-jobs-24h').textContent = `${d.totals.jobs_24h} in last 24h`;
+    $('dash-models').textContent = d.totals.models;
+    $('dash-projects').textContent = d.totals.projects;
+    $('dash-queue').textContent = d.totals.queue_pending;
+    $('dash-running').textContent = d.totals.running ? 'A job is running now' : 'Idle';
+    if (d.gpu && d.gpu.available) {
+      const pct = d.gpu.memory_pct_used != null ? d.gpu.memory_pct_used : '—';
+      $('dash-gpu').textContent = pct === '—' ? '—' : pct + '%';
+      $('dash-gpu-name').textContent = d.gpu.name;
+    } else {
+      $('dash-gpu').textContent = 'CPU';
+      $('dash-gpu-name').textContent = 'No NVIDIA GPU detected';
+    }
+    $('dash-storage').textContent = (d.storage.outputs_mb || 0) + ' MB';
+
+    const recent = $('dash-recent');
+    if (!d.recent_outputs.length) {
+      recent.innerHTML = `
+        <div class="empty-state" style="grid-column:1/-1">
+          <h3>No outputs yet</h3>
+          <p>Run a job in the Wizard and your finished videos will appear here.</p>
+          <button class="btn btn-primary" data-quick-page="wizard">Open the Wizard</button>
+        </div>`;
+    } else {
+      recent.innerHTML = d.recent_outputs.map(o => {
+        const when = new Date(o.created_at * 1000).toLocaleString();
+        const isVideo = /\.mp4$|\.mov$|\.webm$/i.test(o.name);
+        return `
+          <a class="recent-tile" href="${o.output_url}" target="_blank">
+            ${isVideo
+              ? `<video src="${o.output_url}" muted preload="metadata"></video>`
+              : `<img src="${o.output_url}" alt="${escapeHtml(o.name)}"/>`}
+            <div class="meta">
+              <strong>${escapeHtml(o.mode)}</strong>
+              <span class="muted">${escapeHtml(o.name)} · ${when}</span>
+            </div>
+          </a>`;
+      }).join('');
+    }
+  } catch (err) {
+    console.error('dashboard refresh failed', err);
+  }
+}
+
+// =============================================================================
+// Notification center
+// =============================================================================
+
+const NOTIF_KEY = 'arclap_seen_notifications';
+let seenNotifs = new Set(JSON.parse(localStorage.getItem(NOTIF_KEY) || '[]'));
+let unseenNotifs = [];
+
+async function pollNotifications() {
+  try {
+    const jobs = await fetch('/api/jobs?limit=20').then(r => r.json());
+    const done = jobs.filter(j => ['done', 'failed', 'stopped'].includes(j.status));
+    unseenNotifs = done.filter(j => !seenNotifs.has(j.id));
+    $('bell-dot').classList.toggle('active', unseenNotifs.length > 0);
+    renderNotifList(done.slice(0, 12));
+  } catch (e) {
+    // silent — keep polling
+  }
+}
+
+function renderNotifList(jobs) {
+  const list = $('notif-list');
+  if (!jobs.length) {
+    list.innerHTML = '<p class="muted small" style="padding:14px 18px">No notifications yet.</p>';
+    return;
+  }
+  list.innerHTML = jobs.map(j => {
+    const unseen = !seenNotifs.has(j.id);
+    const when = j.finished_at
+      ? new Date(j.finished_at * 1000).toLocaleTimeString()
+      : new Date(j.created_at * 1000).toLocaleTimeString();
+    const icon = j.status === 'done' ? '✓' : j.status === 'failed' ? '!' : '·';
+    const color = j.status === 'done' ? 'var(--success)'
+                : j.status === 'failed' ? 'var(--danger)' : 'var(--text-3)';
+    return `
+      <div class="notif-item" data-jump-job="${j.id}" style="${unseen ? '' : 'opacity:0.7'}">
+        <div class="row1">
+          <strong>
+            <span style="color:${color};margin-right:6px">${icon}</span>
+            ${escapeHtml(j.mode)} ${j.status}
+          </strong>
+          <span class="when">${when}</span>
+        </div>
+        <div class="row2">${escapeHtml(j.input_ref ? j.input_ref.split(/[\\\/]/).pop() : '')}</div>
+      </div>`;
+  }).join('');
+  list.querySelectorAll('[data-jump-job]').forEach(el => {
+    el.addEventListener('click', () => {
+      seenNotifs.add(el.dataset.jumpJob);
+      localStorage.setItem(NOTIF_KEY, JSON.stringify([...seenNotifs]));
+      $('notif-dropdown').classList.add('hidden');
+      showPage('history');
+    });
+  });
+}
+
+$('bell-btn').addEventListener('click', e => {
+  e.stopPropagation();
+  $('notif-dropdown').classList.toggle('hidden');
+  // Mark currently-shown ones as seen on open
+  unseenNotifs.forEach(j => seenNotifs.add(j.id));
+  localStorage.setItem(NOTIF_KEY, JSON.stringify([...seenNotifs]));
+  $('bell-dot').classList.remove('active');
+});
+document.addEventListener('click', e => {
+  if (!e.target.closest('#notif-dropdown') && !e.target.closest('#bell-btn')) {
+    $('notif-dropdown').classList.add('hidden');
+  }
+});
+$('btn-mark-all-read').addEventListener('click', () => {
+  $('notif-list').innerHTML = '<p class="muted small" style="padding:14px 18px">Cleared.</p>';
+  $('bell-dot').classList.remove('active');
+});
+setInterval(pollNotifications, 5000);
+
+// =============================================================================
+// Help / About modal
+// =============================================================================
+
+$('help-btn').addEventListener('click', () => {
+  $('help-modal').classList.remove('hidden');
+});
+$('btn-close-help').addEventListener('click', () => {
+  $('help-modal').classList.add('hidden');
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    $('help-modal').classList.add('hidden');
+    $('first-run').classList.add('hidden');
+  }
+  // ? keyboard shortcut for help (when not focused on input)
+  if (e.key === '?' && !['INPUT','TEXTAREA','SELECT'].includes((e.target.tagName||''))) {
+    $('help-modal').classList.remove('hidden');
+  }
+});
+
+// =============================================================================
+// First-run greeting
+// =============================================================================
+
+if (!localStorage.getItem('arclap_first_run_done')) {
+  setTimeout(() => $('first-run').classList.remove('hidden'), 600);
+}
+$('btn-skip-first-run').addEventListener('click', () => {
+  localStorage.setItem('arclap_first_run_done', '1');
+  $('first-run').classList.add('hidden');
+});
+$('btn-start-first-run').addEventListener('click', () => {
+  localStorage.setItem('arclap_first_run_done', '1');
+  $('first-run').classList.add('hidden');
+  showPage('wizard');
+});
+
+// =============================================================================
+// Restore last tab on load
+// =============================================================================
+
+const lastTab = localStorage.getItem('arclap_last_tab');
+if (lastTab && PAGES.includes(lastTab)) {
+  showPage(lastTab);
+} else {
+  // Default landing is the dashboard now
+  showPage('dashboard');
+}
 
 // =============================================================================
 // Live RTSP page
