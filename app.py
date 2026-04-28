@@ -1522,12 +1522,18 @@ def filter_summary(job_id: str):
 
 
 def _filter_db(job_id: str) -> tuple[JobRow, str]:
-    """Resolve a filter-scan job + its sidecar DB path. Raises 404/400 as needed."""
+    """Resolve a filter-scan job + its sidecar DB path. Raises 404/400 as needed.
+    Also runs the lazy `taken_at` migration so older DBs gain the column."""
     j = db.get_job(job_id)
     if not j:
         raise HTTPException(404, "Filter job not found")
     if not Path(j.output_path).is_file():
         raise HTTPException(400, "Filter scan hasn't produced a DB yet.")
+    conn = _sqlite3.connect(j.output_path)
+    try:
+        _ensure_taken_at_column(conn)
+    finally:
+        conn.close()
     return j, j.output_path
 
 
@@ -1581,11 +1587,29 @@ class FilterRule(BaseModel):
     hours: list[int] | None = None  # 0-23, hour-of-day window from filenames
     min_dets: int = 0
     max_dets: int = 100000
+    min_date: float | None = None  # epoch seconds — earliest taken_at
+    max_date: float | None = None  # epoch seconds — latest taken_at
 
 
 _TIMESTAMP_RE = re.compile(
-    r'(?:^|[_\-\.\\/])(\d{4})[-_]?(\d{2})[-_]?(\d{2})[_T\-\s]?(\d{2})[-_:]?(\d{2})'
+    r'(?:^|[_\-\.\\/])(\d{4})[-_]?(\d{2})[-_]?(\d{2})[_T\-\s]?(\d{2})[-_:]?(\d{2})(?:[-_:]?(\d{2}))?'
 )
+
+
+def _parse_datetime(path: str) -> float | None:
+    """Extract a full datetime (epoch seconds) from a path's filename, if it
+    contains a recognisable YYYY-MM-DD_HH-MM[-SS] pattern. Returns None if
+    no match or invalid components."""
+    from datetime import datetime
+    m = _TIMESTAMP_RE.search(Path(path).name)
+    if not m:
+        return None
+    try:
+        y, mo, d, h, mi = (int(m.group(i)) for i in range(1, 6))
+        s = int(m.group(6)) if m.group(6) else 0
+        return datetime(y, mo, d, h, mi, s).timestamp()
+    except (ValueError, OSError, OverflowError):
+        return None
 
 
 def _parse_hour(path: str) -> int | None:
@@ -1596,6 +1620,26 @@ def _parse_hour(path: str) -> int | None:
         except (ValueError, IndexError):
             pass
     return None
+
+
+def _ensure_taken_at_column(conn: _sqlite3.Connection) -> None:
+    """Older scan DBs predate the `taken_at` column. Add it lazily and
+    backfill from filenames so existing scans gain date filtering without
+    requiring a re-scan."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(images)")}
+    if "taken_at" not in cols:
+        conn.execute("ALTER TABLE images ADD COLUMN taken_at REAL")
+        # Backfill in one pass — fine even for big DBs because it's a
+        # filename regex, not an image read.
+        rows = conn.execute("SELECT path FROM images").fetchall()
+        updates = []
+        for (p,) in rows:
+            ts = _parse_datetime(p)
+            if ts is not None:
+                updates.append((ts, p))
+        if updates:
+            conn.executemany("UPDATE images SET taken_at = ? WHERE path = ?", updates)
+        conn.commit()
 
 
 def _build_match_sql(rule: FilterRule) -> tuple[str, list]:
@@ -1612,6 +1656,13 @@ def _build_match_sql(rule: FilterRule) -> tuple[str, list]:
     params += [rule.min_sharpness]
     where.append("i.n_dets BETWEEN ? AND ?")
     params += [rule.min_dets, rule.max_dets]
+
+    if rule.min_date is not None:
+        where.append("i.taken_at >= ?")
+        params.append(rule.min_date)
+    if rule.max_date is not None:
+        where.append("i.taken_at <= ?")
+        params.append(rule.max_date)
 
     # Class-level filtering
     cls = rule.classes
@@ -1709,6 +1760,39 @@ def filter_match_preview(job_id: str, rule: FilterRule, limit: int = 12,
                 + urllib.parse.quote(r["path"], safe='')
             )
         return {"rows": rows, "mode": mode}
+    finally:
+        conn.close()
+
+
+@app.get("/api/filter/{job_id}/date-range")
+def filter_date_range(job_id: str):
+    """Return the earliest + latest taken_at timestamps in this scan, plus
+    a count of how many images had a parseable timestamp."""
+    _, db_path = _filter_db(job_id)
+    conn = _sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT MIN(taken_at) AS lo, MAX(taken_at) AS hi, "
+            "       COUNT(taken_at) AS n_with, COUNT(*) AS total "
+            "FROM images"
+        ).fetchone()
+        if row is None:
+            return {"min": None, "max": None, "with_timestamp": 0, "total": 0}
+        return {
+            "min": row[0],     # epoch seconds (or None)
+            "max": row[1],
+            "min_iso": (
+                __import__("datetime").datetime.fromtimestamp(row[0]).isoformat()
+                if row[0] else None
+            ),
+            "max_iso": (
+                __import__("datetime").datetime.fromtimestamp(row[1]).isoformat()
+                if row[1] else None
+            ),
+            "with_timestamp": int(row[2] or 0),
+            "without_timestamp": int((row[3] or 0) - (row[2] or 0)),
+            "total": int(row[3] or 0),
+        }
     finally:
         conn.close()
 

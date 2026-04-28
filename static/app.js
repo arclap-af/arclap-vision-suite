@@ -1459,6 +1459,46 @@ async function loadPresetList() {
   } catch {}
 }
 
+let activeDateRange = null;  // {min, max, with_timestamp, total} from /date-range
+
+async function loadDateRange(jobId) {
+  try {
+    const r = await fetch(`/api/filter/${jobId}/date-range`);
+    if (!r.ok) return;
+    activeDateRange = await r.json();
+    const banner = $('date-range-banner');
+    if (!activeDateRange || activeDateRange.with_timestamp === 0) {
+      banner.classList.add('hidden');
+      $('rule-date-help').textContent =
+        'No timestamp data in filenames yet — date filter is disabled.';
+      return;
+    }
+    banner.classList.remove('hidden');
+    const lo = activeDateRange.min_iso ? activeDateRange.min_iso.replace('T', ' ').slice(0, 16) : '?';
+    const hi = activeDateRange.max_iso ? activeDateRange.max_iso.replace('T', ' ').slice(0, 16) : '?';
+    banner.innerHTML = `
+      <span>📅 Pictures in this scan span</span>
+      <span class="pill">${escapeHtml(lo)}</span>
+      <span class="muted small">to</span>
+      <span class="pill">${escapeHtml(hi)}</span>
+      <span class="muted small">(${activeDateRange.with_timestamp.toLocaleString()} of ${activeDateRange.total.toLocaleString()} have a parseable timestamp)</span>`;
+
+    // Pre-populate the rule pickers (Step 4) with the full range
+    if ($('rule-min-date') && activeDateRange.min_iso) {
+      $('rule-min-date').value = activeDateRange.min_iso.slice(0, 16);
+      $('rule-min-date').min = activeDateRange.min_iso.slice(0, 16);
+      $('rule-min-date').max = activeDateRange.max_iso.slice(0, 16);
+    }
+    if ($('rule-max-date') && activeDateRange.max_iso) {
+      $('rule-max-date').value = activeDateRange.max_iso.slice(0, 16);
+      $('rule-max-date').min = activeDateRange.min_iso.slice(0, 16);
+      $('rule-max-date').max = activeDateRange.max_iso.slice(0, 16);
+    }
+    $('rule-date-help').textContent =
+      `Defaults to the full range. Change either input to narrow it.`;
+  } catch {}
+}
+
 async function loadFilterAnalyse(jobId) {
   if (!jobId) return;
   try {
@@ -1472,6 +1512,7 @@ async function loadFilterAnalyse(jobId) {
     loadTimeOfDayChart(jobId);
     loadCooccurrence(jobId);
     loadPresetList();
+    loadDateRange(jobId);
     if ($('preset-select').value) loadPresetSummary(jobId, $('preset-select').value);
 
     const max = Math.max(1, ...data.rows.map(r => r.n_images));
@@ -1724,9 +1765,10 @@ function buildRuleUI() {
   // Reset rule defaults
   ruleSelectedHours = new Set([...Array(24).keys()]);
 
-  // Wire all rule controls
+  // Wire all rule controls (incl. date-range pickers)
   ['rule-logic','rule-conf','rule-count','rule-min-quality','rule-min-brightness',
-   'rule-max-brightness','rule-min-sharpness','rule-min-dets'].forEach(id => {
+   'rule-max-brightness','rule-min-sharpness','rule-min-dets',
+   'rule-min-date','rule-max-date'].forEach(id => {
     const el = $(id);
     if (!el) return;
     el.addEventListener('input', () => {
@@ -1745,12 +1787,43 @@ function buildRuleUI() {
   // Class-checkbox changes
   $('rule-class-checks').addEventListener('change', scheduleRuleRecount);
 
+  // "Clear" button on the date range
+  if ($('btn-rule-date-reset')) {
+    $('btn-rule-date-reset').addEventListener('click', (e) => {
+      e.preventDefault();
+      if (activeDateRange && activeDateRange.min_iso) {
+        $('rule-min-date').value = activeDateRange.min_iso.slice(0, 16);
+      } else {
+        $('rule-min-date').value = '';
+      }
+      if (activeDateRange && activeDateRange.max_iso) {
+        $('rule-max-date').value = activeDateRange.max_iso.slice(0, 16);
+      } else {
+        $('rule-max-date').value = '';
+      }
+      scheduleRuleRecount();
+    });
+  }
+
   scheduleRuleRecount();
+}
+
+function localDatetimeToEpoch(value) {
+  if (!value) return null;
+  const ts = Date.parse(value);
+  return Number.isNaN(ts) ? null : ts / 1000;
 }
 
 function currentRule() {
   const classes = Array.from(document.querySelectorAll('#rule-class-checks input:checked'))
     .map(el => parseInt(el.dataset.ruleClass));
+  // Date range: only send if user narrowed the default span
+  let min_date = localDatetimeToEpoch($('rule-min-date')?.value);
+  let max_date = localDatetimeToEpoch($('rule-max-date')?.value);
+  if (activeDateRange && activeDateRange.min != null) {
+    if (min_date != null && Math.abs(min_date - activeDateRange.min) < 60) min_date = null;
+    if (max_date != null && Math.abs(max_date - activeDateRange.max) < 60) max_date = null;
+  }
   return {
     classes,
     logic: $('rule-logic').value,
@@ -1762,6 +1835,7 @@ function currentRule() {
     min_sharpness: parseInt($('rule-min-sharpness').value),
     min_dets: parseInt($('rule-min-dets').value) || 0,
     hours: ruleSelectedHours.size === 24 ? null : [...ruleSelectedHours],
+    min_date, max_date,
   };
 }
 

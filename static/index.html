@@ -781,7 +781,7 @@
       </label>
       <label class="checkbox-row">
         <input type="checkbox" id="filter-recurse" checked />
-        Walk subdirectories
+        Include all subfolders (recommended) — the scanner walks every level
       </label>
     </div>
     <button class="btn btn-primary btn-lg" id="btn-filter-scan" style="margin-top:14px">Start indexing</button>
@@ -844,6 +844,8 @@
     <h3 style="margin-top:18px">Class co-occurrence — which objects appear together?</h3>
     <p class="muted small">Reads as a heatmap: bigger / redder cells mean those two classes show up in the same frame more often. Useful for spotting context (people often near machines, etc.).</p>
     <div id="cooc-wrap" class="cooc-wrap"></div>
+
+    <div id="date-range-banner" class="date-banner hidden"></div>
 
     <div class="preset-bar">
       <label class="text-row" style="flex:1">
@@ -927,6 +929,21 @@
           <span>Min detections / frame</span>
           <input type="number" id="rule-min-dets" min="0" value="0" />
         </label>
+
+        <h4 style="margin-top:14px">Date range</h4>
+        <p class="muted small" id="rule-date-help">No timestamp data in filenames yet — date filter is disabled.</p>
+        <div class="date-range-row">
+          <label class="text-row">
+            <span>From</span>
+            <input type="datetime-local" id="rule-min-date" />
+          </label>
+          <label class="text-row">
+            <span>Until</span>
+            <input type="datetime-local" id="rule-max-date" />
+          </label>
+          <button class="btn btn-ghost btn-small" id="btn-rule-date-reset"
+                  title="Clear the date filter">Clear</button>
+        </div>
 
         <h4 style="margin-top:14px">Time-of-day window</h4>
         <p class="muted small">Tick hours to keep. Filenames must contain a parseable timestamp.</p>

@@ -110,7 +110,8 @@ CREATE TABLE IF NOT EXISTS images (
     contrast    REAL,         -- grayscale std dev
     n_classes   INTEGER,      -- number of distinct classes
     avg_conf    REAL,         -- mean confidence across detections
-    quality     REAL          -- composite 0-1 score
+    quality     REAL,         -- composite 0-1 score
+    taken_at    REAL          -- epoch seconds parsed from filename
 );
 CREATE TABLE IF NOT EXISTS detections (
     path        TEXT NOT NULL,
@@ -126,12 +127,37 @@ CREATE INDEX IF NOT EXISTS det_conf  ON detections(max_conf);
 """
 
 
+_FILENAME_TS_RE = __import__("re").compile(
+    r'(?:^|[_\-\.\\/])(\d{4})[-_]?(\d{2})[-_]?(\d{2})[_T\-\s]?(\d{2})[-_:]?(\d{2})(?:[-_:]?(\d{2}))?'
+)
+
+
+def parse_filename_datetime(path: str):
+    """Best-effort YYYY-MM-DD_HH-MM[-SS] -> epoch seconds. Returns None if
+    no match."""
+    from datetime import datetime
+    m = _FILENAME_TS_RE.search(Path(path).name)
+    if not m:
+        return None
+    try:
+        y, mo, d, h, mi = (int(m.group(i)) for i in range(1, 6))
+        s = int(m.group(6)) if m.group(6) else 0
+        return datetime(y, mo, d, h, mi, s).timestamp()
+    except Exception:
+        return None
+
+
 def open_db(path: str) -> sqlite3.Connection:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    # Lazy migration for older scans
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(images)")}
+    if "taken_at" not in cols:
+        conn.execute("ALTER TABLE images ADD COLUMN taken_at REAL")
+        conn.commit()
     return conn
 
 
@@ -222,8 +248,8 @@ def scan(args) -> None:
             conn.executemany(
                 "INSERT OR REPLACE INTO images"
                 "(path, scanned_at, n_dets, width, height, brightness, sharpness, "
-                " contrast, n_classes, avg_conf, quality) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " contrast, n_classes, avg_conf, quality, taken_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows_buf,
             )
             rows_buf.clear()
@@ -277,9 +303,10 @@ def scan(args) -> None:
             br, sh, co = quality_metrics(path_str)
             n_classes = len(per_class)
             quality = composite_quality(br, sh, co, n_classes, avg_c)
+            taken_at = parse_filename_datetime(path_str)
 
             rows_buf.append((path_str, time.time(), n_dets, w, h,
-                             br, sh, co, n_classes, avg_c, quality))
+                             br, sh, co, n_classes, avg_c, quality, taken_at))
             for cid, (cnt, mc) in per_class.items():
                 det_buf.append((path_str, cid, names.get(cid, str(cid)), cnt, mc))
 
