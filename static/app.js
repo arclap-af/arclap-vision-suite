@@ -448,7 +448,7 @@ $('btn-clear-log').addEventListener('click', () => { $('log-output').textContent
 // Multi-page navigation
 // =============================================================================
 
-const PAGES = ['dashboard', 'wizard', 'models', 'train', 'live', 'filter', 'swiss', 'history', 'projects'];
+const PAGES = ['dashboard', 'wizard', 'models', 'train', 'live', 'filter', 'cameras', 'swiss', 'history', 'projects'];
 
 function showPage(name) {
   PAGES.forEach(p => {
@@ -467,6 +467,7 @@ function showPage(name) {
   if (name === 'train') { /* nothing to fetch up-front */ }
   if (name === 'filter') { refreshFilterScans(); populateFilterModelPicker(); }
   if (name === 'swiss') loadSwissState();
+  if (name === 'cameras') loadCameras();
 }
 
 document.querySelectorAll('.topnav-btn').forEach(b => {
@@ -1399,14 +1400,30 @@ let folderModalTargetInput = null;  // which <input> the picker fills
 // Folder browser modal — replaces typing absolute paths
 // =============================================================================
 
-function openFolderModal(targetInputId) {
+// `fileExts` (e.g. ".mp4,.mov,.avi") turns the modal into a file picker —
+// it lists matching files in each folder and lets the user click one to
+// fill the target input with the full file path.
+let folderModalFileExts = '';
+
+function openFolderModal(targetInputId, fileExts = '') {
   folderModalTargetInput = $(targetInputId);
+  folderModalFileExts = fileExts;
   $('folder-modal').classList.remove('hidden');
   loadFolderRoots();
+  // Toggle the title and Use-this-folder button visibility based on mode
+  const titleEl = $('folder-modal').querySelector('header h3');
+  if (titleEl) titleEl.textContent = fileExts ? 'Pick a file' : 'Pick a folder';
+  const pickBtn = $('folder-modal-pick');
+  if (pickBtn) pickBtn.style.display = fileExts ? 'none' : '';
   // Open at the target's existing value (so they can edit a typed path) or at home
   const seed = folderModalTargetInput?.value?.trim();
-  if (seed) navigateFolder(seed);
-  else navigateFolder('~');  // server resolves to home
+  if (seed) {
+    // If seed is a file path, open its parent folder
+    const dir = fileExts ? seed.replace(/[\\/][^\\/]*$/, '') : seed;
+    navigateFolder(dir || '~');
+  } else {
+    navigateFolder('~');
+  }
 }
 
 function closeFolderModal() {
@@ -1432,7 +1449,9 @@ async function loadFolderRoots() {
 
 async function navigateFolder(path) {
   try {
-    const d = await fetch(`/api/browse?path=${encodeURIComponent(path)}`).then(r => {
+    const url = `/api/browse?path=${encodeURIComponent(path)}`
+      + (folderModalFileExts ? `&file_exts=${encodeURIComponent(folderModalFileExts)}` : '');
+    const d = await fetch(url).then(r => {
       if (!r.ok) return r.json().then(e => Promise.reject(new Error(e.detail || 'Browse failed')));
       return r.json();
     });
@@ -1477,8 +1496,8 @@ async function navigateFolder(path) {
           <span class="chevron"></span>
         </div>`);
     }
-    if (d.folders.length === 0) {
-      rows.push('<p class="muted small" style="padding:14px">No subfolders here.</p>');
+    if (d.folders.length === 0 && (!d.files || d.files.length === 0)) {
+      rows.push('<p class="muted small" style="padding:14px">No subfolders or matching files here.</p>');
     } else {
       for (const f of d.folders) {
         const empty = f.n_images_shallow === 0 && !f.has_subfolders;
@@ -1486,17 +1505,40 @@ async function navigateFolder(path) {
           ? `${f.n_images_shallow.toLocaleString()} image${f.n_images_shallow === 1 ? '' : 's'}`
           : (f.has_subfolders ? '— subfolders —' : 'empty');
         rows.push(`
-          <div class="folder-row ${empty ? 'empty' : ''}" data-path="${escapeHtml(f.path)}">
+          <div class="folder-row ${empty ? 'empty' : ''}" data-path="${escapeHtml(f.path)}" data-kind="folder">
             <span class="icon">📁</span>
             <span class="name">${escapeHtml(f.name)}</span>
             <span class="stat">${stat}</span>
             <span class="chevron">›</span>
           </div>`);
       }
+      // Files (only present in file-pick mode)
+      if (d.files && d.files.length) {
+        for (const f of d.files) {
+          rows.push(`
+            <div class="folder-row file-row" data-path="${escapeHtml(f.path)}" data-kind="file">
+              <span class="icon">🎞️</span>
+              <span class="name">${escapeHtml(f.name)}</span>
+              <span class="stat">${f.size_mb} MB</span>
+              <span class="chevron">⤴</span>
+            </div>`);
+        }
+      }
     }
     $('folder-list').innerHTML = rows.join('');
     $('folder-list').querySelectorAll('.folder-row').forEach(r => {
-      r.addEventListener('click', () => navigateFolder(r.dataset.path));
+      r.addEventListener('click', () => {
+        if (r.dataset.kind === 'file') {
+          // File picked — fill target input and close modal
+          if (folderModalTargetInput) {
+            folderModalTargetInput.value = r.dataset.path;
+            folderModalTargetInput.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+          closeFolderModal();
+        } else {
+          navigateFolder(r.dataset.path);
+        }
+      });
     });
 
     // Footer
@@ -3187,7 +3229,10 @@ async function rescanWebcams() {
   }
 }
 if ($('btn-rtsp-rescan-webcams')) $('btn-rtsp-rescan-webcams').addEventListener('click', rescanWebcams);
-if ($('btn-rtsp-browse-file')) $('btn-rtsp-browse-file').addEventListener('click', () => openFolderModal('rtsp-file-path'));
+if ($('btn-rtsp-browse-file')) {
+  $('btn-rtsp-browse-file').addEventListener('click', () =>
+    openFolderModal('rtsp-file-path', '.mp4,.mov,.avi,.mkv,.webm,.m4v,.mpg,.mpeg,.flv,.wmv'));
+}
 
 // Populate model dropdown from /api/models
 async function rtspPopulateModels() {
@@ -3548,6 +3593,313 @@ if ($('btn-rtsp-export-session')) $('btn-rtsp-export-session').addEventListener(
 // Populate model dropdown when the page loads
 rtspPopulateModels();
 rtspSyncSourceKind();
+
+// =============================================================================
+// Cameras tab — multi-camera registry
+// =============================================================================
+
+let editingCameraId = null;
+
+async function loadCameras() {
+  try {
+    const r = await fetch('/api/cameras');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    renderCameras(d.cameras || []);
+  } catch (e) {
+    $('cameras-list').innerHTML = `<p class="muted small" style="color:#dc2626">Load failed: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderCameras(cams) {
+  if (!cams.length) {
+    $('cameras-summary').textContent = '0 cameras registered';
+    $('cameras-list').innerHTML = '<p class="muted small" style="padding:14px">No cameras registered yet. Click + Add camera to register one.</p>';
+    return;
+  }
+  // Group by site
+  const bySite = {};
+  for (const c of cams) {
+    const s = c.site || '(no site)';
+    bySite[s] = bySite[s] || [];
+    bySite[s].push(c);
+  }
+  $('cameras-summary').textContent =
+    `${cams.length} camera${cams.length === 1 ? '' : 's'} across ${Object.keys(bySite).length} site${Object.keys(bySite).length === 1 ? '' : 's'}`;
+  $('cameras-list').innerHTML = Object.entries(bySite).map(([site, list]) => `
+    <div class="camera-site">
+      <h4>📍 ${escapeHtml(site)} <span class="muted small">(${list.length})</span></h4>
+      <div class="camera-cards">
+        ${list.map(c => {
+          const up = c.uptime || {};
+          const totalHours = up.total_hours || 0;
+          const crashes = up.crashes || 0;
+          const enabled = c.enabled;
+          return `
+            <div class="camera-card ${enabled ? '' : 'disabled'}" data-id="${escapeHtml(c.id)}">
+              <div class="camera-head">
+                <strong>${escapeHtml(c.name)}</strong>
+                <span class="muted small">${escapeHtml(c.location || '')}</span>
+              </div>
+              <code class="camera-url">${escapeHtml(c.url)}</code>
+              <div class="camera-stats">
+                <span>Uptime: <strong>${totalHours} h</strong></span>
+                <span>Sessions: ${up.n_sessions || 0}</span>
+                <span>Crashes: <strong style="color:${crashes ? '#dc2626' : 'inherit'}">${crashes}</strong></span>
+                <span>Total frames: ${(up.total_frames || 0).toLocaleString()}</span>
+              </div>
+              <div class="camera-actions">
+                <button class="btn btn-primary btn-small" data-act="start" data-id="${escapeHtml(c.id)}">▶ Start</button>
+                <button class="btn btn-ghost btn-small" data-act="edit" data-id="${escapeHtml(c.id)}">✏️ Edit</button>
+                <button class="btn btn-ghost btn-small" data-act="delete" data-id="${escapeHtml(c.id)}">🗑️ Delete</button>
+              </div>
+            </div>`;
+        }).join('')}
+      </div>
+    </div>`).join('');
+  $('cameras-list').querySelectorAll('button[data-act]').forEach(b => {
+    b.addEventListener('click', () => {
+      const cid = b.dataset.id;
+      const act = b.dataset.act;
+      if (act === 'start') startCameraJob(cid);
+      if (act === 'edit') openCameraModal(cid);
+      if (act === 'delete') deleteCamera(cid);
+    });
+  });
+}
+
+function openCameraModal(camId) {
+  editingCameraId = camId;
+  if (camId) {
+    // Edit existing — load values
+    fetch('/api/cameras').then(r => r.json()).then(d => {
+      const c = (d.cameras || []).find(x => x.id === camId);
+      if (!c) return;
+      $('camera-modal-title').textContent = `Edit camera: ${c.name}`;
+      $('cam-name').value = c.name;
+      $('cam-url').value = c.url;
+      $('cam-site').value = c.site || '';
+      $('cam-location').value = c.location || '';
+      $('cam-enabled').checked = c.enabled;
+      $('cam-conf').value = (c.settings && c.settings.conf) || 0.30;
+      $('cam-tracker').value = (c.settings && c.settings.tracker) || 'bytetrack';
+      $('cam-notes').value = c.notes || '';
+    });
+  } else {
+    $('camera-modal-title').textContent = 'Register a camera';
+    $('cam-name').value = ''; $('cam-url').value = '';
+    $('cam-site').value = ''; $('cam-location').value = '';
+    $('cam-enabled').checked = true;
+    $('cam-conf').value = 0.30; $('cam-tracker').value = 'bytetrack';
+    $('cam-notes').value = '';
+  }
+  $('camera-modal').classList.remove('hidden');
+}
+
+function closeCameraModal() {
+  $('camera-modal').classList.add('hidden');
+  editingCameraId = null;
+}
+
+async function saveCamera() {
+  const body = {
+    name: $('cam-name').value.trim(),
+    url: $('cam-url').value.trim(),
+    site: $('cam-site').value.trim(),
+    location: $('cam-location').value.trim(),
+    enabled: $('cam-enabled').checked,
+    settings: {
+      conf: parseFloat($('cam-conf').value) || 0.30,
+      tracker: $('cam-tracker').value,
+    },
+    notes: $('cam-notes').value.trim(),
+  };
+  if (!body.name || !body.url) { toast('Name and URL are required', 'error'); return; }
+  try {
+    const url = editingCameraId ? `/api/cameras/${editingCameraId}` : '/api/cameras';
+    const method = editingCameraId ? 'PUT' : 'POST';
+    const r = await fetch(url, {
+      method, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || `HTTP ${r.status}`); }
+    toast(editingCameraId ? 'Camera updated' : 'Camera registered', 'success');
+    closeCameraModal();
+    loadCameras();
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'error');
+  }
+}
+
+async function deleteCamera(camId) {
+  if (!confirm('Delete this camera? Sessions and zones for it will also be removed.')) return;
+  try {
+    await fetch(`/api/cameras/${camId}`, { method: 'DELETE' });
+    loadCameras();
+  } catch (e) {
+    toast('Delete failed', 'error');
+  }
+}
+
+async function startCameraJob(camId) {
+  try {
+    const r = await fetch(`/api/cameras/${camId}/start`, { method: 'POST' });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || `HTTP ${r.status}`); }
+    const d = await r.json();
+    toast(`Started camera. Job ${d.job_id} on MJPEG port ${d.mjpeg_port}`, 'success');
+    showPage('live');
+  } catch (e) {
+    toast('Start failed: ' + e.message, 'error');
+  }
+}
+
+if ($('btn-add-camera')) $('btn-add-camera').addEventListener('click', () => openCameraModal(null));
+if ($('btn-cameras-refresh')) $('btn-cameras-refresh').addEventListener('click', loadCameras);
+if ($('camera-modal-close')) $('camera-modal-close').addEventListener('click', closeCameraModal);
+if ($('camera-cancel')) $('camera-cancel').addEventListener('click', closeCameraModal);
+if ($('camera-save')) $('camera-save').addEventListener('click', saveCamera);
+
+// =============================================================================
+// Review queue (discovery)
+// =============================================================================
+
+let reviewSelected = new Set();
+
+async function loadReviewQueue() {
+  try {
+    const stats = await fetch('/api/discovery/stats').then(r => r.json());
+    const sourceFilter = $('review-source-filter').value;
+    const url = `/api/discovery/queue?status=pending&limit=200${sourceFilter ? '&source=' + sourceFilter : ''}`;
+    const queue = await fetch(url).then(r => r.json());
+    renderReviewStats(stats);
+    renderReviewGrid(queue.crops || []);
+    populateReviewBulkClass();
+  } catch (e) {
+    $('review-grid').innerHTML =
+      `<p class="muted small" style="color:#dc2626">Load failed: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderReviewStats(s) {
+  $('review-stats').innerHTML =
+    `<strong>${s.pending || 0}</strong> pending · ${s.assigned || 0} assigned · ${s.discarded || 0} discarded` +
+    ` · per-source: ${Object.entries(s.per_source || {}).map(([k, v]) => `${k}: ${v}`).join(' · ') || '—'}`;
+}
+
+function populateReviewBulkClass() {
+  if (!swissState) return;
+  const sel = $('review-bulk-class');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— pick a class —</option>' +
+    (swissState.classes || []).filter(c => c.active).map(c =>
+      `<option value="${c.id}">#${c.id} ${escapeHtml(c.en)} (${escapeHtml(c.de)})</option>`
+    ).join('');
+}
+
+function renderReviewGrid(crops) {
+  reviewSelected = new Set();
+  $('review-selected-count').textContent = '0 selected';
+  if (!crops.length) {
+    $('review-grid').innerHTML =
+      '<p class="muted small" style="padding:14px">Queue is empty. Run cameras or filter scans to fill it with uncertain detections.</p>';
+    return;
+  }
+  $('review-grid').innerHTML = crops.map(c => `
+    <div class="review-tile" data-id="${c.id}">
+      <img src="${c.crop_url}" loading="lazy" alt=""
+           onerror="this.style.background='var(--color-surface)';this.alt='(unavailable)'" />
+      <div class="review-tick">
+        <input type="checkbox" data-id="${c.id}" />
+      </div>
+      <div class="review-meta">
+        <span>#${c.id}</span>
+        <span>${escapeHtml(c.best_guess_name || '?')}</span>
+        <span>${(c.confidence || 0).toFixed(2)}</span>
+        <span class="muted small">${escapeHtml(c.source)}</span>
+      </div>
+    </div>`).join('');
+  $('review-grid').querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const id = parseInt(cb.dataset.id);
+      if (cb.checked) reviewSelected.add(id);
+      else reviewSelected.delete(id);
+      $('review-selected-count').textContent = `${reviewSelected.size} selected`;
+    });
+  });
+}
+
+async function reviewBulkAssign() {
+  if (!reviewSelected.size) { toast('Select crops first', 'error'); return; }
+  const cid = parseInt($('review-bulk-class').value);
+  if (!cid && cid !== 0) { toast('Pick a class first', 'error'); return; }
+  try {
+    const r = await fetch('/api/discovery/assign', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ crop_ids: [...reviewSelected], class_id: cid }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    toast(`Assigned ${d.assigned} crops`, 'success');
+    loadReviewQueue();
+    loadSwissState();
+  } catch (e) {
+    toast('Assign failed: ' + e.message, 'error');
+  }
+}
+
+async function reviewBulkDiscard() {
+  if (!reviewSelected.size) { toast('Select crops first', 'error'); return; }
+  if (!confirm(`Discard ${reviewSelected.size} crops?`)) return;
+  try {
+    const r = await fetch('/api/discovery/discard', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ crop_ids: [...reviewSelected] }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    toast('Discarded', 'success');
+    loadReviewQueue();
+  } catch (e) {
+    toast('Discard failed: ' + e.message, 'error');
+  }
+}
+
+async function reviewBulkPromote() {
+  if (!reviewSelected.size) { toast('Select crops first', 'error'); return; }
+  const en = prompt('Name for the NEW class (English):');
+  if (!en) return;
+  const de = prompt('Name for the NEW class (German):', en);
+  if (!de) return;
+  try {
+    const r = await fetch('/api/discovery/promote-to-new-class', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        crop_ids: [...reviewSelected],
+        en, de,
+        color: '#888888',
+        category: 'Other',
+      }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    toast(`Created class #${d.new_class.id} ${d.new_class.en} with ${d.assigned} crops`, 'success');
+    loadReviewQueue();
+    loadSwissState();
+  } catch (e) {
+    toast('Promote failed: ' + e.message, 'error');
+  }
+}
+
+if ($('btn-review-refresh')) $('btn-review-refresh').addEventListener('click', loadReviewQueue);
+if ($('review-source-filter')) $('review-source-filter').addEventListener('change', loadReviewQueue);
+if ($('btn-review-bulk-assign')) $('btn-review-bulk-assign').addEventListener('click', reviewBulkAssign);
+if ($('btn-review-bulk-discard')) $('btn-review-bulk-discard').addEventListener('click', reviewBulkDiscard);
+if ($('btn-review-bulk-promote')) $('btn-review-bulk-promote').addEventListener('click', reviewBulkPromote);
+
+// Load Review queue when entering its sub-tab
+document.addEventListener('click', e => {
+  const t = e.target.closest('.swiss-subtab');
+  if (t && t.dataset.stab === 'review') loadReviewQueue();
+});
 
 // =============================================================================
 // Swiss Detector tab — full lifecycle of the multi-class construction model

@@ -30,6 +30,7 @@
     <button class="topnav-btn" data-page="train">Train</button>
     <button class="topnav-btn" data-page="live">Live RTSP</button>
     <button class="topnav-btn" data-page="filter">Filter</button>
+    <button class="topnav-btn" data-page="cameras">📹 Cameras</button>
     <button class="topnav-btn" data-page="swiss">🏗️ CSI_V1</button>
     <button class="topnav-btn" data-page="history">History</button>
     <button class="topnav-btn" data-page="projects">Projects</button>
@@ -1536,6 +1537,83 @@
 </main>
 
 <!-- ============================================================
+     Cameras — multi-camera registry for long-running operations
+     ============================================================ -->
+<main class="container hidden" id="page-cameras">
+  <section class="card">
+    <div class="card-header">
+      <h2>📹 Cameras — multi-site, multi-camera registry</h2>
+      <p>Register every camera across every construction site. Each camera runs in its own background process; sessions auto-restart on crash; discovery + zones are tagged per camera so collected data tracks back to its source. Designed for days/months of continuous operation.</p>
+    </div>
+    <div class="actions">
+      <button class="btn btn-primary btn-small" id="btn-add-camera">+ Add camera</button>
+      <button class="btn btn-ghost btn-small" id="btn-cameras-refresh">🔄 Refresh</button>
+      <span class="muted small" id="cameras-summary">—</span>
+    </div>
+    <div id="cameras-list" class="cameras-list">
+      <p class="muted small" style="padding:14px">Loading…</p>
+    </div>
+  </section>
+</main>
+
+<!-- Add/edit camera modal -->
+<div class="folder-modal hidden" id="camera-modal">
+  <div class="folder-modal-card" style="height:auto">
+    <header>
+      <h3 id="camera-modal-title">Register a camera</h3>
+      <button class="btn btn-ghost btn-small" id="camera-modal-close" type="button">✕</button>
+    </header>
+    <div style="padding:18px;display:flex;flex-direction:column;gap:12px">
+      <label class="text-row">
+        <span>Camera name</span>
+        <input type="text" id="cam-name" placeholder="e.g. SBB Luzern – North gate" />
+      </label>
+      <label class="text-row">
+        <span>Stream URL (RTSP / HTTP / file path)</span>
+        <input type="text" id="cam-url" placeholder="rtsp://user:pass@camera.local:554/stream1" />
+      </label>
+      <label class="text-row">
+        <span>Site</span>
+        <input type="text" id="cam-site" placeholder="e.g. SBB Luzern" />
+      </label>
+      <label class="text-row">
+        <span>Location (free text or 'lat,lng')</span>
+        <input type="text" id="cam-location" placeholder="e.g. North entrance / 47.05,8.31" />
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="cam-enabled" checked />
+        Enabled
+      </label>
+      <details>
+        <summary>Default settings (model, conf, tracker, etc.)</summary>
+        <div style="padding:8px;display:flex;flex-direction:column;gap:6px">
+          <label class="text-row">
+            <span>Default conf</span>
+            <input type="number" id="cam-conf" value="0.30" min="0" max="1" step="0.05" />
+          </label>
+          <label class="text-row">
+            <span>Default tracker</span>
+            <select id="cam-tracker">
+              <option value="bytetrack" selected>ByteTrack</option>
+              <option value="botsort">BoT-SORT</option>
+              <option value="none">None</option>
+            </select>
+          </label>
+        </div>
+      </details>
+      <label class="text-row">
+        <span>Notes</span>
+        <input type="text" id="cam-notes" placeholder="optional" />
+      </label>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-ghost" id="camera-cancel" type="button">Cancel</button>
+        <button class="btn btn-primary" id="camera-save" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
      Swiss Detector — full lifecycle, redesigned with sub-tabs
      ============================================================ -->
 <main class="container hidden" id="page-swiss">
@@ -1560,6 +1638,7 @@
     <button class="swiss-subtab" data-stab="evaluate">🧪 Evaluate</button>
     <button class="swiss-subtab" data-stab="compare">⚖️ Compare</button>
     <button class="swiss-subtab" data-stab="deploy">🚀 Deploy</button>
+    <button class="swiss-subtab" data-stab="review">👁️ Review queue</button>
     <button class="swiss-subtab" data-stab="activity">🕒 Activity</button>
   </nav>
 
@@ -1966,6 +2045,35 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
     <div id="drift-report" class="drift-report"></div>
   </section>
 
+  <!-- ===== Review sub-tab — discovery queue ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="review">
+    <div class="card-header">
+      <h3>👁️ Review queue — unclassified detections</h3>
+      <p>Crops the model was uncertain about while running on cameras or scanning archives. Review them, assign to a known class, or promote to a brand new class. Closes the active-learning loop: model spots → you name → next CSI version detects.</p>
+    </div>
+    <div id="review-stats" class="muted small" style="margin-bottom:10px">Loading…</div>
+    <div class="actions" style="margin-bottom:10px">
+      <button class="btn btn-ghost btn-small" id="btn-review-refresh">🔄 Refresh</button>
+      <select id="review-source-filter" style="margin-left:8px">
+        <option value="">All sources</option>
+        <option value="rtsp">From cameras (RTSP)</option>
+        <option value="filter_scan">From archive scans</option>
+      </select>
+      <span class="muted small" style="margin-left:14px" id="review-selected-count">0 selected</span>
+    </div>
+    <div class="actions" style="margin-bottom:14px">
+      <select id="review-bulk-class" style="min-width:200px">
+        <option value="">— pick a class to bulk-assign —</option>
+      </select>
+      <button class="btn btn-primary btn-small" id="btn-review-bulk-assign">📍 Assign selected to class</button>
+      <button class="btn btn-ghost btn-small" id="btn-review-bulk-discard">🗑️ Discard selected</button>
+      <button class="btn btn-secondary btn-small" id="btn-review-bulk-promote">➕ Promote selected to NEW class</button>
+    </div>
+    <div id="review-grid" class="review-grid">
+      <p class="muted small" style="padding:14px">No uncertain detections in queue.</p>
+    </div>
+  </section>
+
   <!-- ===== Activity sub-tab ===== -->
   <section class="card swiss-stab-pane hidden" data-stab-pane="activity">
     <div class="card-header">
@@ -2228,6 +2336,6 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-29-h-live-pro"></script>
+<script src="/static/app.js?v=2026-04-29-i-multi-camera"></script>
 </body>
 </html>

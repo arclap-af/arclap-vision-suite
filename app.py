@@ -39,6 +39,9 @@ from core.presets import class_index as preset_class_index
 from core.presets import get_preset, list_presets
 from core.seed import SUGGESTED, install_suggested, seed_existing_models
 from core import swiss as swiss_core
+from core import cameras as camera_registry
+from core import discovery as discovery_core
+from core import zones as zones_core
 
 PYTHON = sys.executable
 ROOT = Path(__file__).parent.resolve()
@@ -584,6 +587,7 @@ class RtspStartRequest(BaseModel):
     tracker: str = "bytetrack"          # bytetrack | botsort | none
     class_filter: str = ""              # comma-separated class IDs
     mjpeg_port: int = 8765
+    camera_id: str | None = None        # registered camera id (auto-tags discovery + zones)
 
 
 @app.post("/api/rtsp/start")
@@ -628,6 +632,12 @@ def rtsp_start(req: RtspStartRequest):
     }
     if model_path:
         settings["model"] = model_path
+    if req.camera_id:
+        settings["camera_id"] = req.camera_id
+        # Resolve zones file for this camera
+        zone_file = ROOT / "_data" / "zones" / f"{req.camera_id}.json"
+        if zone_file.is_file():
+            settings["zones_file"] = str(zone_file)
     job = db.create_job(
         kind="stream",
         mode="rtsp",
@@ -1061,9 +1071,16 @@ def browse_roots():
 
 
 @app.get("/api/browse")
-def browse_folder(path: str):
-    """List immediate subfolders + image count for one folder. Used by the
-    folder-browser modal in the Filter wizard."""
+def browse_folder(path: str, file_exts: str = ""):
+    """List immediate subfolders + image count for one folder. When
+    `file_exts` is set (comma-separated, e.g. ".mp4,.mov,.avi"), the
+    response also includes a `files` list so the modal can act as a
+    file picker — each file shows its size and the user clicks to pick.
+
+    Used by:
+      - the Filter wizard's folder-browser (no file_exts) → folders only
+      - the Live RTSP file-source picker (file_exts=".mp4,.mov,...") → folders + matching files
+    """
     p = Path(path).expanduser()
     try:
         p = p.resolve()
@@ -1072,7 +1089,10 @@ def browse_folder(path: str):
     if not p.is_dir():
         raise HTTPException(400, f"Not a directory: {p}")
 
+    file_filter = {e.strip().lower() for e in file_exts.split(",") if e.strip()}
+
     folders = []
+    files = []
     image_here = 0
     try:
         for entry in p.iterdir():
@@ -1097,19 +1117,33 @@ def browse_folder(path: str):
                             "n_images_shallow": n_imgs,
                             "has_subfolders": has_sub,
                         })
-                elif entry.is_file() and entry.suffix.lower() in ALLOWED_IMAGE_EXTS:
-                    image_here += 1
+                elif entry.is_file():
+                    suffix = entry.suffix.lower()
+                    if suffix in ALLOWED_IMAGE_EXTS:
+                        image_here += 1
+                    if file_filter and suffix in file_filter:
+                        try:
+                            size = entry.stat().st_size
+                        except OSError:
+                            size = 0
+                        files.append({
+                            "name": entry.name,
+                            "path": str(entry),
+                            "size_mb": round(size / (1024 * 1024), 1),
+                        })
             except (PermissionError, OSError):
                 continue
     except (PermissionError, OSError) as e:
         raise HTTPException(403, f"Permission denied: {e}")
 
     folders.sort(key=lambda f: f["name"].lower())
+    files.sort(key=lambda f: f["name"].lower())
     parent = str(p.parent) if p.parent != p else None
     return {
         "path": str(p),
         "parent": parent,
         "folders": folders,
+        "files": files,
         "image_count": image_here,
     }
 
@@ -5228,6 +5262,258 @@ def swiss_dataset_insights():
     out["corrupt"] = out["corrupt"][:50]
     out["label_issues"] = out["label_issues"][:50]
     return out
+
+
+# ============================================================================
+# Multi-camera registry — first-class entities, persistent, multi-site
+# ============================================================================
+
+class CameraCreateRequest(BaseModel):
+    name: str
+    url: str
+    site: str = ""
+    location: str = ""
+    enabled: bool = True
+    settings: dict = Field(default_factory=dict)
+    notes: str = ""
+
+
+@app.get("/api/cameras")
+def list_cameras_endpoint():
+    cams = camera_registry.list_cameras(ROOT)
+    out = []
+    for c in cams:
+        agg = camera_registry.aggregate_uptime(ROOT, c.id)
+        out.append({**asdict_safe(c), **{"uptime": agg}})
+    return {"cameras": out}
+
+
+@app.post("/api/cameras")
+def create_camera_endpoint(req: CameraCreateRequest):
+    cam = camera_registry.create_camera(
+        ROOT, name=req.name, url=req.url, site=req.site,
+        location=req.location, enabled=req.enabled,
+        settings=req.settings, notes=req.notes,
+    )
+    return asdict_safe(cam)
+
+
+class CameraUpdateRequest(BaseModel):
+    name: str | None = None
+    url: str | None = None
+    site: str | None = None
+    location: str | None = None
+    enabled: bool | None = None
+    settings: dict | None = None
+    notes: str | None = None
+
+
+@app.put("/api/cameras/{cam_id}")
+def update_camera_endpoint(cam_id: str, req: CameraUpdateRequest):
+    fields = {k: v for k, v in req.model_dump().items() if v is not None}
+    cam = camera_registry.update_camera(ROOT, cam_id, **fields)
+    if not cam:
+        raise HTTPException(404)
+    return asdict_safe(cam)
+
+
+@app.delete("/api/cameras/{cam_id}")
+def delete_camera_endpoint(cam_id: str):
+    camera_registry.delete_camera(ROOT, cam_id)
+    return {"ok": True}
+
+
+@app.get("/api/cameras/{cam_id}/sessions")
+def camera_sessions_endpoint(cam_id: str):
+    return {"sessions": camera_registry.list_sessions(ROOT, camera_id=cam_id)}
+
+
+@app.post("/api/cameras/{cam_id}/start")
+def camera_start_endpoint(cam_id: str):
+    """Start the live processor for one specific registered camera. Uses
+    the camera's saved settings."""
+    cam = camera_registry.get_camera(ROOT, cam_id)
+    if not cam:
+        raise HTTPException(404, "Camera not found")
+    s = cam.settings or {}
+    # Reuse the existing rtsp_start by constructing the request
+    req = RtspStartRequest(
+        url=cam.url,
+        output_name=f"cam_{cam.id}_{int(time.time())}.mp4",
+        rtsp_mode=s.get("mode", "detect"),
+        conf=float(s.get("conf", 0.30)),
+        iou=float(s.get("iou", 0.45)),
+        detect_every=int(s.get("detect_every", 2)),
+        max_fps=float(s.get("max_fps", 15.0)),
+        duration=int(s.get("duration", 0)),
+        model=s.get("model"),
+        tracker=s.get("tracker", "bytetrack"),
+        class_filter=s.get("class_filter", ""),
+        mjpeg_port=int(s.get("mjpeg_port", 8765)),
+    )
+    result = rtsp_start(req)
+    # Log session start
+    camera_registry.session_start(ROOT, cam_id, job_id=result["job_id"])
+    return {**result, "camera_id": cam_id}
+
+
+# ============================================================================
+# Discovery queue — open-set object review
+# ============================================================================
+
+@app.get("/api/discovery/stats")
+def discovery_stats_endpoint():
+    return discovery_core.stats(ROOT)
+
+
+@app.get("/api/discovery/queue")
+def discovery_queue_endpoint(status: str = "pending", limit: int = 100,
+                              offset: int = 0, source: str | None = None):
+    rows = discovery_core.list_crops(
+        ROOT, status=status, limit=limit, offset=offset, source=source,
+    )
+    # Augment with served URLs
+    for r in rows:
+        r["crop_url"] = f"/api/discovery/{r['id']}/crop"
+        r["context_url"] = f"/api/discovery/{r['id']}/context" if r.get("context_path") else None
+    return {"crops": rows, "total": len(rows)}
+
+
+@app.get("/api/discovery/{crop_id}/crop")
+def discovery_crop_image(crop_id: int):
+    conn = discovery_core.open_db(ROOT)
+    try:
+        row = conn.execute("SELECT crop_path FROM crops WHERE id = ?",
+                            (crop_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        raise HTTPException(404)
+    p = Path(row[0])
+    if not p.is_file():
+        raise HTTPException(404)
+    return FileResponse(p)
+
+
+@app.get("/api/discovery/{crop_id}/context")
+def discovery_context_image(crop_id: int):
+    conn = discovery_core.open_db(ROOT)
+    try:
+        row = conn.execute("SELECT context_path FROM crops WHERE id = ?",
+                            (crop_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        raise HTTPException(404)
+    p = Path(row[0])
+    if not p.is_file():
+        raise HTTPException(404)
+    return FileResponse(p)
+
+
+class DiscoveryAssignRequest(BaseModel):
+    crop_ids: list[int]
+    class_id: int
+
+
+@app.post("/api/discovery/assign")
+def discovery_assign_endpoint(req: DiscoveryAssignRequest):
+    classes = swiss_core.load_classes(ROOT)
+    cls = next((c for c in classes if c.id == req.class_id), None)
+    if cls is None:
+        raise HTTPException(404, f"No class with id {req.class_id}")
+    return discovery_core.bulk_assign(ROOT, req.crop_ids, cls.id, cls.de)
+
+
+class DiscoveryDiscardRequest(BaseModel):
+    crop_ids: list[int]
+
+
+@app.post("/api/discovery/discard")
+def discovery_discard_endpoint(req: DiscoveryDiscardRequest):
+    return discovery_core.bulk_discard(ROOT, req.crop_ids)
+
+
+class DiscoveryPromoteRequest(BaseModel):
+    crop_ids: list[int]
+    en: str
+    de: str
+    color: str = "#888888"
+    category: str = "Other"
+    description: str = ""
+
+
+@app.post("/api/discovery/promote-to-new-class")
+def discovery_promote_endpoint(req: DiscoveryPromoteRequest):
+    """Create a new class in the registry AND assign all the listed crops
+    to it in one shot — the killer move for discovery → training."""
+    if not req.en or not req.de:
+        raise HTTPException(400, "Both EN and DE names are required.")
+    new_cls = swiss_core.add_class(
+        ROOT, en=req.en, de=req.de, color=req.color,
+        category=req.category, description=req.description,
+    )
+    swiss_core.append_ingestion(ROOT, {
+        "kind": "class_added_via_discovery",
+        "class_id": new_cls.id, "en": new_cls.en,
+        "promoted_from_n_crops": len(req.crop_ids),
+    })
+    res = discovery_core.bulk_assign(ROOT, req.crop_ids, new_cls.id, new_cls.de)
+    return {"ok": True, "new_class": asdict_safe(new_cls), **res}
+
+
+# ============================================================================
+# Zones — per-camera polygon rules
+# ============================================================================
+
+class ZoneInRequest(BaseModel):
+    name: str
+    polygon: list[list[float]]
+    rule: dict = Field(default_factory=dict)
+    color: str = "#1E88E5"
+
+
+class ZonesSaveRequest(BaseModel):
+    zones: list[ZoneInRequest]
+
+
+@app.get("/api/zones/{camera_id}")
+def zones_list_endpoint(camera_id: str):
+    zs = zones_core.list_zones(ROOT, camera_id)
+    return {"zones": [
+        {
+            "name": z.name,
+            "polygon": z.polygon,
+            "rule": {
+                "allowed_classes": z.rule.allowed_classes,
+                "forbidden_classes": z.rule.forbidden_classes,
+                "count_min": z.rule.count_min,
+                "count_max": z.rule.count_max,
+                "time_window_hours": z.rule.time_window_hours,
+                "custom_alert_message": z.rule.custom_alert_message,
+            },
+            "color": z.color,
+        } for z in zs
+    ]}
+
+
+@app.post("/api/zones/{camera_id}")
+def zones_save_endpoint(camera_id: str, req: ZonesSaveRequest):
+    out = []
+    for z in req.zones:
+        rule = zones_core.ZoneRule(
+            allowed_classes=list(z.rule.get("allowed_classes", [])),
+            forbidden_classes=list(z.rule.get("forbidden_classes", [])),
+            count_min=z.rule.get("count_min"),
+            count_max=z.rule.get("count_max"),
+            time_window_hours=list(z.rule.get("time_window_hours", [])),
+            custom_alert_message=z.rule.get("custom_alert_message", ""),
+        )
+        out.append(zones_core.Zone(
+            name=z.name, polygon=z.polygon, rule=rule, color=z.color,
+        ))
+    zones_core.save_zones(ROOT, camera_id, out)
+    return {"ok": True, "n_zones": len(out)}
 
 
 if __name__ == "__main__":

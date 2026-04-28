@@ -53,4 +53,11 @@ def build(job, ctx):
         cmd += ["--model", s["model"]]
     if s.get("class_filter"):
         cmd += ["--class-filter", s["class_filter"]]
+    # Discovery + zones + camera tagging — for multi-camera long-running ops
+    cmd += ["--suite-root", str(ctx["root"])]
+    if s.get("camera_id"):
+        cmd += ["--camera-id", s["camera_id"]]
+    if s.get("zones_file"):
+        cmd += ["--zones-file", s["zones_file"]]
     return cmd
+

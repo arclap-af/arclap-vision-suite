@@ -78,6 +78,18 @@ def parse_args():
                    help="Object tracker. ByteTrack is the default — fast and robust.")
     p.add_argument("--class-filter", default="",
                    help="Comma-separated class IDs to keep (empty = all)")
+    p.add_argument("--camera-id", default="",
+                   help="Camera registry ID (used to tag discovery + zones)")
+    p.add_argument("--discovery-conf-low", type=float, default=0.10,
+                   help="Lower bound for discovery — detections in [low, conf) "
+                        "are saved as uncertain crops for later review.")
+    p.add_argument("--discovery-rate", type=float, default=0.05,
+                   help="Fraction of qualifying low-confidence detections to "
+                        "actually save (0.05 = 1 in 20). Prevents flooding.")
+    p.add_argument("--zones-file", default="",
+                   help="Path to zones JSON (per-camera polygon rules).")
+    p.add_argument("--suite-root", default="",
+                   help="Suite root path (for writing discovery DB / crops).")
     return p.parse_args()
 
 
@@ -387,6 +399,42 @@ def main():
     if snap_dir:
         snap_dir.mkdir(parents=True, exist_ok=True)
 
+    # ---- Discovery + zones setup ----
+    suite_root = Path(args.suite_root) if args.suite_root else Path(__file__).parent.resolve()
+    discovery_enabled = args.suite_root != "" and args.discovery_rate > 0
+    if discovery_enabled:
+        try:
+            sys.path.insert(0, str(suite_root))
+            from core import discovery as _disc
+        except Exception:
+            discovery_enabled = False
+            _disc = None
+    else:
+        _disc = None
+
+    zones_list = []
+    if args.zones_file and Path(args.zones_file).is_file():
+        try:
+            sys.path.insert(0, str(suite_root))
+            from core import zones as _zones_mod
+            # Load via the core helper if camera_id present
+            if args.camera_id:
+                zones_list = _zones_mod.list_zones(suite_root, args.camera_id)
+            else:
+                # Direct file load for ad-hoc runs
+                raw = json.loads(Path(args.zones_file).read_text(encoding="utf-8"))
+                zones_list = [
+                    _zones_mod.Zone(
+                        name=z.get("name", ""),
+                        polygon=list(z.get("polygon", [])),
+                        rule=_zones_mod.ZoneRule(**z.get("rule", {})),
+                        color=z.get("color", "#1E88E5"),
+                    ) for z in raw
+                ]
+        except Exception as e:
+            print(f"[live] could not load zones: {e}", flush=True)
+            zones_list = []
+
     print(f"[live] connecting to {args.url}", flush=True)
     cap = open_capture(args.url)
     if not cap.isOpened():
@@ -599,6 +647,64 @@ def main():
                 if new_events:
                     state["last_detection_at"] = time.time()
                 state["frame_classes"] = classes_this_frame
+
+                # ---- Discovery: save uncertain detections (low-conf) ----
+                if discovery_enabled and _disc and last_result is not None:
+                    import random
+                    boxes = getattr(last_result, "boxes", None)
+                    if boxes is not None and len(boxes) > 0:
+                        xyxy_d = boxes.xyxy.cpu().numpy()
+                        cls_d = boxes.cls.cpu().numpy().astype(int)
+                        conf_d = boxes.conf.cpu().numpy()
+                        for (x1, y1, x2, y2), c, p in zip(xyxy_d, cls_d, conf_d):
+                            if args.discovery_conf_low <= p < live_conf:
+                                if random.random() > args.discovery_rate:
+                                    continue
+                                try:
+                                    crop = frame[max(0, int(y1)):int(y2),
+                                                  max(0, int(x1)):int(x2)]
+                                    if crop.size == 0:
+                                        continue
+                                    _disc.add_crop(
+                                        suite_root,
+                                        source="rtsp",
+                                        source_ref=args.camera_id or args.url,
+                                        crop_image=crop,
+                                        context_image=frame,
+                                        bbox=(int(x1), int(y1), int(x2), int(y2)),
+                                        best_guess_id=int(c),
+                                        best_guess_name=names.get(int(c), str(int(c))),
+                                        confidence=float(p),
+                                        proposal_kind="low_confidence",
+                                    )
+                                except Exception:
+                                    pass
+
+                # ---- Zone evaluation ----
+                if zones_list and new_events:
+                    try:
+                        from core import zones as _zones_mod
+                        zone_result = _zones_mod.evaluate_zones(
+                            zones_list, new_events,
+                            current_hour=time.localtime().tm_hour,
+                        )
+                        for a in zone_result.get("all_alerts", []):
+                            recent_events.append({
+                                "kind": "zone_alert",
+                                "msg": a.get("msg"),
+                                "zone": a.get("zone"),
+                                "severity": a.get("severity"),
+                                "at": time.time(),
+                            })
+                            fired_alerts.append({
+                                "kind": "zone_alert",
+                                "severity": a.get("severity"),
+                                "msg": a.get("msg"),
+                                "at": time.time(),
+                            })
+                        state["zone_state"] = zone_result.get("per_zone", {})
+                    except Exception as e:
+                        print(f"[live] zone eval error: {e}", flush=True)
             else:
                 annotated = frame   # raw record mode
 
