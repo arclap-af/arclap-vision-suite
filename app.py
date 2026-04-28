@@ -3011,78 +3011,241 @@ def swiss_web_collect_start(req: SwissWebCollectRequest):
     return {"ok": True, "job_id": job_id, "queue_size": len(queries)}
 
 
+# ---- Source: DuckDuckGo ----------------------------------------------------
+
+def _src_duckduckgo(query: str, n: int) -> list[dict]:
+    """Yield up to n image candidates from DuckDuckGo. Returns
+    [{url, query, source}, …] or [] on failure."""
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        return []
+    out: list[dict] = []
+    try:
+        with DDGS() as ddgs:
+            for r in ddgs.images(query, max_results=n,
+                                  type_image="photo", size="Medium"):
+                url = r.get("image") or ""
+                if url:
+                    out.append({"url": url, "query": query, "source": "duckduckgo"})
+    except Exception:
+        pass
+    return out
+
+
+# ---- Source: Bing (via bing-image-downloader scraper) ---------------------
+
+def _src_bing(query: str, n: int) -> list[dict]:
+    """Bing image search via the bing-image-downloader package. No API key
+    required — scrapes the public results page. Robust fallback when
+    DuckDuckGo rate-limits us."""
+    try:
+        # The package downloads files directly to disk, so we wrap it: have
+        # it write to a temp dir we then enumerate.
+        from bing_image_downloader import downloader  # type: ignore
+    except ImportError:
+        return []
+    import tempfile as _tmp
+    tmp_root = Path(_tmp.mkdtemp(prefix="arclap_bing_"))
+    try:
+        downloader.download(
+            query, limit=n, output_dir=str(tmp_root),
+            adult_filter_off=True, force_replace=False,
+            timeout=10, verbose=False,
+        )
+        # Files end up at tmp_root/<query>/Image_*.jpg
+        out = []
+        for d in tmp_root.iterdir():
+            if not d.is_dir():
+                continue
+            for f in d.iterdir():
+                if f.is_file() and f.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+                    out.append({
+                        "url": f"file://{f}",   # local path — downloader handles fetch
+                        "query": query, "source": "bing",
+                        "_local_path": str(f),  # internal: skip http re-download
+                    })
+        return out
+    except Exception:
+        return []
+
+
+# ---- Source: Wikimedia Commons --------------------------------------------
+
+def _src_wikimedia(query: str, n: int) -> list[dict]:
+    """Wikimedia Commons API — completely free, no key, CC-licensed
+    (mostly Creative Commons or public domain). Good for canonical
+    machinery reference photos. Lower hit rate than DDG/Bing on
+    construction-equipment queries but legally clean."""
+    import requests as _rq
+    headers = {"User-Agent": "ArclapVisionSuite/1.0 (https://arclap.ch)"}
+    try:
+        # Step 1: search Commons for files matching the query
+        params = {
+            "action": "query",
+            "format": "json",
+            "list": "search",
+            "srsearch": query,
+            "srnamespace": "6",  # File: namespace
+            "srlimit": str(n),
+        }
+        r = _rq.get("https://commons.wikimedia.org/w/api.php",
+                    params=params, headers=headers, timeout=10)
+        if r.status_code != 200:
+            return []
+        hits = r.json().get("query", {}).get("search", []) or []
+        if not hits:
+            return []
+        # Step 2: resolve to actual image URLs via imageinfo
+        titles = "|".join(h["title"] for h in hits)
+        params2 = {
+            "action": "query",
+            "format": "json",
+            "titles": titles,
+            "prop": "imageinfo",
+            "iiprop": "url|mime",
+            "iiurlwidth": "800",
+        }
+        r2 = _rq.get("https://commons.wikimedia.org/w/api.php",
+                     params=params2, headers=headers, timeout=10)
+        if r2.status_code != 200:
+            return []
+        pages = (r2.json().get("query", {}) or {}).get("pages", {}) or {}
+        out = []
+        for page in pages.values():
+            info = (page.get("imageinfo") or [{}])[0]
+            mime = info.get("mime", "")
+            if not mime.startswith("image/"):
+                continue
+            url = info.get("thumburl") or info.get("url") or ""
+            if url:
+                out.append({"url": url, "query": query, "source": "wikimedia"})
+        return out
+    except Exception:
+        return []
+
+
+# ---- Source: Pexels (optional, needs PEXELS_API_KEY env var) --------------
+
+def _src_pexels(query: str, n: int) -> list[dict]:
+    """Pexels — free tier, requires API key from https://www.pexels.com/api/.
+    Set ARCLAP_PEXELS_KEY env var to enable. Returns [] if key absent."""
+    import os, requests as _rq
+    key = os.environ.get("ARCLAP_PEXELS_KEY") or os.environ.get("PEXELS_API_KEY")
+    if not key:
+        return []
+    try:
+        r = _rq.get(
+            "https://api.pexels.com/v1/search",
+            params={"query": query, "per_page": n, "size": "medium"},
+            headers={"Authorization": key}, timeout=10,
+        )
+        if r.status_code != 200:
+            return []
+        photos = r.json().get("photos", []) or []
+        return [
+            {"url": p["src"].get("large") or p["src"].get("medium", ""),
+             "query": query, "source": "pexels"}
+            for p in photos if p.get("src")
+        ]
+    except Exception:
+        return []
+
+
+# Source registry — order matters: tried in this order until target hit
+WEB_SOURCES = [
+    ("duckduckgo", _src_duckduckgo),
+    ("bing", _src_bing),
+    ("wikimedia", _src_wikimedia),
+    ("pexels", _src_pexels),  # only fires if API key set
+]
+
+
 def _swiss_web_collect_thread(job_id: str, queries: list[str],
                                max_results: int, out_dir: Path):
-    """Pull images from DuckDuckGo (no API key) per query. Saves to out_dir
-    and updates the in-memory job dict so the UI can poll progress."""
+    """Pull images from multiple sources. Each query is tried against every
+    source in WEB_SOURCES until we hit max_results total. Per-image source
+    is recorded so the UI can show a badge."""
     job = _swiss_web_jobs.get(job_id)
     if not job:
         return
     try:
-        try:
-            from duckduckgo_search import DDGS
-        except ImportError:
-            job["status"] = "error"
-            job["error"] = ("duckduckgo-search not installed. "
-                           "Run: pip install duckduckgo-search")
-            return
         import requests as _rq
+        from PIL import Image as _PIL
         out_dir.mkdir(parents=True, exist_ok=True)
         per_query = max(5, max_results // max(1, len(queries)))
         downloaded = 0
-        headers = {"User-Agent": "Mozilla/5.0"}
-        with DDGS() as ddgs:
-            for q in queries:
+        headers = {"User-Agent": "Mozilla/5.0 ArclapVisionSuite"}
+        seen_urls: set[str] = set()
+
+        for q in queries:
+            if downloaded >= max_results:
+                break
+            for source_name, source_fn in WEB_SOURCES:
                 if downloaded >= max_results:
                     break
                 try:
-                    results = list(ddgs.images(
-                        q, max_results=per_query,
-                        type_image="photo", size="Medium",
-                    ))
+                    candidates = source_fn(q, per_query)
                 except Exception as e:
-                    job.setdefault("warnings", []).append(f"query '{q[:40]}': {e}")
+                    job.setdefault("warnings", []).append(
+                        f"{source_name} on '{q[:40]}': {type(e).__name__}: {e}")
+                    candidates = []
+                if not candidates:
                     continue
-                for r in results:
+                job.setdefault("source_stats", {})[source_name] = (
+                    job["source_stats"].get(source_name, 0) + len(candidates))
+                for c in candidates:
                     if downloaded >= max_results:
                         break
-                    url = r.get("image") or ""
-                    if not url:
+                    url = c.get("url") or ""
+                    if not url or url in seen_urls:
                         continue
+                    seen_urls.add(url)
                     try:
-                        ext = Path(url.split("?")[0]).suffix.lower()
-                        if ext not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
-                            ext = ".jpg"
-                        fname = f"{downloaded:04d}{ext}"
-                        dst = out_dir / fname
-                        resp = _rq.get(url, timeout=8, headers=headers, stream=True)
-                        if resp.status_code != 200:
-                            continue
-                        with open(dst, "wb") as f:
-                            for chunk in resp.iter_content(8192):
-                                f.write(chunk)
+                        # Bing source pre-downloads to a local path; just copy.
+                        if c.get("_local_path"):
+                            local = Path(c["_local_path"])
+                            if not local.is_file():
+                                continue
+                            ext = local.suffix.lower() or ".jpg"
+                            fname = f"{downloaded:04d}_{source_name}{ext}"
+                            dst = out_dir / fname
+                            shutil.copy2(local, dst)
+                        else:
+                            ext = Path(url.split("?")[0]).suffix.lower()
+                            if ext not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+                                ext = ".jpg"
+                            fname = f"{downloaded:04d}_{source_name}{ext}"
+                            dst = out_dir / fname
+                            resp = _rq.get(url, timeout=8, headers=headers, stream=True)
+                            if resp.status_code != 200:
+                                continue
+                            with open(dst, "wb") as f:
+                                for chunk in resp.iter_content(8192):
+                                    f.write(chunk)
                         # Sanity check that it's a real image
                         try:
-                            from PIL import Image as _PIL
                             _PIL.open(dst).verify()
                         except Exception:
                             dst.unlink(missing_ok=True)
                             continue
                         downloaded += 1
                         job["downloaded"] = downloaded
-                        job["progress"] = round(100 * downloaded / max(1, max_results), 1)
+                        job["progress"] = round(
+                            100 * downloaded / max(1, max_results), 1)
                         job["candidates"].append({
                             "filename": fname,
-                            "url": url,
+                            "url": url if not c.get("_local_path") else "",
                             "query": q,
+                            "source": source_name,
                         })
-                    except Exception as e:
+                    except Exception:
                         continue
         job["status"] = "done"
         job["finished_at"] = time.time()
     except Exception as e:
         job["status"] = "error"
-        job["error"] = str(e)
+        job["error"] = f"{type(e).__name__}: {e}"
 
 
 @app.get("/api/swiss/web-collect/{job_id}")

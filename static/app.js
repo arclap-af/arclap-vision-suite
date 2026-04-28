@@ -3653,10 +3653,12 @@ function renderSwissWebGrid(d) {
     const tile = document.createElement('div');
     tile.className = 'swiss-web-tile';
     tile.dataset.fname = c.filename;
+    const srcBadge = c.source ? `<div class="swiss-web-src swiss-web-src-${escapeHtml(c.source)}">${escapeHtml(c.source)}</div>` : '';
     tile.innerHTML = `
       <img src="/api/swiss/web-collect/${swissWebJob.id}/thumb/${encodeURIComponent(c.filename)}"
            loading="lazy" alt=""
            onerror="this.style.background='var(--color-surface)';this.alt='(image unavailable)'" />
+      ${srcBadge}
       <div class="swiss-web-tick">
         <input type="checkbox" data-fname="${escapeHtml(c.filename)}" />
       </div>

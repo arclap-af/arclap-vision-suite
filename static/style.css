@@ -2406,6 +2406,20 @@ code { background: var(--bg-2); padding: 1px 6px; border-radius: 4px; font-famil
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* Source-of-origin badge on each thumbnail */
+.swiss-web-src {
+  position: absolute; top: 6px; left: 6px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 8px; border-radius: 999px;
+  color: white;
+  font-family: var(--font-mono);
+}
+.swiss-web-src-duckduckgo { background: #DE5833; }
+.swiss-web-src-bing       { background: #008373; }
+.swiss-web-src-wikimedia  { background: #336699; }
+.swiss-web-src-pexels     { background: #05a081; }
+
 /* Class modal — overrides folder-modal-card to be auto-height */
 #swiss-class-modal .folder-modal-card { height: auto; }
 #swiss-class-modal textarea {
