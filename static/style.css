@@ -273,39 +273,161 @@ code {
   border-bottom: 1px solid var(--color-border);
 }
 /* ════════════════════════════════════════════════════════════════════
-   Top navigation (legacy non-sidebar layout)
+   TOP NAVIGATION — redesigned 2026
+   Brand block (mark + wordmark + divider) on the left, underline-driven
+   pill-free nav in the centre, right-aligned utilities on the right.
+   The CSI button gets a brand-red feature treatment to flag it as the
+   product's main surface.
    ════════════════════════════════════════════════════════════════════ */
+
+/* Brand block — clickable, leads back home */
+.brand-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  text-decoration: none;
+  padding: 4px var(--space-2);
+  margin: -4px calc(-1 * var(--space-2));
+  border-radius: var(--radius-2);
+  transition: background var(--dur-1) var(--ease-out);
+}
+.brand-link:hover { background: var(--color-surface-alt); text-decoration: none; }
+.brand-link:focus-visible { outline: none; box-shadow: var(--ring-focus); }
+
+.brand-mark {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  background: var(--color-brand);
+  color: #fff;
+  font-family: var(--font-brand);
+  font-weight: 700;
+  font-size: 16px;
+  border-radius: var(--radius-2);
+  flex-shrink: 0;
+  letter-spacing: 0;
+  box-shadow: var(--shadow-1);
+}
+.brand-name {
+  font-family: var(--font-brand);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  color: var(--color-text-strong);
+  white-space: nowrap;
+}
+.brand-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--color-border);
+  margin-left: var(--space-2);
+}
+@media (max-width: 720px) {
+  .brand-name { display: none; }
+  .brand-divider { display: none; }
+}
+
+/* Main nav — underline-driven (no pills, no rails) */
 .topnav {
   display: flex;
-  gap: 2px;
-  background: var(--color-surface-alt);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-3);
-  padding: 4px;
+  align-items: stretch;
+  gap: var(--space-2);
+  background: transparent;
+  border: none;
+  padding: 0;
+  border-radius: 0;
+  flex-wrap: wrap;
+  margin: 0 var(--space-3);
 }
 .topnav-btn {
+  position: relative;
   background: transparent;
   color: var(--color-text-muted);
   border: none;
-  padding: 6px var(--space-4);
-  border-radius: var(--radius-2);
+  padding: var(--space-3) var(--space-3);
   cursor: pointer;
   font-family: inherit;
   font-size: 13px;
   font-weight: 500;
-  transition: background var(--dur-1) var(--ease-out),
-              color var(--dur-1) var(--ease-out);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  border-radius: 0;
+  transition: color var(--dur-1) var(--ease-out);
+}
+
+/* Animated underline that grows from the centre on hover */
+.topnav-btn::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  width: 0;
+  height: 2px;
+  background: var(--color-text-strong);
+  border-radius: var(--radius-pill);
+  transform: translateX(-50%);
+  transition: width var(--dur-2) var(--ease-out),
+              background var(--dur-1) var(--ease-out);
 }
 .topnav-btn:hover {
   color: var(--color-text-strong);
-  background: var(--color-surface);
 }
+.topnav-btn:hover::after {
+  width: calc(100% - var(--space-5));
+}
+
 .topnav-btn.active {
-  background: var(--color-text-strong);
-  color: var(--color-surface);
+  color: var(--color-text-strong);
   font-weight: 600;
 }
-.topnav-btn:focus-visible { outline: none; box-shadow: var(--ring-focus); }
+.topnav-btn.active::after {
+  width: calc(100% - var(--space-5));
+  background: var(--color-brand);
+  height: 2px;
+}
+
+.topnav-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+  border-radius: var(--radius-1);
+}
+
+/* Feature variant — for the flagship CSI tab */
+.topnav-btn-feature {
+  color: var(--color-brand);
+  font-weight: 600;
+}
+.topnav-btn-feature::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--color-brand);
+  transform: translateY(-50%);
+  transition: transform var(--dur-1) var(--ease-out),
+              opacity var(--dur-1) var(--ease-out);
+  opacity: 1;
+}
+.topnav-btn-feature {
+  padding-left: calc(var(--space-3) + 10px);
+}
+.topnav-btn-feature:hover { color: var(--color-brand-hover); }
+.topnav-btn-feature.active {
+  color: var(--color-brand);
+}
+.topnav-btn-feature.active::after { background: var(--color-brand); }
+.topnav-btn-feature.active::before {
+  transform: translateY(-50%) scale(1.4);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .topnav-btn::after { transition: none; }
+}
 
 .header-right {
   display: flex;
