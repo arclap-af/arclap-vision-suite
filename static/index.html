@@ -12,7 +12,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <link rel="stylesheet" href="/static/style.css" />
-<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-m-revert" />
+<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-n-thumb" />
 </head>
 <body>
 
@@ -73,7 +73,6 @@
     <img class="logo-wordmark" src="/static/logo-horizontal.svg" alt="Arclap" />
     <div class="brand-text">
       <span class="brand-eyebrow">Vision Suite</span>
-      <p class="subtitle">Local computer-vision workbench — timelapse, YOLO playground, RTSP, analytics</p>
     </div>
   </div>
   <nav class="topnav">
@@ -83,8 +82,8 @@
     <button class="topnav-btn" data-page="train">Train</button>
     <button class="topnav-btn" data-page="live">Live RTSP</button>
     <button class="topnav-btn" data-page="filter">Filter</button>
-    <button class="topnav-btn" data-page="cameras">📹 Cameras</button>
-    <button class="topnav-btn" data-page="swiss">🏗️ CSI_V1</button>
+    <button class="topnav-btn" data-page="cameras">Cameras</button>
+    <button class="topnav-btn" data-page="swiss">CSI</button>
     <button class="topnav-btn" data-page="history">History</button>
     <button class="topnav-btn" data-page="projects">Projects</button>
   </nav>
@@ -1099,6 +1098,9 @@
       <p>For every picture, the model runs once on the GPU, the detections are written to the scan database (class, confidence, count, bounding box), and three quality numbers are computed from a downsampled grayscale copy: <em>brightness</em> (mean pixel value), <em>sharpness</em> (Laplacian variance — high = crisp edges), and <em>contrast</em> (pixel std-dev). The filename is also parsed for a timestamp like <code>YYYY-MM-DD_HH-MM-SS</code> so date/hour filtering works later. You can leave this tab — when the scan finishes a notification fires.</p>
     </div>
 
+    <div class="filter-scan-preview-wrap" id="filter-scan-preview-wrap" style="display:none;margin-bottom:14px">
+      <img id="filter-scan-thumb" alt="Latest scanned frame with detections"/>
+    </div>
     <pre id="filter-log" class="log-output">Waiting…</pre>
     <div class="actions" style="margin-top:14px">
       <button class="btn btn-secondary" id="btn-index-continue" disabled>Continue → Analyse</button>
@@ -2811,6 +2813,6 @@ _data/alert_history.json  ← last 500 fires</pre>
 <div class="toasts" id="toasts"></div>
 
 <script src="/static/app.js?v=2026-04-30-e-tier4"></script>
-<script src="/static/shell-v2.js?v=2026-04-30-m-revert"></script>
+<script src="/static/shell-v2.js?v=2026-04-30-n-thumb"></script>
 </body>
 </html>

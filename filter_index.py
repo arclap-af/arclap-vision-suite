@@ -35,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -545,6 +546,47 @@ def scan(args) -> None:
                     cond_buf.append((path_str, tag, float(confv), reason))
             else:
                 cond_buf.append((path_str, "good", 0.80, "no_issues_detected"))
+
+        # ── Live thumbnail: write the last image of this batch with bboxes
+        #    drawn so the UI can poll it as a "what's being scanned now" preview.
+        try:
+            last_path = batch_paths[-1] if batch_paths else None
+            last_result = results[-1] if results else None
+            if last_path:
+                thumb = cv2.imread(last_path, cv2.IMREAD_COLOR)
+                if thumb is not None:
+                    H, W = thumb.shape[:2]
+                    # Resize for streaming: longest side 720
+                    if max(H, W) > 720:
+                        s = 720 / max(H, W)
+                        thumb = cv2.resize(thumb, None, fx=s, fy=s)
+                        H, W = thumb.shape[:2]
+                    else:
+                        s = 1.0
+                    if last_result is not None and getattr(last_result, "boxes", None) is not None and len(last_result.boxes) > 0:
+                        bb = last_result.boxes.xyxy.cpu().numpy()
+                        cls = last_result.boxes.cls.cpu().numpy().astype(int)
+                        confs = last_result.boxes.conf.cpu().numpy()
+                        for (x1, y1, x2, y2), c, cf in zip(bb, cls, confs):
+                            x1, y1, x2, y2 = int(x1*s), int(y1*s), int(x2*s), int(y2*s)
+                            cv2.rectangle(thumb, (x1, y1), (x2, y2), (29, 33, 229), 2)
+                            label = f"{names.get(int(c), str(c))} {cf:.2f}"
+                            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                            cv2.rectangle(thumb, (x1, y1 - th - 6), (x1 + tw + 6, y1), (29, 33, 229), -1)
+                            cv2.putText(thumb, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                    # Draw progress strip at the bottom
+                    done_so_far = i + len(batch_paths)
+                    pct = done_so_far / max(1, len(todo))
+                    cv2.rectangle(thumb, (0, H - 22), (W, H), (24, 24, 24), -1)
+                    cv2.rectangle(thumb, (0, H - 22), (int(W * pct), H), (29, 33, 229), -1)
+                    cv2.putText(thumb, f"{done_so_far}/{len(todo)}  {Path(last_path).name}",
+                                (8, H - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+                    thumb_path = Path(args.db).with_suffix(".thumb.jpg")
+                    tmp_path = thumb_path.with_suffix(".thumb.tmp.jpg")
+                    cv2.imwrite(str(tmp_path), thumb, [cv2.IMWRITE_JPEG_QUALITY, 78])
+                    os.replace(str(tmp_path), str(thumb_path))
+        except Exception:
+            pass  # thumbnail is best-effort; never break the scan
 
         if (i // BATCH) % 10 == 0:
             flush()

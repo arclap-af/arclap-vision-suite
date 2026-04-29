@@ -1372,6 +1372,23 @@ def job_status(job_id: str):
     return _job_to_dict(j)
 
 
+@app.get("/api/jobs/{job_id}/scan-thumb")
+def job_scan_thumb(job_id: str):
+    """Return the latest scanned-frame thumbnail for a filter scan job, or 404
+    if none has been written yet (before the first batch completes)."""
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Job not found")
+    db_path = j.output_path
+    if not db_path:
+        raise HTTPException(404, "No scan output yet")
+    thumb = Path(db_path).with_suffix(".thumb.jpg")
+    if not thumb.is_file():
+        raise HTTPException(404, "No thumbnail yet (waiting for first batch)")
+    return FileResponse(str(thumb), media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/jobs/{job_id}/status")
 def job_live_status(job_id: str):
     """Return the live status JSON written by long-running jobs (rtsp_live.py

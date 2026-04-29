@@ -1680,6 +1680,29 @@ if ($('btn-filter-scan')) {
   });
 }
 
+let _filterThumbTimer = null;
+function _startFilterThumbPoll(jobId) {
+  if (_filterThumbTimer) clearInterval(_filterThumbTimer);
+  const wrap = $('filter-scan-preview-wrap');
+  const img = $('filter-scan-thumb');
+  if (!wrap || !img) return;
+  let firstLoad = true;
+  const tick = () => {
+    const tester = new Image();
+    tester.onload = () => {
+      img.src = tester.src;
+      if (firstLoad) { wrap.style.display = ''; firstLoad = false; }
+    };
+    tester.onerror = () => { /* still pre-first-batch; keep waiting */ };
+    tester.src = `/api/jobs/${jobId}/scan-thumb?t=${Date.now()}`;
+  };
+  tick();
+  _filterThumbTimer = setInterval(tick, 1500);
+}
+function _stopFilterThumbPoll() {
+  if (_filterThumbTimer) { clearInterval(_filterThumbTimer); _filterThumbTimer = null; }
+}
+
 function streamFilterScan(jobId) {
   if (filterScanEventSource) filterScanEventSource.close();
   filterScanEventSource = new EventSource(`/api/jobs/${jobId}/stream`);
@@ -1687,6 +1710,10 @@ function streamFilterScan(jobId) {
   // Reassuring placeholder while YOLO loads its weights (~5–10 s) before
   // the first batch lands. Cleared on first real log line.
   out.textContent = '[scan] connecting to job ' + jobId + '\n[scan] loading YOLO weights — first progress line appears after the first batch (32 frames by default)…\n';
+  // Hide stale thumb from a previous run, start polling for the new one
+  const wrap = $('filter-scan-preview-wrap');
+  if (wrap) wrap.style.display = 'none';
+  _startFilterThumbPoll(jobId);
   let firstLog = true;
   filterScanEventSource.onmessage = (e) => {
     const m = JSON.parse(e.data);
@@ -1697,6 +1724,7 @@ function streamFilterScan(jobId) {
     } else if (m.type === 'end') {
       filterScanEventSource.close();
       filterScanEventSource = null;
+      _stopFilterThumbPoll();
       $('btn-index-continue').disabled = (m.status !== 'done');
       $('filter-index-status').textContent =
         m.status === 'done' ? 'Done' : `${m.status} (exit ${m.returncode})`;
@@ -1711,6 +1739,7 @@ function streamFilterScan(jobId) {
   filterScanEventSource.onerror = () => {
     if (filterScanEventSource) filterScanEventSource.close();
     filterScanEventSource = null;
+    _stopFilterThumbPoll();
   };
 }
 
