@@ -395,3 +395,46 @@ body.shell-v2 #page-dashboard > .dash-grid,
 body.shell-v2 #page-dashboard > .card { display: none; }
 body.shell-v2 #page-dashboard .home-v2-mount { display: block; }
 .home-v2-mount { display: none; }
+
+/* ─── Audit fixes: focus, cursor, motion ────────────────────────── */
+.shell-sb .sb-item { cursor: pointer; }
+.shell-sb .sb-item:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  background: var(--sb-hover-bg);
+  color: var(--sb-fg-active);
+}
+.home-tile-v2 { cursor: pointer; }
+.home-tile-v2:focus-visible,
+.live-dash .ld-cam-tile:focus-visible,
+.home-hero-v2 .hero-btn:focus-visible,
+.live-dash .ld-card .lk:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+.live-dash .ld-cam-tile { cursor: pointer; }
+.live-dash .ld-card h4 .lk { cursor: pointer; }
+.live-dash .ld-event { cursor: pointer; }
+.live-dash .ld-toolbar select,
+.live-dash .ld-toolbar select:focus-visible {
+  outline: none;
+}
+.live-dash .ld-toolbar select:focus-visible {
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 2px var(--color-brand-soft);
+}
+.sb-mtoggle:focus-visible {
+  outline: 2px solid var(--color-brand); outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .ld-cam-pill.live::before,
+  .ld-bigstream .ld-bigstream-bar .ld-cam-pill::before { animation: none; opacity: 1; }
+  .home-tile-v2:hover, .ld-cam-tile:hover { transform: none; }
+}
