@@ -2428,27 +2428,31 @@ def picker_taxonomy(job_id: str):
 
 
 class PickerStageReq(BaseModel):
-    model_path: str = "yolov8n.pt"     # for class-agnostic detect
-    clip_model: str = "ViT-L-14"       # CLIP variant
+    model_path: str = "yolov8n.pt"
+    clip_model: str = "ViT-L-14"
     n_clusters: int = 200
+    path_filter: list[str] | None = None  # restrict to Filter wizard survivors
 
 
 @app.post("/api/picker/{job_id}/stage1-phash")
-def picker_stage1(job_id: str):
+def picker_stage1(job_id: str, req: PickerStageReq | None = None):
     db_path = _scan_db_for_job(job_id)
-    return picker_core.ensure_phashes(db_path)
+    pf = req.path_filter if req else None
+    return picker_core.ensure_phashes(db_path, path_filter=pf)
 
 
 @app.post("/api/picker/{job_id}/stage2-clip")
 def picker_stage2(job_id: str, req: PickerStageReq):
     db_path = _scan_db_for_job(job_id)
-    return picker_core.ensure_clip_embeddings(db_path, model_name=req.clip_model)
+    return picker_core.ensure_clip_embeddings(
+        db_path, model_name=req.clip_model, path_filter=req.path_filter)
 
 
 @app.post("/api/picker/{job_id}/stage3-classagnostic")
 def picker_stage3(job_id: str, req: PickerStageReq):
     db_path = _scan_db_for_job(job_id)
-    return picker_core.detect_classagnostic(db_path, model_path=req.model_path)
+    return picker_core.detect_classagnostic(
+        db_path, model_path=req.model_path, path_filter=req.path_filter)
 
 
 @app.post("/api/picker/{job_id}/stage4-need")
@@ -2456,8 +2460,9 @@ def picker_stage4(job_id: str, req: PickerStageReq):
     db_path = _scan_db_for_job(job_id)
     taxonomy_core.ensure_taxonomy(db_path)
     tax = taxonomy_core.get_taxonomy(db_path)
-    return picker_core.score_class_need(db_path, taxonomy=tax,
-                                         model_name=req.clip_model)
+    return picker_core.score_class_need(
+        db_path, taxonomy=tax, model_name=req.clip_model,
+        path_filter=req.path_filter)
 
 
 @app.post("/api/picker/{job_id}/stage4-cluster")
@@ -2473,6 +2478,7 @@ class PickerRunReq(BaseModel):
     need_threshold: float = 0.18
     uncertainty_lo: float = 0.20
     uncertainty_hi: float = 0.60
+    path_filter: list[str] | None = None
 
 
 @app.post("/api/picker/{job_id}/run")
@@ -2490,6 +2496,7 @@ def picker_run(job_id: str, req: PickerRunReq):
         need_threshold=req.need_threshold,
         uncertainty_lo=req.uncertainty_lo,
         uncertainty_hi=req.uncertainty_hi,
+        path_filter=req.path_filter,
     )
     picker_core.store_pick_decisions(db_path, run_id, picks)
     summary = picker_core.get_run_summary(db_path, run_id)

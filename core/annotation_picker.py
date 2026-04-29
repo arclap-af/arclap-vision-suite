@@ -78,15 +78,26 @@ def _hamming(a: str, b: str) -> int:
     return bin(int(a, 16) ^ int(b, 16)).count("1")
 
 
-def ensure_phashes(scan_db_path: str | Path) -> dict:
+def ensure_phashes(scan_db_path: str | Path,
+                   path_filter: list[str] | None = None) -> dict:
     """Compute pHash for any image in scan that doesn't already have one.
+    If path_filter is given, only compute for paths in that list.
     Idempotent: re-runnable to fill in new images after a re-scan."""
     import cv2
     conn = _open(scan_db_path)
-    cur = conn.execute(
-        "SELECT path FROM images "
-        "WHERE path NOT IN (SELECT path FROM image_phash)"
-    )
+    if path_filter:
+        ph = ",".join("?" * len(path_filter))
+        cur = conn.execute(
+            f"SELECT path FROM images "
+            f"WHERE path IN ({ph}) "
+            f"AND path NOT IN (SELECT path FROM image_phash)",
+            path_filter,
+        )
+    else:
+        cur = conn.execute(
+            "SELECT path FROM images "
+            "WHERE path NOT IN (SELECT path FROM image_phash)"
+        )
     todo = [r[0] for r in cur.fetchall()]
     n_done = 0
     for p in todo:
@@ -109,15 +120,26 @@ def ensure_phashes(scan_db_path: str | Path) -> dict:
     return {"computed": n_done, "skipped": len(todo) - n_done}
 
 
-def dedup(scan_db_path: str | Path, *, hamming_threshold: int = 5) -> list[str]:
+def dedup(scan_db_path: str | Path, *,
+          hamming_threshold: int = 5,
+          path_filter: list[str] | None = None) -> list[str]:
     """Return a list of representative image paths after near-duplicate
     removal. Two images with hash distance <= threshold are considered the
-    same scene; one (the highest-quality) is kept per cluster."""
+    same scene; one (the highest-quality) is kept per cluster.
+    If path_filter is given, only consider paths in that list."""
     conn = _open(scan_db_path)
-    rows = conn.execute(
-        "SELECT i.path, p.phash, COALESCE(i.quality, 0.0) "
-        "FROM images i JOIN image_phash p ON i.path = p.path"
-    ).fetchall()
+    if path_filter:
+        ph = ",".join("?" * len(path_filter))
+        rows = conn.execute(
+            f"SELECT i.path, p.phash, COALESCE(i.quality, 0.0) "
+            f"FROM images i JOIN image_phash p ON i.path = p.path "
+            f"WHERE i.path IN ({ph})", path_filter
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT i.path, p.phash, COALESCE(i.quality, 0.0) "
+            "FROM images i JOIN image_phash p ON i.path = p.path"
+        ).fetchall()
     conn.close()
     if not rows:
         return []
@@ -172,7 +194,8 @@ def ensure_clip_embeddings(scan_db_path: str | Path,
                            *, model_name: str = "ViT-B-32",
                            pretrained: str = "openai",
                            device: str | None = None,
-                           batch_size: int = 32) -> dict:
+                           batch_size: int = 32,
+                           path_filter: list[str] | None = None) -> dict:
     """Compute CLIP ViT embedding for each image without one. Caches in
     image_clip table as float32 BLOBs. Roughly 30 ms / image on RTX 3090."""
     import cv2
@@ -184,10 +207,18 @@ def ensure_clip_embeddings(scan_db_path: str | Path,
         return {"error": f"open-clip-torch / torch not installed: {e}"}
 
     conn = _open(scan_db_path)
-    cur = conn.execute(
-        "SELECT path FROM images "
-        "WHERE path NOT IN (SELECT path FROM image_clip)"
-    )
+    if path_filter:
+        ph = ",".join("?" * len(path_filter))
+        cur = conn.execute(
+            f"SELECT path FROM images "
+            f"WHERE path IN ({ph}) "
+            f"AND path NOT IN (SELECT path FROM image_clip)", path_filter,
+        )
+    else:
+        cur = conn.execute(
+            "SELECT path FROM images "
+            "WHERE path NOT IN (SELECT path FROM image_clip)"
+        )
     todo = [r[0] for r in cur.fetchall()]
     if not todo:
         conn.close()
@@ -605,10 +636,12 @@ def _open_v2(scan_db_path):
 # ─── Class-agnostic objectness pass (Filter C extension) ─────────────
 def detect_classagnostic(scan_db_path, *, model_path: str = "yolov8n.pt",
                          conf: float = 0.05, max_per_image: int = 30,
-                         device: str | None = None) -> dict:
+                         device: str | None = None,
+                         path_filter: list[str] | None = None) -> dict:
     """Run YOLO at very-low confidence with class-agnostic NMS to find
     'model saw something but isn't sure what' candidates. Caches one row
-    per box. Idempotent — skips images with existing rows."""
+    per box. Idempotent — skips images with existing rows.
+    If path_filter is given, only run on paths in that list."""
     try:
         from ultralytics import YOLO
         import torch
@@ -619,10 +652,19 @@ def detect_classagnostic(scan_db_path, *, model_path: str = "yolov8n.pt",
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     conn = _open_v2(scan_db_path)
-    todo = [r[0] for r in conn.execute(
-        "SELECT path FROM images "
-        "WHERE path NOT IN (SELECT DISTINCT path FROM image_classagnostic)"
-    ).fetchall()]
+    if path_filter:
+        ph = ",".join("?" * len(path_filter))
+        todo = [r[0] for r in conn.execute(
+            f"SELECT path FROM images "
+            f"WHERE path IN ({ph}) "
+            f"AND path NOT IN (SELECT DISTINCT path FROM image_classagnostic)",
+            path_filter,
+        ).fetchall()]
+    else:
+        todo = [r[0] for r in conn.execute(
+            "SELECT path FROM images "
+            "WHERE path NOT IN (SELECT DISTINCT path FROM image_classagnostic)"
+        ).fetchall()]
     if not todo:
         conn.close()
         return {"computed": 0, "device": device, "note": "all cached"}
@@ -668,9 +710,11 @@ def score_class_need(scan_db_path,
                      *, taxonomy: list[dict],
                      model_name: str = "ViT-L-14",
                      pretrained: str = "openai",
-                     device: str | None = None) -> dict:
+                     device: str | None = None,
+                     path_filter: list[str] | None = None) -> dict:
     """For each (image, class) pair, compute the max cosine similarity
-    between the image's CLIP embedding and the class's text prompts."""
+    between the image's CLIP embedding and the class's text prompts.
+    If path_filter is given, only score paths in that list."""
     try:
         import open_clip
         import torch
@@ -679,9 +723,16 @@ def score_class_need(scan_db_path,
         return {"error": f"open-clip-torch/torch/numpy missing: {e}"}
 
     conn = _open_v2(scan_db_path)
-    rows = conn.execute(
-        "SELECT path, embedding, dim FROM image_clip"
-    ).fetchall()
+    if path_filter:
+        ph = ",".join("?" * len(path_filter))
+        rows = conn.execute(
+            f"SELECT path, embedding, dim FROM image_clip WHERE path IN ({ph})",
+            path_filter,
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT path, embedding, dim FROM image_clip"
+        ).fetchall()
     if not rows:
         conn.close()
         return {"error": "no image_clip rows — run ensure_clip_embeddings first"}
@@ -731,8 +782,11 @@ def pick_per_class(scan_db_path, *,
                    weights: dict | None = None,
                    need_threshold: float = 0.18,
                    uncertainty_lo: float = 0.20,
-                   uncertainty_hi: float = 0.60) -> list[dict]:
-    """Stage 5 of the chart: per-class quota with leftover redistribution."""
+                   uncertainty_hi: float = 0.60,
+                   path_filter: list[str] | None = None) -> list[dict]:
+    """Stage 5 of the chart: per-class quota with leftover redistribution.
+    If path_filter is given, only consider paths in that filtered subset
+    (the survivors from the Filter wizard's What-to-keep rules)."""
     weights = weights or {}
     w_need = float(weights.get("need", 0.5))
     w_div  = float(weights.get("diversity", 0.3))
@@ -765,6 +819,15 @@ def pick_per_class(scan_db_path, *,
     out_rows: list[dict] = []
     leftover_budget = 0
 
+    # Pre-compute path filter SQL clause once
+    if path_filter:
+        ph = ",".join("?" * len(path_filter))
+        path_sql = f" AND n.path IN ({ph})"
+        path_params = list(path_filter)
+    else:
+        path_sql = ""
+        path_params = []
+
     def pick_for_class(cls_id: int, target: int) -> list[dict]:
         if target <= 0: return []
         candidates = conn.execute(
@@ -772,8 +835,9 @@ def pick_per_class(scan_db_path, *,
             "FROM image_class_need n "
             "LEFT JOIN detections d ON n.path = d.path AND d.class_id = ? "
             "WHERE n.class_id = ? AND n.score > ? "
+            + path_sql + " "
             "ORDER BY n.score DESC LIMIT 2000",
-            (cls_id, cls_id, need_threshold),
+            (cls_id, cls_id, need_threshold, *path_params),
         ).fetchall()
         if not candidates: return []
         scored = []

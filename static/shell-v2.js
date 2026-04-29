@@ -561,16 +561,37 @@
   }
 
   // ── Pipeline (Annotation v2) ───────────────────────────────────────
-  document.addEventListener('click', (e) => {
-    const t = e.target.closest('.swiss-subtab');
-    if (t && t.dataset.stab === 'pipeline') setTimeout(loadPipelinePage, 60);
-  });
+  // Now lives as Step 6 of the Filter wizard. Reachable via
+  // window.loadPipelinePage(scanId) which the wizard calls when the user
+  // clicks "Continue → Smart annotation pick" on step 5.
   let _ppActiveScan = null;
   let _ppActiveRun = null;
-  let _ppPicks = [];
-  let _ppFocus = -1;
 
-  async function loadPipelinePage() {
+  // Pull the filter survivor list (after What-to-keep rules + sample check)
+  // so the picker only operates on the filtered subset, not the full scan.
+  async function _ppGetSurvivors(jobId) {
+    if (!jobId) return null;
+    const useSurvivors = ($('pp-use-survivors') || {}).checked;
+    if (useSurvivors === false) return null;
+    try {
+      // Existing endpoint: /api/filter/{job_id}/match-preview returns the
+      // current rule's matching paths. If the user hasn't built rules yet,
+      // it returns all images, which is also fine.
+      const res = await fetch(`/api/filter/${jobId}/match-preview`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ limit: 100000 })
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const paths = (data.paths || data.matches || data.images || []).map(
+        x => typeof x === 'string' ? x : (x.path || x)
+      );
+      return paths.length ? paths : null;
+    } catch(e) { return null; }
+  }
+
+  window.loadPipelinePage = async function loadPipelinePage(presetScan) {
     const sel = $('pp-scan-pick');
     if (!sel) return;
     try {
@@ -578,9 +599,14 @@
       const list = scans.scans || scans || [];
       sel.innerHTML = '<option value="">— pick a scan —</option>' +
         list.map(s => `<option value="${s.job_id || s.id}">${s.label || s.scan_id || s.job_id}</option>`).join('');
-      sel.onchange = () => { _ppActiveScan = sel.value || null; populateClassPicker(); };
+      sel.onchange = () => { _ppActiveScan = sel.value || null; populateClassPicker(); _ppLoadSchedule(); };
+      // If wizard handed us a scan id, auto-select it
+      if (presetScan) {
+        sel.value = presetScan;
+        _ppActiveScan = presetScan;
+      }
     } catch(e){}
-    if ($('pp-refresh-scans')) $('pp-refresh-scans').onclick = loadPipelinePage;
+    if ($('pp-refresh-scans')) $('pp-refresh-scans').onclick = () => loadPipelinePage(_ppActiveScan);
 
     const stage = (n, ep) => {
       const btn = $(`pp-s${n}-run`);
@@ -591,10 +617,12 @@
         r.textContent = `running stage ${n}…`;
         btn.disabled = true;
         try {
+          const survivors = await _ppGetSurvivors(_ppActiveScan);
           const body = {
             model_path: $('pp-cag-model').value || 'yolov8n.pt',
             clip_model: $('pp-clip').value || 'ViT-L-14',
             n_clusters: 200,
+            path_filter: survivors,
           };
           const res = await fetch(`/api/picker/${_ppActiveScan}/${ep}`, {
             method: 'POST', headers: {'Content-Type':'application/json'},
@@ -602,7 +630,8 @@
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
-          r.textContent = JSON.stringify(data);
+          const survSuffix = survivors ? ` · restricted to ${survivors.length} survivors` : ' · all images';
+          r.textContent = JSON.stringify(data) + survSuffix;
         } catch(err) { r.textContent = 'ERROR: ' + err.message; }
         finally { btn.disabled = false; }
       };
@@ -619,7 +648,8 @@
         btn.disabled = true;
         r.textContent = 'computing class-need scores (40 classes × N images)…';
         try {
-          const body = { model_path: $('pp-cag-model').value, clip_model: $('pp-clip').value, n_clusters: 200 };
+          const survivors = await _ppGetSurvivors(_ppActiveScan);
+          const body = { model_path: $('pp-cag-model').value, clip_model: $('pp-clip').value, n_clusters: 200, path_filter: survivors };
           const a = await (await fetch(`/api/picker/${_ppActiveScan}/stage4-need`, {
             method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
           })).json();
@@ -627,7 +657,8 @@
           const b = await (await fetch(`/api/picker/${_ppActiveScan}/stage4-cluster`, {
             method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
           })).json();
-          r.textContent = 'need: ' + JSON.stringify(a) + ' · cluster: ' + JSON.stringify(b);
+          const survSuffix = survivors ? ` · restricted to ${survivors.length} survivors` : ' · all images';
+          r.textContent = 'need: ' + JSON.stringify(a) + ' · cluster: ' + JSON.stringify(b) + survSuffix;
         } catch(e){ r.textContent = 'ERROR: ' + e; }
         finally { btn.disabled = false; }
       };
@@ -642,6 +673,7 @@
         btn.disabled = true;
         r.textContent = 'running per-class quota picker…';
         try {
+          const survivors = await _ppGetSurvivors(_ppActiveScan);
           const body = {
             per_class_target: parseInt($('pp-target').value) || 250,
             weights: {
@@ -652,6 +684,7 @@
             },
             need_threshold: parseFloat($('pp-need-thr').value) || 0.18,
             uncertainty_lo: 0.20, uncertainty_hi: 0.60,
+            path_filter: survivors,
           };
           const res = await fetch(`/api/picker/${_ppActiveScan}/run`, {
             method: 'POST', headers: {'Content-Type':'application/json'},

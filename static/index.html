@@ -1007,7 +1007,8 @@
       <div class="wiz-step" data-step="3"><span class="wiz-num">3</span><span class="wiz-label">Results</span></div>
       <div class="wiz-step" data-step="4"><span class="wiz-num">4</span><span class="wiz-label">What to keep</span></div>
       <div class="wiz-step" data-step="5"><span class="wiz-num">5</span><span class="wiz-label">Sample check</span></div>
-      <div class="wiz-step" data-step="6"><span class="wiz-num">6</span><span class="wiz-label">Save</span></div>
+      <div class="wiz-step" data-step="6"><span class="wiz-num">6</span><span class="wiz-label">Smart pick</span></div>
+      <div class="wiz-step" data-step="7"><span class="wiz-num">7</span><span class="wiz-label">Save</span></div>
     </nav>
   </section>
 
@@ -1169,47 +1170,6 @@
 
     <div class="actions" style="margin-top:18px">
       <button class="btn btn-primary btn-lg" id="btn-analyse-continue">Continue → Build filter rules</button>
-      <button class="btn btn-secondary btn-lg" id="btn-open-picker">Smart annotation pick →</button>
-    </div>
-
-    <!-- Smart Annotation Picker — collapses below Analyse -->
-    <div class="card hidden" id="annotation-picker-panel" style="margin-top:24px">
-      <div class="card-header">
-        <h3>Smart annotation picker</h3>
-        <p>Pick the best subset of frames to send to CVAT. Combines four signals: visual diversity (CLIP), model uncertainty, image quality, class balance. Output: a CVAT-ready zip with pre-labels so the annotator only verifies/corrects.</p>
-      </div>
-      <div style="padding:14px;display:flex;flex-direction:column;gap:14px">
-
-        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px">
-          <label class="text-row"><span>How many frames to pick</span>
-            <input id="pick-n" type="number" value="500" min="10" max="5000"/></label>
-          <label class="text-row"><span>Dedup hash distance (lower = stricter)</span>
-            <input id="pick-dedup" type="number" value="5" min="0" max="32"/></label>
-        </div>
-
-        <div>
-          <h4 style="margin:8px 0">Weights (0–100)</h4>
-          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
-            <label class="text-row"><span>Diversity (CLIP)</span><input id="pick-w-div" type="number" value="30" min="0" max="100"/></label>
-            <label class="text-row"><span>Uncertainty</span><input id="pick-w-unc" type="number" value="40" min="0" max="100"/></label>
-            <label class="text-row"><span>Quality</span><input id="pick-w-qual" type="number" value="20" min="0" max="100"/></label>
-            <label class="text-row"><span>Class balance</span><input id="pick-w-bal" type="number" value="10" min="0" max="100"/></label>
-          </div>
-        </div>
-
-        <label class="text-row" style="display:flex;align-items:center;gap:8px">
-          <input id="pick-use-clip" type="checkbox" checked/>
-          <span>Use CLIP embeddings for diversity (≈ 30 ms/image; one-time cost cached in DB)</span>
-        </label>
-
-        <div class="actions" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button class="btn btn-primary" id="btn-pick-run">Pick top frames</button>
-          <button class="btn btn-secondary" id="btn-pick-export" disabled>Export to CVAT zip</button>
-          <span id="pick-status" class="muted small"></span>
-        </div>
-
-        <div id="pick-results" style="max-height:520px;overflow-y:auto"></div>
-      </div>
     </div>
   </section>
 
@@ -1458,14 +1418,150 @@
     </div>
     <div id="preview-grid" class="thumb-grid"></div>
     <div class="actions" style="margin-top:18px">
-      <button class="btn btn-primary btn-lg" id="btn-preview-continue">Looks good → Export</button>
+      <button class="btn btn-primary btn-lg" id="btn-preview-continue">Continue → Smart annotation pick</button>
+      <button class="btn btn-ghost btn-lg" id="btn-preview-skip-to-save">Skip to Save</button>
     </div>
   </section>
 
-  <!-- ============= STEP 6: Save ============= -->
+  <!-- ============= STEP 6: Smart Annotation Picker (CSI-Annotation-v3) ============= -->
   <section class="card wiz-pane hidden" data-pane="6">
     <div class="card-header">
-      <h2><span class="step-badge">6</span> Save the filtered set</h2>
+      <h2><span class="step-badge">6</span> Smart annotation pick</h2>
+      <p>Pick the best subset of frames from your filtered survivors for human annotation. Six stages: pHash dedup → CLIP embed → class-agnostic detect → class-need + clustering → per-class quota → curator. Output: CVAT-ready zip + benchmark holdout zip + manifest.json.</p>
+    </div>
+
+    <div class="step-explainer">
+      <strong>What's happening here?</strong>
+      <p>The picker now operates on the filtered set from steps 4-5 (workers near scaffolding 06–18, etc.). Caches are shared with previous runs — re-clicking a stage processes only new images. CLIP scores every survivor against all 40 classes from the CVAT taxonomy (EN + DE prompts) so you find candidates for the 29 classes that aren't trained yet. Curator pass auto-blurs faces before any image leaves the box.</p>
+    </div>
+
+    <div class="pp-wrap" style="display:flex;flex-direction:column;gap:18px">
+
+      <div class="pp-header">
+        <label>Filter scan (auto-set from steps 1–2)</label>
+        <select id="pp-scan-pick" class="input"><option value="">— pick a scan —</option></select>
+        <label style="margin-left:14px">CLIP model</label>
+        <select id="pp-clip" class="input" style="width:120px">
+          <option value="ViT-B-32">ViT-B-32 (fast)</option>
+          <option value="ViT-L-14" selected>ViT-L-14 (best)</option>
+        </select>
+        <label style="margin-left:14px">Class-agnostic model</label>
+        <input id="pp-cag-model" class="input mono" value="yolov8n.pt" style="width:160px"/>
+        <span class="spacer"></span>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--color-text-muted)">
+          <input id="pp-use-survivors" type="checkbox" checked/> Restrict to filtered survivors
+        </label>
+        <button class="btn btn-secondary btn-small" id="pp-refresh-scans">Refresh scans</button>
+      </div>
+
+      <div class="pp-stage" data-stage="1">
+        <div class="pp-stage-h">
+          <span class="pp-num">1</span>
+          <div><h4 style="margin:0">pHash dedup</h4>
+          <p class="muted small" style="margin:2px 0 0">Drop near-identical timelapse frames (Hamming threshold 5).</p></div>
+          <button class="btn btn-secondary btn-small" id="pp-s1-run">Run stage 1</button>
+        </div>
+        <div class="pp-stage-result muted small" id="pp-s1-result">—</div>
+      </div>
+
+      <div class="pp-stage" data-stage="2">
+        <div class="pp-stage-h">
+          <span class="pp-num">2</span>
+          <div><h4 style="margin:0">CLIP embed</h4>
+          <p class="muted small" style="margin:2px 0 0">One vector per image, cached. ViT-L-14 ≈ 30 ms/image on RTX 3090.</p></div>
+          <button class="btn btn-secondary btn-small" id="pp-s2-run">Run stage 2</button>
+        </div>
+        <div class="pp-stage-result muted small" id="pp-s2-result">—</div>
+      </div>
+
+      <div class="pp-stage" data-stage="3">
+        <div class="pp-stage-h">
+          <span class="pp-num">3</span>
+          <div><h4 style="margin:0">Pre-detect (class-agnostic)</h4>
+          <p class="muted small" style="margin:2px 0 0">YOLO at conf 0.05 with class-agnostic NMS — finds "model saw something" candidates.</p></div>
+          <button class="btn btn-secondary btn-small" id="pp-s3-run">Run stage 3</button>
+        </div>
+        <div class="pp-stage-result muted small" id="pp-s3-result">—</div>
+      </div>
+
+      <div class="pp-stage" data-stage="4">
+        <div class="pp-stage-h">
+          <span class="pp-num">4</span>
+          <div><h4 style="margin:0">Class-need + clustering</h4>
+          <p class="muted small" style="margin:2px 0 0">CLIP text-image score for every (image, class) pair across all 40 classes; 200-cluster diversity map with auto-named phases.</p></div>
+          <button class="btn btn-secondary btn-small" id="pp-s4-run">Run stage 4</button>
+        </div>
+        <div class="pp-stage-result muted small" id="pp-s4-result">—</div>
+      </div>
+
+      <div class="pp-stage" data-stage="5">
+        <div class="pp-stage-h">
+          <span class="pp-num">5</span>
+          <div><h4 style="margin:0">Combined rank · per-class quota</h4>
+          <p class="muted small" style="margin:2px 0 0">Picks top-N per class with leftover redistribution. Default 250/class × 40 = 10 000.</p></div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:8px">
+          <label class="text-row"><span>Per-class target</span><input id="pp-target" type="number" value="250" min="10" max="2000"/></label>
+          <label class="text-row"><span>w · need</span><input id="pp-w-need" type="number" value="50" min="0" max="100"/></label>
+          <label class="text-row"><span>w · diversity</span><input id="pp-w-div" type="number" value="30" min="0" max="100"/></label>
+          <label class="text-row"><span>w · difficulty</span><input id="pp-w-diff" type="number" value="20" min="0" max="100"/></label>
+          <label class="text-row"><span>need threshold</span><input id="pp-need-thr" type="number" value="0.18" min="0" max="1" step="0.01"/></label>
+        </div>
+        <div style="margin-top:10px;display:flex;gap:10px;align-items:center">
+          <button class="btn btn-primary btn-small" id="pp-s5-run">Run picker</button>
+          <span id="pp-s5-result" class="muted small">—</span>
+        </div>
+      </div>
+
+      <div class="pp-stage" data-stage="6">
+        <div class="pp-stage-h">
+          <span class="pp-num">6</span>
+          <div><h4 style="margin:0">Curator</h4>
+          <p class="muted small" style="margin:2px 0 0">Approve · reject · move-to-holdout per pick. Keyboard: <code>A</code> approve · <code>R</code> reject · <code>H</code> holdout · <code>P</code> pending · <code>J/K</code> next/prev.</p></div>
+          <span id="pp-curator-counts" class="muted small">—</span>
+        </div>
+        <div class="pp-curator-toolbar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+          <select id="pp-curator-class" class="input" style="min-width:200px"><option value="">All classes</option></select>
+          <select id="pp-curator-status" class="input" style="width:140px">
+            <option value="pending" selected>Pending</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+            <option value="holdout">Holdout</option>
+          </select>
+          <button class="btn btn-secondary btn-small" id="pp-curator-load">Load picks</button>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px">
+            <input id="pp-blur-faces" type="checkbox" checked/> Blur faces in export
+          </label>
+          <span id="pp-blur-backend" class="muted small"></span>
+          <span class="spacer"></span>
+          <button class="btn btn-primary btn-small" id="pp-export">Export approved + holdout zips</button>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px">
+            <input id="pp-sched-enabled" type="checkbox"/> Auto-refresh every
+          </label>
+          <input id="pp-sched-days" type="number" value="7" min="1" max="30" style="width:60px;padding:4px 6px;border:1px solid var(--color-border);border-radius:5px"/>
+          <span class="muted small">days · re-runs Stage 5 with current weights</span>
+          <button class="btn btn-secondary btn-small" id="pp-sched-save">Save schedule</button>
+          <span id="pp-sched-status" class="muted small"></span>
+        </div>
+        <div id="pp-curator-grid" class="pp-grid" style="margin-top:10px">
+          <p class="muted small" style="padding:14px;text-align:center">Run the picker first, then load picks here.</p>
+        </div>
+        <div id="pp-export-result" class="muted small" style="margin-top:10px"></div>
+      </div>
+
+    </div>
+
+    <div class="actions" style="margin-top:18px">
+      <button class="btn btn-secondary btn-lg" id="btn-pick-continue">Continue → Save filtered set</button>
+    </div>
+  </section>
+
+  <!-- ============= STEP 7: Save ============= -->
+  <section class="card wiz-pane hidden" data-pane="7">
+    <div class="card-header">
+      <h2><span class="step-badge">7</span> Save the filtered set</h2>
       <p id="save-summary" class="muted small">Loading match count…</p>
     </div>
 
@@ -1769,7 +1865,6 @@
     <button class="swiss-subtab" data-stab="zones">Zones</button>
     <button class="swiss-subtab" data-stab="alerts">Alerts</button>
     <button class="swiss-subtab" data-stab="registry">Registry</button>
-    <button class="swiss-subtab" data-stab="pipeline">Pipeline</button>
     <button class="swiss-subtab" data-stab="help">Help</button>
     <button class="swiss-subtab" data-stab="activity">Activity</button>
   </nav>
@@ -2545,147 +2640,7 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
     </div>
   </section>
 
-  <!-- ===== Pipeline sub-tab — full annotation pipeline (40-class CSI-Annotation-v3) ===== -->
-  <section class="card swiss-stab-pane hidden" data-stab-pane="pipeline">
-    <div class="card-header">
-      <h3>Annotation Pipeline · CSI-Annotation-v3</h3>
-      <p>One single flow: pick a Filter scan → run six stages → curator pass → export labeling batch + benchmark holdout. Designed for 40 classes (11 trained, 29 still missing). Heavy compute caches once; subsequent picks are instant.</p>
-    </div>
-
-    <div class="pp-wrap" style="padding:14px;display:flex;flex-direction:column;gap:18px">
-
-      <!-- Header: scan picker + active model -->
-      <div class="pp-header">
-        <label>Filter scan</label>
-        <select id="pp-scan-pick" class="input"><option value="">— pick a scan —</option></select>
-        <label style="margin-left:14px">CLIP model</label>
-        <select id="pp-clip" class="input" style="width:120px">
-          <option value="ViT-B-32">ViT-B-32 (fast)</option>
-          <option value="ViT-L-14" selected>ViT-L-14 (best)</option>
-        </select>
-        <label style="margin-left:14px">Class-agnostic model</label>
-        <input id="pp-cag-model" class="input mono" value="yolov8n.pt" style="width:160px"/>
-        <span class="spacer"></span>
-        <button class="btn btn-secondary btn-small" id="pp-refresh-scans">Refresh scans</button>
-      </div>
-
-      <!-- Stage 1: pHash dedup -->
-      <div class="pp-stage" data-stage="1">
-        <div class="pp-stage-h">
-          <span class="pp-num">1</span>
-          <div>
-            <h4 style="margin:0">pHash dedup</h4>
-            <p class="muted small" style="margin:2px 0 0">Drop near-identical timelapse frames (Hamming threshold 5).</p>
-          </div>
-          <button class="btn btn-secondary btn-small" id="pp-s1-run">Run stage 1</button>
-        </div>
-        <div class="pp-stage-result muted small" id="pp-s1-result">—</div>
-      </div>
-
-      <!-- Stage 2: CLIP embed -->
-      <div class="pp-stage" data-stage="2">
-        <div class="pp-stage-h">
-          <span class="pp-num">2</span>
-          <div>
-            <h4 style="margin:0">CLIP embed</h4>
-            <p class="muted small" style="margin:2px 0 0">One vector per image, cached. ViT-L-14 ≈ 30 ms/image on RTX 3090.</p>
-          </div>
-          <button class="btn btn-secondary btn-small" id="pp-s2-run">Run stage 2</button>
-        </div>
-        <div class="pp-stage-result muted small" id="pp-s2-result">—</div>
-      </div>
-
-      <!-- Stage 3: pre-detect + class-agnostic -->
-      <div class="pp-stage" data-stage="3">
-        <div class="pp-stage-h">
-          <span class="pp-num">3</span>
-          <div>
-            <h4 style="margin:0">Pre-detect (class-agnostic)</h4>
-            <p class="muted small" style="margin:2px 0 0">YOLO at conf 0.05 with class-agnostic NMS — finds "model saw something" candidates.</p>
-          </div>
-          <button class="btn btn-secondary btn-small" id="pp-s3-run">Run stage 3</button>
-        </div>
-        <div class="pp-stage-result muted small" id="pp-s3-result">—</div>
-      </div>
-
-      <!-- Stage 4: filters (need + cluster) -->
-      <div class="pp-stage" data-stage="4">
-        <div class="pp-stage-h">
-          <span class="pp-num">4</span>
-          <div>
-            <h4 style="margin:0">Class-need + clustering</h4>
-            <p class="muted small" style="margin:2px 0 0">CLIP text-image score for every (image, class) pair across all 40 classes; 200-cluster diversity map with auto-named phases.</p>
-          </div>
-          <button class="btn btn-secondary btn-small" id="pp-s4-run">Run stage 4</button>
-        </div>
-        <div class="pp-stage-result muted small" id="pp-s4-result">—</div>
-      </div>
-
-      <!-- Stage 5: combined rank -->
-      <div class="pp-stage" data-stage="5">
-        <div class="pp-stage-h">
-          <span class="pp-num">5</span>
-          <div>
-            <h4 style="margin:0">Combined rank · per-class quota</h4>
-            <p class="muted small" style="margin:2px 0 0">Picks top-N per class with leftover redistribution. Default 250/class × 40 = 10 000.</p>
-          </div>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:8px">
-          <label class="text-row"><span>Per-class target</span><input id="pp-target" type="number" value="250" min="10" max="2000"/></label>
-          <label class="text-row"><span>w · need</span><input id="pp-w-need" type="number" value="50" min="0" max="100"/></label>
-          <label class="text-row"><span>w · diversity</span><input id="pp-w-div" type="number" value="30" min="0" max="100"/></label>
-          <label class="text-row"><span>w · difficulty</span><input id="pp-w-diff" type="number" value="20" min="0" max="100"/></label>
-          <label class="text-row"><span>need threshold</span><input id="pp-need-thr" type="number" value="0.18" min="0" max="1" step="0.01"/></label>
-        </div>
-        <div style="margin-top:10px;display:flex;gap:10px;align-items:center">
-          <button class="btn btn-primary btn-small" id="pp-s5-run">Run picker</button>
-          <span id="pp-s5-result" class="muted small">—</span>
-        </div>
-      </div>
-
-      <!-- Stage 6: curator -->
-      <div class="pp-stage" data-stage="6">
-        <div class="pp-stage-h">
-          <span class="pp-num">6</span>
-          <div>
-            <h4 style="margin:0">Curator</h4>
-            <p class="muted small" style="margin:2px 0 0">Approve · reject · move-to-holdout · blur-faces per pick. Keyboard: <code>A</code> approve · <code>R</code> reject · <code>H</code> holdout · <code>B</code> blur · <code>J/K</code> next/prev.</p>
-          </div>
-          <span id="pp-curator-counts" class="muted small">—</span>
-        </div>
-        <div class="pp-curator-toolbar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
-          <select id="pp-curator-class" class="input" style="min-width:200px"><option value="">All classes</option></select>
-          <select id="pp-curator-status" class="input" style="width:140px">
-            <option value="pending" selected>Pending</option>
-            <option value="approved">Approved</option>
-            <option value="rejected">Rejected</option>
-            <option value="holdout">Holdout</option>
-          </select>
-          <button class="btn btn-secondary btn-small" id="pp-curator-load">Load picks</button>
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px">
-            <input id="pp-blur-faces" type="checkbox" checked/> Blur faces in export
-          </label>
-          <span id="pp-blur-backend" class="muted small"></span>
-          <span class="spacer"></span>
-          <button class="btn btn-primary btn-small" id="pp-export">Export approved + holdout zips</button>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px">
-            <input id="pp-sched-enabled" type="checkbox"/> Auto-refresh every
-          </label>
-          <input id="pp-sched-days" type="number" value="7" min="1" max="30" style="width:60px;padding:4px 6px;border:1px solid var(--color-border);border-radius:5px"/>
-          <span class="muted small">days · re-runs Stage 5 with current weights</span>
-          <button class="btn btn-secondary btn-small" id="pp-sched-save">Save schedule</button>
-          <span id="pp-sched-status" class="muted small"></span>
-        </div>
-        <div id="pp-curator-grid" class="pp-grid" style="margin-top:10px">
-          <p class="muted small" style="padding:14px;text-align:center">Run the picker first, then load picks here.</p>
-        </div>
-        <div id="pp-export-result" class="muted small" style="margin-top:10px"></div>
-      </div>
-
-    </div>
-  </section>
+  <!-- (Pipeline section moved into Filter wizard as Step 6) -->
 
   <section class="card swiss-stab-pane hidden" data-stab-pane="help">
     <div class="card-header"><h3>📚 Arclap CSI · Help</h3></div>

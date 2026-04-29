@@ -1736,111 +1736,26 @@ if ($('btn-analyse-continue')) {
   });
 }
 
-// ─── Smart Annotation Picker ─────────────────────────────────────────
-let _pickerLastResults = [];
-if ($('btn-open-picker')) {
-  $('btn-open-picker').addEventListener('click', () => {
-    const panel = $('annotation-picker-panel');
-    if (panel) panel.classList.toggle('hidden');
-  });
-}
-if ($('btn-pick-run')) {
-  $('btn-pick-run').addEventListener('click', async () => {
-    if (!activeFilterScanId) {
-      toast('Run a scan first (steps 1–2) so the picker has data to work with.', 'error');
-      return;
-    }
-    const status = $('pick-status');
-    const btn = $('btn-pick-run');
-    btn.disabled = true;
-    status.textContent = 'computing pHashes + clustering (can take a few minutes for large scans)…';
-    const body = {
-      n: parseInt($('pick-n').value) || 500,
-      dedup_threshold: parseInt($('pick-dedup').value) || 5,
-      use_clip: $('pick-use-clip').checked,
-      compute_phashes: true,
-      compute_clip: $('pick-use-clip').checked,
-      weights: {
-        diversity:   (parseFloat($('pick-w-div').value)  || 0) / 100,
-        uncertainty: (parseFloat($('pick-w-unc').value)  || 0) / 100,
-        quality:     (parseFloat($('pick-w-qual').value) || 0) / 100,
-        balance:     (parseFloat($('pick-w-bal').value)  || 0) / 100,
-      },
-    };
-    try {
-      const res = await fetch(`/api/filter/${activeFilterScanId}/annotation-pick`, {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(body),
-      });
-      const r = await res.json();
-      if (!res.ok) throw new Error(r.detail || 'pick failed');
-      _pickerLastResults = r.picks || [];
-      status.textContent = `picked ${r.n_picked} frames` +
-        (r.phash ? ` · pHash: ${r.phash.computed} new` : '') +
-        (r.clip ? ` · CLIP: ${r.clip.computed || 0} new on ${r.clip.device || '?'}` : '');
-      renderPickerResults(_pickerLastResults);
-      $('btn-pick-export').disabled = _pickerLastResults.length === 0;
-    } catch (e) {
-      status.textContent = 'error: ' + e.message;
-    } finally {
-      btn.disabled = false;
-    }
-  });
-}
-function renderPickerResults(picks) {
-  const wrap = $('pick-results');
-  if (!wrap) return;
-  if (!picks.length) { wrap.innerHTML = '<p class="muted small">No frames picked.</p>'; return; }
-  const rows = picks.slice(0, 200).map((p, i) => {
-    const fname = (p.path.split(/[\\/]/).pop() || p.path);
-    return `<tr>
-      <td style="padding:6px 10px;font-family:var(--font-mono);font-size:11px;color:var(--color-text-muted)">${i+1}</td>
-      <td style="padding:6px 10px;font-family:var(--font-mono);font-size:11px">${fname}</td>
-      <td style="padding:6px 10px;text-align:right;font-variant-numeric:tabular-nums">${p.score.toFixed(3)}</td>
-      <td style="padding:6px 10px;text-align:right;font-variant-numeric:tabular-nums">${(p.uncertainty*100).toFixed(0)}%</td>
-      <td style="padding:6px 10px;text-align:right;font-variant-numeric:tabular-nums">${(p.quality*100).toFixed(0)}%</td>
-      <td style="padding:6px 10px;text-align:right">${p.cluster}</td>
-      <td style="padding:6px 10px;text-align:right">${p.n_dets}</td>
-      <td style="padding:6px 10px;color:var(--color-text-muted);font-size:11.5px">${p.reason}</td>
-    </tr>`;
-  }).join('');
-  const more = picks.length > 200 ? `<p class="muted small" style="margin-top:8px">… and ${picks.length - 200} more (all ${picks.length} are included in the export)</p>` : '';
-  wrap.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12.5px">
-    <thead><tr style="text-align:left;border-bottom:1px solid var(--color-border);color:var(--color-text-muted);font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em">
-      <th style="padding:8px 10px">#</th>
-      <th>File</th>
-      <th style="text-align:right">Score</th>
-      <th style="text-align:right">Unc</th>
-      <th style="text-align:right">Qual</th>
-      <th style="text-align:right">Cluster</th>
-      <th style="text-align:right">Dets</th>
-      <th>Why</th>
-    </tr></thead><tbody>${rows}</tbody></table>${more}`;
-}
-if ($('btn-pick-export')) {
-  $('btn-pick-export').addEventListener('click', async () => {
-    if (!_pickerLastResults.length) return;
-    const status = $('pick-status');
-    status.textContent = 'building zip…';
-    try {
-      const res = await fetch(`/api/filter/${activeFilterScanId}/export-cvat`, {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({
-          image_paths: _pickerLastResults.map(p => p.path),
-          include_pre_labels: true,
-        }),
-      });
-      const r = await res.json();
-      if (!res.ok) throw new Error(r.detail || 'export failed');
-      status.innerHTML = `exported ${r.n_images} frames · <a href="${r.download_url}" download style="color:var(--color-brand);font-weight:600">Download zip (${r.size_mb} MB)</a>`;
-      toast('Annotation zip ready — drop it into CVAT', 'success');
-    } catch (e) {
-      status.textContent = 'export error: ' + e.message;
-    }
-  });
-}
+// ─── Smart Annotation Picker (v1) — REMOVED ─────────────────────────
+// The v1 inline picker has been replaced by the v2 Annotation Pipeline,
+// now living as Step 6 of the Filter wizard. See shell-v2.js loadPipelinePage().
 if ($('btn-preview-continue')) {
-  $('btn-preview-continue').addEventListener('click', () => showFilterStep(6));
+  // Step 5 → Step 6 (Smart annotation pick)
+  $('btn-preview-continue').addEventListener('click', () => {
+    showFilterStep(6);
+    // Auto-load the pipeline UI for the active scan
+    if (typeof window.loadPipelinePage === 'function') {
+      try { window.loadPipelinePage(activeFilterScanId); } catch(e) {}
+    }
+  });
+}
+if ($('btn-preview-skip-to-save')) {
+  // Skip the picker, go straight to Save (existing behavior)
+  $('btn-preview-skip-to-save').addEventListener('click', () => showFilterStep(7));
+}
+if ($('btn-pick-continue')) {
+  // Step 6 → Step 7 (Save)
+  $('btn-pick-continue').addEventListener('click', () => showFilterStep(7));
 }
 
 async function populateFilterModelPicker() {
