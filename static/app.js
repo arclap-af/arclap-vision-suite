@@ -1680,34 +1680,46 @@ if ($('btn-filter-scan')) {
   });
 }
 
-function streamFilterScan(jobId) {
-  if (filterScanEventSource) filterScanEventSource.close();
-  filterScanEventSource = new EventSource(`/api/jobs/${jobId}/stream`);
+// Poll-based log tailer. SSE sometimes stalls on Windows when the child
+// subprocess buffers stdout; this approach reads the canonical job record
+// every 1 s and shows whatever is in log_text. Always works.
+let filterScanPollTimer = null;
+async function streamFilterScan(jobId) {
+  if (filterScanPollTimer) clearInterval(filterScanPollTimer);
   const out = $('filter-log');
   out.textContent = '';
-  filterScanEventSource.onmessage = (e) => {
-    const m = JSON.parse(e.data);
-    if (m.type === 'log') {
-      out.textContent += m.line + '\n';
-      out.scrollTop = out.scrollHeight;
-    } else if (m.type === 'end') {
-      filterScanEventSource.close();
-      filterScanEventSource = null;
-      $('btn-index-continue').disabled = (m.status !== 'done');
-      $('filter-index-status').textContent =
-        m.status === 'done' ? 'Done' : `${m.status} (exit ${m.returncode})`;
-      if (m.status === 'done') {
-        toast('Scan finished', 'success');
-        refreshFilterScans();
-      } else {
-        toast(`Scan ${m.status} (exit ${m.returncode})`, 'error');
+  let lastLen = 0;
+  let stoppedDom = false;
+
+  const poll = async () => {
+    try {
+      const j = await (await fetch(`/api/jobs/${jobId}`)).json();
+      const log = j.log || '';
+      if (log.length > lastLen) {
+        out.textContent = log;       // canonical replace, never out of sync
+        out.scrollTop = out.scrollHeight;
+        lastLen = log.length;
       }
+      if (j.status === 'done' || j.status === 'failed' || j.status === 'stopped') {
+        if (stoppedDom) return;
+        stoppedDom = true;
+        clearInterval(filterScanPollTimer); filterScanPollTimer = null;
+        $('btn-index-continue').disabled = (j.status !== 'done');
+        $('filter-index-status').textContent =
+          j.status === 'done' ? 'Done' : `${j.status} (exit ${j.returncode})`;
+        if (j.status === 'done') {
+          toast('Scan finished', 'success');
+          refreshFilterScans();
+        } else {
+          toast(`Scan ${j.status} (exit ${j.returncode})`, 'error');
+        }
+      }
+    } catch (e) {
+      out.textContent += '\n[ui] poll error: ' + e + '\n';
     }
   };
-  filterScanEventSource.onerror = () => {
-    if (filterScanEventSource) filterScanEventSource.close();
-    filterScanEventSource = null;
-  };
+  await poll();                        // immediate
+  filterScanPollTimer = setInterval(poll, 1000);
 }
 
 if ($('btn-index-continue')) {
