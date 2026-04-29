@@ -1,5 +1,18 @@
 # Arclap Vision Suite
 
+> **CSI · Construction Site Intelligence** — local-first, multi-camera, 24/7
+> computer-vision workbench for Swiss construction sites. Runs on a single
+> RTX 3090 box, no cloud, no telemetry. CSI_V1 detects 16 trained classes
+> (mAP@50 = 0.861); helmet/PPE class is in the 40-class taxonomy but not yet
+> in the trained weights — see the in-app **📚 Help** sub-tab for honest
+> current state.
+>
+> Features: per-camera RTSP + recording, polygon zones with rule engine,
+> open-set discovery queue, detection events with bulk training-promotion,
+> watchdog auto-restart, rolling disk cleanup, TensorRT FP16/INT8 export,
+> Mission Control unified dashboard, multi-site rollups, multi-camera grid,
+> SMTP + webhook alert routing.
+
 [![CI](https://github.com/arclap-af/arclap-vision-suite/actions/workflows/ci.yml/badge.svg)](https://github.com/arclap-af/arclap-vision-suite/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)

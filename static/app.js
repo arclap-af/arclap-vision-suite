@@ -4416,7 +4416,112 @@ document.addEventListener('click', e => {
   if (t.dataset.stab === 'mission') loadMissionControl();
   if (t.dataset.stab === 'sites') loadSitesPage();
   if (t.dataset.stab === 'grid') loadGridPage();
+  if (t.dataset.stab === 'alerts') loadAlertsPage();
 });
+
+/* ─── Tier 4: Alerts page ─────────────────────────────── */
+async function loadAlertsPage() {
+  await renderAlertRules();
+  await renderAlertHistory();
+  const eb = $('alerts-test-email-btn'); if (eb) eb.onclick = testEmail;
+  const wb = $('alerts-test-webhook-btn'); if (wb) wb.onclick = testWebhook;
+  const ab = $('alerts-add-rule'); if (ab) ab.onclick = () => editAlertRule(null);
+}
+
+async function testEmail() {
+  const email = $('alerts-test-email').value.trim();
+  if (!email) return;
+  $('alerts-test-result').textContent = 'Sending…';
+  const r = await (await fetch('/api/alerts/test-channels', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({email})
+  })).json();
+  $('alerts-test-result').textContent = JSON.stringify(r);
+}
+
+async function testWebhook() {
+  const url = $('alerts-test-webhook').value.trim();
+  if (!url) return;
+  $('alerts-test-result').textContent = 'Sending…';
+  const r = await (await fetch('/api/alerts/test-channels', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({webhook: url})
+  })).json();
+  $('alerts-test-result').textContent = JSON.stringify(r);
+}
+
+async function renderAlertRules() {
+  const wrap = $('alerts-rules-list'); if (!wrap) return;
+  const r = await (await fetch('/api/alerts/rules')).json();
+  const rules = r.rules || [];
+  wrap.innerHTML = rules.length ? rules.map(rule => {
+    const w = rule.when || {}; const d = rule.deliver || {};
+    return `<div class="alert-rule-card">
+      <div class="alert-rule-head">
+        <b>${rule.enabled?'🟢':'⚪'} ${rule.name}</b>
+        <div>
+          <button class="btn btn-tiny" onclick="editAlertRule('${rule.id}')">Edit</button>
+          <button class="btn btn-tiny" onclick="testAlertRule('${rule.id}')">Test</button>
+          <button class="btn btn-tiny" onclick="deleteAlertRule('${rule.id}')">Delete</button>
+        </div>
+      </div>
+      <div class="muted small">
+        when: classes=${JSON.stringify(w.class_ids||[])} · zones=${JSON.stringify(w.zones||[])} · min_conf=${w.min_confidence||'—'}<br>
+        deliver: ${d.email?'📧 '+d.email:''} ${d.webhook?'🔗 '+d.webhook:''} · cooldown ${rule.cooldown_sec||60}s
+      </div>
+    </div>`;
+  }).join('') : '<p class="muted small">No rules yet. Click + Add rule.</p>';
+}
+
+async function editAlertRule(ruleId) {
+  let rule = { name: '', enabled: true, when: {}, deliver: {}, cooldown_sec: 60 };
+  if (ruleId) {
+    const r = await (await fetch('/api/alerts/rules')).json();
+    rule = (r.rules || []).find(x => x.id === ruleId) || rule;
+  }
+  const name = prompt('Rule name:', rule.name); if (!name) return;
+  const classIds = prompt('Class IDs (comma, blank=any):', (rule.when.class_ids||[]).join(','));
+  const zones = prompt('Zone names (comma, blank=any):', (rule.when.zones||[]).join(','));
+  const minConf = prompt('Min confidence (0-1, blank=any):', rule.when.min_confidence ?? '');
+  const email = prompt('Email recipient (blank=skip):', rule.deliver.email || '');
+  const webhook = prompt('Webhook URL (blank=skip):', rule.deliver.webhook || '');
+  const cooldown = parseInt(prompt('Cooldown seconds:', rule.cooldown_sec || 60)) || 60;
+  const body = {
+    id: ruleId || undefined, name, enabled: true, cooldown_sec: cooldown,
+    when: {
+      class_ids: classIds ? classIds.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n)) : undefined,
+      zones: zones ? zones.split(',').map(s => s.trim()).filter(Boolean) : undefined,
+      min_confidence: minConf ? parseFloat(minConf) : undefined,
+    },
+    deliver: { email: email || undefined, webhook: webhook || undefined },
+  };
+  await fetch('/api/alerts/rules', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  renderAlertRules();
+}
+
+async function deleteAlertRule(id) {
+  if (!confirm('Delete this rule?')) return;
+  await fetch(`/api/alerts/rules/${id}`, {method:'DELETE'});
+  renderAlertRules();
+}
+
+async function testAlertRule(id) {
+  const r = await (await fetch(`/api/alerts/test/${id}`, {method:'POST'})).json();
+  $('alerts-test-result').textContent = 'Test fired: ' + JSON.stringify(r);
+  renderAlertHistory();
+}
+
+async function renderAlertHistory() {
+  const wrap = $('alerts-history-list'); if (!wrap) return;
+  const r = await (await fetch('/api/alerts/history?limit=30')).json();
+  const h = r.history || [];
+  wrap.innerHTML = h.length ? h.map(x => `<div class="alert-history-row">
+    <span class="muted small">${new Date(x.ts*1000).toLocaleString()}</span>
+    <b>${x.rule_name}</b>
+    <span class="muted small">${x.event && x.event.class_name ? x.event.class_name : '—'} · ${x.event && x.event.camera_id ? x.event.camera_id : '—'}</span>
+    <span class="muted small">${JSON.stringify(x.results||{})}</span>
+  </div>`).join('') : '<p class="muted small">No alerts fired yet.</p>';
+}
 
 /* ─── Tier 3: Mission Control ─────────────────────────────── */
 let _mcCharts = { det: null, inf: null };

@@ -3418,3 +3418,12 @@ code { background: var(--bg-2); padding: 1px 6px; border-radius: 4px; font-famil
   background: linear-gradient(transparent, rgba(0,0,0,0.7)); color: white; font-size: 12px; font-weight: 600;
 }
 .grid-tile-off { display: flex; align-items: center; justify-content: center; border: 1px dashed var(--color-border); background: var(--color-surface); }
+
+/* ─── Tier 4: Alerts page ──────────────────────────────────── */
+.alerts-test-row { display: flex; gap: 8px; align-items: center; }
+.alerts-test-row input { flex: 1; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: var(--radius-2); }
+.alert-rule-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-2); padding: 12px; margin-bottom: 8px; }
+.alert-rule-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.btn-tiny { font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--color-border); background: var(--color-surface-2,var(--color-surface)); cursor: pointer; }
+.btn-tiny:hover { background: var(--color-brand-soft, rgba(99,102,241,0.10)); }
+.alert-history-row { display: grid; grid-template-columns: 160px 1fr 200px 1fr; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--color-border); font-size: 12px; align-items: center; }

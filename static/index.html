@@ -1647,6 +1647,8 @@
     <button class="swiss-subtab" data-stab="events">🎯 Events</button>
     <button class="swiss-subtab" data-stab="recordings">📼 Recordings</button>
     <button class="swiss-subtab" data-stab="zones">📐 Zones</button>
+    <button class="swiss-subtab" data-stab="alerts">🔔 Alerts</button>
+    <button class="swiss-subtab" data-stab="help">📚 Help</button>
     <button class="swiss-subtab" data-stab="activity">🕒 Activity</button>
   </nav>
 
@@ -2275,6 +2277,88 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
     <div id="sites-list" style="padding:14px"><p class="muted small">Loading…</p></div>
   </section>
 
+  <!-- ===== Alerts sub-tab ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="alerts">
+    <div class="card-header">
+      <h3>🔔 Alert routing</h3>
+      <p>Route detection events to email or webhook. Configure SMTP via env vars
+        <code>ARCLAP_SMTP_HOST</code> / <code>ARCLAP_SMTP_PORT</code> / <code>ARCLAP_SMTP_USER</code> / <code>ARCLAP_SMTP_PASS</code>.</p>
+    </div>
+    <div style="padding:14px;display:flex;flex-direction:column;gap:14px">
+      <div class="alerts-test-row">
+        <input id="alerts-test-email" placeholder="test@example.com" style="flex:1"/>
+        <button class="btn btn-small" id="alerts-test-email-btn">📧 Send test email</button>
+      </div>
+      <div class="alerts-test-row">
+        <input id="alerts-test-webhook" placeholder="https://hooks.example.com/incoming" style="flex:1"/>
+        <button class="btn btn-small" id="alerts-test-webhook-btn">🔗 Send test webhook</button>
+      </div>
+      <div id="alerts-test-result" class="muted small"></div>
+      <hr style="border-color:var(--color-border);margin:6px 0"/>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h4 style="margin:0">Routing rules</h4>
+        <button class="btn btn-small btn-primary" id="alerts-add-rule">+ Add rule</button>
+      </div>
+      <div id="alerts-rules-list"><p class="muted small">No rules yet.</p></div>
+      <hr style="border-color:var(--color-border);margin:6px 0"/>
+      <h4 style="margin:0">Recent fires</h4>
+      <div id="alerts-history-list"><p class="muted small">No alerts fired yet.</p></div>
+    </div>
+  </section>
+
+  <!-- ===== Help sub-tab ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="help">
+    <div class="card-header"><h3>📚 Arclap CSI · Help</h3></div>
+    <div style="padding:18px;max-width:920px;line-height:1.6">
+      <h4>What CSI_V1 actually detects today</h4>
+      <p>The shipped CSI_V1 model is trained on <b>16 classes</b> with mAP@50 = 0.861 on the held-out validation split. The 40-class taxonomy in <code>core/seed.py</code> includes additional aspirational categories (PPE/helmet/Schutzhelm at id=32, several specialty machines) that are <b>not yet in the trained weights</b>. Training data for those is being collected via the Discovery queue and will land in CSI_V2.</p>
+      <p>Honest current state:</p>
+      <ul>
+        <li>✅ <b>Trained &amp; reliable (16):</b> heavy machinery (excavator, loader, dump truck, concrete mixer, etc.), workers, common site vehicles</li>
+        <li>⚠️ <b>In taxonomy but NOT trained yet:</b> PPE/helmet (cls 32), several specialty equipment classes</li>
+        <li>The PPE/helmet alert auto-silences when the loaded model has no helmet class — no false positives</li>
+      </ul>
+
+      <h4>Workflow (typical)</h4>
+      <ol>
+        <li><b>📹 Cameras</b> — Add an RTSP URL, name + site, save</li>
+        <li><b>🎛️ Mission Control</b> — Pick the camera, see the live stream + charts + recent events + zones</li>
+        <li><b>📐 Zones</b> — Draw polygons on the camera view, set rules (allowed/forbidden classes, count limits)</li>
+        <li><b>🎯 Events</b> — Browse all detection crops + frames, filter by camera/class/zone, bulk-promote to training</li>
+        <li><b>🔔 Alerts</b> — Route important events to email/webhook with cooldown + per-class filtering</li>
+        <li><b>👁️ Review queue</b> — Discovery: low-confidence + unknown objects flagged for human triage; assign to existing classes or promote to a new class for retraining</li>
+        <li><b>📼 Recordings</b> — Auto-cleaned after 7 days unless promoted</li>
+      </ol>
+
+      <h4>Operations</h4>
+      <ul>
+        <li><b>Watchdog</b> auto-restarts cameras whose heartbeat goes stale (&gt;60s). 5 crashes/hour → flagged red, manual reset required (avoids restart loops).</li>
+        <li><b>Disk sweep</b> runs every 30 min: recordings &gt; 7 days deleted, event crops &gt; 30 days deleted (unless promoted), discovery crops capped at 5000/camera.</li>
+        <li><b>Detection events</b> save 1 cropped JPG per detection + 1 annotated frame per detected-second per camera.</li>
+        <li><b>Engines</b>: TensorRT FP16 (Deploy tab) and INT8 (calibrated on val/ split) for 2–4× inference speedup.</li>
+      </ul>
+
+      <h4>Storage layout</h4>
+      <pre style="background:var(--color-surface-2);padding:10px;border-radius:6px;font-size:12px">_outputs/&lt;camera&gt;/recordings/*.mp4
+_outputs/&lt;camera&gt;/events/&lt;date&gt;/*.jpg
+_data/discovery_crops/*.jpg
+_data/cameras.db          ← camera registry + sessions
+_data/events.db           ← all detections
+_data/discovery.db        ← review queue
+_data/zones/&lt;cam&gt;.json    ← polygon rules
+_data/alert_rules.json    ← routing rules
+_data/alert_history.json  ← last 500 fires</pre>
+
+      <h4>Environment variables</h4>
+      <ul>
+        <li><code>ARCLAP_SMTP_HOST</code>, <code>ARCLAP_SMTP_PORT</code> (default 587)</li>
+        <li><code>ARCLAP_SMTP_USER</code>, <code>ARCLAP_SMTP_PASS</code>, <code>ARCLAP_SMTP_FROM</code></li>
+      </ul>
+
+      <p class="muted small" style="margin-top:24px">Arclap Vision Suite · CSI_V1 · runs locally on your RTX 3090 box. No cloud, no telemetry. All data stays on the operator machine.</p>
+    </div>
+  </section>
+
   <!-- ===== Grid sub-tab ===== -->
   <section class="card swiss-stab-pane hidden" data-stab-pane="grid">
     <div class="card-header">
@@ -2535,6 +2619,6 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-30-d-tier3"></script>
+<script src="/static/app.js?v=2026-04-30-e-tier4"></script>
 </body>
 </html>

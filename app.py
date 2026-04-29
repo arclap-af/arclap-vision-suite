@@ -45,6 +45,7 @@ from core import zones as zones_core
 from core import events as events_core
 from core import watchdog as watchdog_core
 from core import disk as disk_core
+from core import alerts as alerts_core
 
 PYTHON = sys.executable
 ROOT = Path(__file__).parent.resolve()
@@ -252,6 +253,12 @@ def _startup() -> None:
         disk_core.start(ROOT, interval_sec=30 * 60)
     except Exception as e:
         print(f"Disk sweep failed to start: {e}")
+
+    # Alerts dispatcher — polls events DB every 5s and routes via SMTP/webhook
+    try:
+        alerts_core.start_dispatcher(ROOT, interval_sec=5)
+    except Exception as e:
+        print(f"Alerts dispatcher failed to start: {e}")
 
     # Auto-register any .pt files already on disk so the user doesn't have
     # to re-upload models that were downloaded in earlier runs.
@@ -5862,6 +5869,63 @@ def swiss_export_tensorrt_int8(req: SwissTensorRTInt8Request):
         "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
         "precision": "INT8",
     }
+
+
+# ───────── Tier 4: Alert routing rules + history ──────────────────────
+class AlertRuleRequest(BaseModel):
+    id: str | None = None
+    name: str
+    enabled: bool = True
+    when: dict = {}
+    deliver: dict = {}
+    cooldown_sec: int = 60
+
+
+@app.get("/api/alerts/rules")
+def alerts_list():
+    return {"rules": alerts_core.list_rules(ROOT)}
+
+
+@app.post("/api/alerts/rules")
+def alerts_upsert(req: AlertRuleRequest):
+    return alerts_core.upsert_rule(ROOT, req.dict(exclude_none=True))
+
+
+@app.delete("/api/alerts/rules/{rule_id}")
+def alerts_delete(rule_id: str):
+    alerts_core.delete_rule(ROOT, rule_id)
+    return {"ok": True}
+
+
+@app.post("/api/alerts/test/{rule_id}")
+def alerts_test(rule_id: str):
+    return alerts_core.test_rule(ROOT, rule_id)
+
+
+@app.get("/api/alerts/history")
+def alerts_history(limit: int = 50):
+    return {"history": alerts_core.history(ROOT, limit=limit)}
+
+
+@app.post("/api/alerts/test-channels")
+def alerts_test_channels(payload: dict):
+    """Smoke-test SMTP and/or webhook independently of any rule."""
+    from core import notify
+    out = {}
+    if payload.get("email"):
+        ok, msg = notify.send_email(
+            to=payload["email"],
+            subject="[Arclap CSI] Test alert",
+            body="This is a test message from Arclap Vision Suite.",
+        )
+        out["email"] = {"ok": ok, "msg": msg}
+    if payload.get("webhook"):
+        ok, msg = notify.send_webhook(
+            payload["webhook"],
+            {"test": True, "ts": time.time(), "src": "arclap-csi"},
+        )
+        out["webhook"] = {"ok": ok, "msg": msg}
+    return out
 
 
 if __name__ == "__main__":
