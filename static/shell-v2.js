@@ -200,6 +200,62 @@
     if (sb) sb.click();
   });
 
+  // ── Restart server button ─────────────────────────────────────────
+  const restartBtn = $('restart-btn');
+  if (restartBtn) {
+    restartBtn.addEventListener('click', async () => {
+      if (!confirm('Restart the Vision Suite server now?\n\n' +
+                   'Any running scan or training job will be stopped. ' +
+                   'The browser will reload automatically once the server is back ' +
+                   '(usually 5-10 seconds).')) return;
+
+      // Full-screen overlay
+      let ov = $('restart-overlay');
+      if (!ov) {
+        ov = document.createElement('div');
+        ov.id = 'restart-overlay';
+        ov.style.cssText =
+          'position:fixed;inset:0;background:rgba(11,18,32,0.92);z-index:9999;' +
+          'display:flex;align-items:center;justify-content:center;flex-direction:column;' +
+          'gap:18px;color:#fff;font-family:var(--font-ui);';
+        ov.innerHTML =
+          '<div style="width:48px;height:48px;border:3px solid rgba(255,255,255,0.2);' +
+          'border-top-color:var(--color-brand,#E5213C);border-radius:50%;' +
+          'animation:rspin 0.8s linear infinite"></div>' +
+          '<div style="font-size:18px;font-weight:600">Restarting Vision Suite…</div>' +
+          '<div id="restart-overlay-msg" style="font-size:13px;opacity:0.75;font-family:var(--font-mono)">stopping current process</div>' +
+          '<style>@keyframes rspin { to { transform: rotate(360deg); } }</style>';
+        document.body.appendChild(ov);
+      }
+      const msg = $('restart-overlay-msg');
+
+      try {
+        await fetch('/api/system/restart', { method: 'POST' });
+      } catch (e) {
+        // Connection might drop mid-request — that's actually expected.
+      }
+
+      // Poll until the new server answers /api/system/stats
+      msg.textContent = 'waiting for server to come back online';
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < 60000) {
+        await new Promise(r => setTimeout(r, 1000));
+        try {
+          const r = await fetch('/api/system/stats', { cache: 'no-store' });
+          if (r.ok) {
+            msg.textContent = 'server back · reloading page';
+            await new Promise(r => setTimeout(r, 600));
+            location.reload();
+            return;
+          }
+        } catch (e) { /* keep waiting */ }
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
+        msg.textContent = `waiting for server to come back online (${elapsed}s)`;
+      }
+      msg.textContent = 'server did not come back after 60s — you may need to start run.bat manually';
+    });
+  }
+
   // GPU badge mirror
   function pollGpu() {
     const src = document.getElementById('gpu-badge');

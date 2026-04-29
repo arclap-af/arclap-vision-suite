@@ -5910,6 +5910,26 @@ def recording_delete_endpoint(path: str):
     return {"ok": True}
 
 
+@app.post("/api/system/restart")
+def system_restart():
+    """Exit with code 42; the run.bat / run.sh restart-loop catches that
+    and relaunches the server in the same console window. Browser polls
+    /api/system/stats until it's back, then auto-reloads.
+    If the user started python app.py manually (no loop), the process
+    just exits — they'll need to start it again themselves."""
+    import os as _os, threading as _th
+    def _do_restart():
+        time.sleep(0.6)   # let the HTTP response flush first
+        try:
+            queue.stop_current()
+        except Exception:
+            pass
+        print("[restart] exit 42 — run.bat loop will relaunch", flush=True)
+        _os._exit(42)
+    _th.Thread(target=_do_restart, daemon=True).start()
+    return {"ok": True, "message": "restarting"}
+
+
 @app.post("/api/disk/sweep")
 def disk_sweep_now_endpoint():
     """Trigger an immediate disk-cleanup sweep instead of waiting for the
