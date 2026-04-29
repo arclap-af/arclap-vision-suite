@@ -12,7 +12,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <link rel="stylesheet" href="/static/style.css" />
-<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-n-thumb" />
+<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-o-csi" />
 </head>
 <body>
 
@@ -817,7 +817,7 @@
         <label class="text-row">
           <span>Model</span>
           <select id="rtsp-model"></select>
-          <span class="muted small">CSI_V1 by default. Pick any registered model.</span>
+          <span class="muted small">CSI by default. Pick any registered model.</span>
         </label>
         <label class="text-row">
           <span>Mode</span>
@@ -1698,8 +1698,8 @@
   <!-- Always-visible status hero -->
   <section class="card swiss-hero-card-wrap">
     <div class="card-header" style="margin-bottom:8px">
-      <h2 style="margin:0">🏗️ CSI_V1 — Construction Site Intelligence</h2>
-      <p style="margin:4px 0 0">Multi-class detector for Swiss construction sites. Manage taxonomy, training data, versions, evaluation, and deployment from one tab — no folders to navigate.</p>
+      <h2 style="margin:0">CSI — Construction Site Intelligence</h2>
+      <p style="margin:4px 0 0">Multi-class detector for construction sites. Manage taxonomy, training data, versions, evaluation, and deployment from one tab — no folders to navigate.</p>
     </div>
     <div id="swiss-hero" class="swiss-hero-grid">
       <div class="swiss-hero-loading">Loading CSI state…</div>
@@ -1937,7 +1937,7 @@
 
       <div class="cv-tool-card">
         <h4>🤖 Auto-annotate folder</h4>
-        <p class="muted small">Run the active Swiss model on a folder of new images, write YOLO-format labels alongside, merge into the managed dataset.</p>
+        <p class="muted small">Run the active CSI model on a folder of new images, write YOLO-format labels alongside, merge into the managed dataset.</p>
         <label class="text-row">
           <span>Source folder</span>
           <input type="text" id="cv-auto-folder" placeholder="C:\path\to\new_frames" />
@@ -2157,7 +2157,7 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
       </div>
       <div class="deploy-quickref-card">
         <h4>🌐 Use the active model in Filter</h4>
-        <p class="muted small">The Swiss model picked here is also the default in the Filter tab's bulk-scan dropdown. One model, one source of truth.</p>
+        <p class="muted small">The CSI model picked here is also the default in the Filter tab's bulk-scan dropdown. One model, one source of truth.</p>
         <button class="btn btn-secondary btn-small" id="btn-deploy-go-filter">▶ Open Filter tab</button>
       </div>
     </div>
@@ -2813,6 +2813,6 @@ _data/alert_history.json  ← last 500 fires</pre>
 <div class="toasts" id="toasts"></div>
 
 <script src="/static/app.js?v=2026-04-30-e-tier4"></script>
-<script src="/static/shell-v2.js?v=2026-04-30-n-thumb"></script>
+<script src="/static/shell-v2.js?v=2026-04-30-o-csi"></script>
 </body>
 </html>
