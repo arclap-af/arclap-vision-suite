@@ -636,9 +636,42 @@ class RtspStartRequest(BaseModel):
     camera_id: str | None = None        # registered camera id (auto-tags discovery + zones)
 
 
+def _sanitize_rtsp_url(url: str) -> str:
+    """Auto-percent-encode unsafe characters (@, :, /, #, ?, [, ], !) inside
+    the password segment of an rtsp:// URL. VLC tolerates raw special chars
+    in passwords, but OpenCV/ffmpeg parses strictly per RFC 3986 and treats
+    the FIRST '@' as the user/host separator — which breaks any URL like
+    rtsp://admin:Pass@123@cam.local/...
+    Returns the URL unchanged if it doesn't have credentials or already
+    looks well-formed.
+    """
+    if not isinstance(url, str) or "://" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    # rest = userinfo@host:port/path  — the LAST '@' separates user-info from host
+    if "@" not in rest:
+        return url
+    userinfo, host_and_path = rest.rsplit("@", 1)
+    if ":" not in userinfo:
+        return url
+    user, pwd = userinfo.split(":", 1)
+    import urllib.parse as _up
+    # Encode every char that's not unreserved per RFC 3986 — keep it idempotent
+    # (don't double-encode already-encoded chars).
+    if "%" not in pwd:
+        pwd_enc = _up.quote(pwd, safe="")
+    else:
+        pwd_enc = pwd          # already URL-encoded by the user
+    return f"{scheme}://{user}:{pwd_enc}@{host_and_path}"
+
+
 @app.post("/api/rtsp/start")
 def rtsp_start(req: RtspStartRequest):
     """Spawn the live processor as a queued job."""
+    # Sanitize: auto-percent-encode special chars in the password. Without
+    # this, passwords containing '@' (very common) make OpenCV silently fail
+    # to open the stream while VLC works fine.
+    req.url = _sanitize_rtsp_url(req.url)
     out_name = (req.output_name or f"rtsp_{int(time.time())}").strip()
     if not out_name.lower().endswith(".mp4"):
         out_name += ".mp4"
@@ -5410,6 +5443,10 @@ def list_cameras_endpoint():
 
 @app.post("/api/cameras")
 def create_camera_endpoint(req: CameraCreateRequest):
+    # Auto-percent-encode passwords that contain '@' or other special chars
+    # so OpenCV/ffmpeg can parse the URL.
+    if req.url:
+        req.url = _sanitize_rtsp_url(req.url)
     cam = camera_registry.create_camera(
         ROOT, name=req.name, url=req.url, site=req.site,
         location=req.location, enabled=req.enabled,
