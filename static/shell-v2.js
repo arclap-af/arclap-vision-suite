@@ -459,28 +459,43 @@
       };
       const liveMachines = (now.machines || []).slice(0, 6);
       const todayRows = (today.rows || []).reduce((m, r) => (m[r.machine_id] = r, m), {});
-      let body = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;font-size:12.5px">
-        <div><b style="font-family:var(--font-brand);font-size:22px">${snap.machines_active_now || 0}</b><br><span class="muted small">active right now</span></div>
-        <div><b style="font-family:var(--font-brand);font-size:22px">${_hms(snap.today_active_s || 0)}</b><br><span class="muted small">total today</span></div>
-        <div><b style="font-family:var(--font-brand);font-size:22px">${snap.machines_total || 0}</b><br><span class="muted small">${snap.sites_total || 0} sites</span></div>
+      const activeNow = snap.machines_active_now || 0;
+      let body = `<div class="ld-fleet-grid">
+        <div class="ld-fleet-cell">
+          <div class="label">Active now</div>
+          <div class="val${activeNow > 0 ? ' brand' : ''}">${activeNow}</div>
+          <div class="sub">live</div>
+        </div>
+        <div class="ld-fleet-cell">
+          <div class="label">Active today</div>
+          <div class="val">${_hms(snap.today_active_s || 0)}</div>
+          <div class="sub">across fleet</div>
+        </div>
+        <div class="ld-fleet-cell">
+          <div class="label">Fleet</div>
+          <div class="val">${snap.machines_total || 0}</div>
+          <div class="sub">${snap.sites_total || 0} sites</div>
+        </div>
       </div>`;
       if (liveMachines.length) {
-        body += '<div style="margin-top:14px;display:flex;flex-direction:column;gap:6px">' +
+        body += '<div class="ld-fleet-list">' +
           liveMachines.map(m => {
             const stats = todayRows[m.machine_id] || {};
-            return `<div style="display:flex;align-items:center;gap:10px;padding:6px 10px;background:var(--color-surface-alt,#F6F6F8);border-radius:7px;font-size:12px">
-              <span style="font-family:var(--font-mono);font-size:11px;color:var(--color-text-strong)">${m.machine_id}</span>
-              <span style="flex:1">${m.display_name || m.class_name || ''}</span>
-              <span style="font-family:var(--font-mono);font-size:11px;color:${m.any_moving ? 'var(--color-brand,#E5213C)' : 'var(--color-text-muted)'};font-weight:600">${m.any_moving ? '● MOVING' : '● PRESENT'}</span>
-              <span style="font-family:var(--font-mono);font-size:11px;color:var(--color-text-muted)">${_hms(stats.active_s || 0)}</span>
+            const stateCls = m.any_moving ? 'moving' : 'present';
+            const stateLbl = m.any_moving ? 'Moving' : 'Present';
+            return `<div class="ld-fleet-row">
+              <span class="id">${m.machine_id}</span>
+              <span class="name">${m.display_name || m.class_name || ''}</span>
+              <span class="state ${stateCls}"><span class="dot"></span>${stateLbl}</span>
+              <span class="total">${_hms(stats.active_s || 0)}</span>
             </div>`;
           }).join('') + '</div>';
       } else {
-        body += '<p class="muted small" style="margin-top:14px">No machines currently active. Configure Cameras → link to machines + start the camera streams to populate.</p>';
+        body += '<p class="muted small" style="padding:0 var(--space-5) var(--space-4)">No machines currently active. Configure Cameras → link to machines + start the camera streams to populate.</p>';
       }
       wrap.innerHTML = body;
     } catch (e) {
-      wrap.innerHTML = '<p class="muted small">No data yet — register machines + link to cameras in the Cameras tab to start tracking.</p>';
+      wrap.innerHTML = '<p class="muted small" style="padding:var(--space-4) var(--space-5)">No data yet — register machines + link to cameras in the Cameras tab to start tracking.</p>';
     }
   }
 

@@ -4631,17 +4631,16 @@ async function mcTickAll() {
             const sessions = r.sessions || [];
             const total = sessions.reduce((s, x) => s + (x.duration_s || 0), 0);
             const segs = sessions.map(s => `<span class="mc-seg ${s.state}" title="${fmt(s.start_ts)}–${fmt(s.end_ts)} · ${_hms(s.duration_s)} · ${s.state}"></span>`).join('');
-            return `<div style="margin-bottom:8px;padding:6px 10px;background:var(--color-surface-alt,#F6F6F8);border-radius:7px">
-              <div style="display:flex;align-items:center;gap:8px">
-                <b style="font-family:var(--font-mono);font-size:11px;color:var(--color-text-strong)">${l.machine_id}</b>
-                <span style="font-size:11.5px;color:var(--color-text-muted)">${l.machine_name || l.class_name}</span>
-                <span style="margin-left:auto;font-family:var(--font-mono);font-size:11px">${_hms(total)} (6h)</span>
-              </div>
-              <div style="display:flex;gap:1px;margin-top:6px;height:8px;background:rgba(0,0,0,0.04);border-radius:3px;overflow:hidden">${segs}</div>
+            return `<div class="mc-machine-row">
+              <div class="label">${l.machine_id}<span class="mono">${l.machine_name || l.class_name}</span></div>
+              <div class="mc-strip">${segs}</div>
+              <div class="total">${_hms(total)} / 6h</div>
             </div>`;
           } catch(e) { return ''; }
         }));
-        wrap.innerHTML = sections.join('') || '<p class="muted small">No machine sessions yet.</p>';
+        wrap.innerHTML = sections.length
+          ? `<div class="mc-machine-activity">${sections.join('')}</div>`
+          : '<p class="muted small">No machine sessions yet.</p>';
       }
     }
   } catch(e) {}
@@ -4744,13 +4743,13 @@ async function loadSitesPage() {
       const ms = machinesBySite[site] || [];
       const siteActiveS = ms.reduce((sum, m) => sum + ((totalsByMachine[m.machine_id] || {}).active_s || 0), 0);
       const machinesHtml = ms.length ? `
-        <div style="margin-top:10px;border-top:1px solid var(--color-border);padding-top:10px">
-          <div class="small muted" style="margin-bottom:6px"><b>${ms.length} machine(s)</b> · ${_hms(siteActiveS)} active today</div>
-          <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <div class="site-machines">
+          <div class="site-machines-head"><b>${ms.length} machine${ms.length===1?'':'s'}</b> · ${_hms(siteActiveS)} active today</div>
+          <div class="site-machine-pills">
             ${ms.map(m => {
               const t = totalsByMachine[m.machine_id] || {};
-              const cost = (m.rental_rate && t.active_s) ? `· ${m.rental_currency || 'CHF'} ${(m.rental_rate * t.active_s/3600).toFixed(0)}` : '';
-              return `<span style="padding:4px 10px;background:var(--color-surface-alt,#F6F6F8);border-radius:7px;font-family:var(--font-mono);font-size:11.5px"><b>${m.machine_id}</b> · ${_hms(t.active_s||0)} ${cost}</span>`;
+              const cost = (m.rental_rate && t.active_s) ? `<span class="cost"> · ${m.rental_currency || 'CHF'} ${(m.rental_rate * t.active_s/3600).toFixed(0)}</span>` : '';
+              return `<span class="site-machine-pill"><b>${m.machine_id}</b> · ${_hms(t.active_s||0)}${cost}</span>`;
             }).join('')}
           </div>
         </div>` : '';
