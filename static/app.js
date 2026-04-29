@@ -530,13 +530,17 @@ document.addEventListener('click', (e) => {
 
 const STRINGS = {
   en: {
-    'dashboard': 'Home', 'wizard': 'Timelapse Editor', 'models': 'Models', 'train': 'Train', 'live': 'Live RTSP', 'history': 'History', 'projects': 'Projects',
+    'dashboard': 'Home', 'wizard': 'Timelapse', 'cameras': 'Cameras', 'swiss': 'CSI',
+    'models': 'Models', 'train': 'Train', 'live': 'Live RTSP', 'filter': 'Filter',
+    'history': 'History', 'projects': 'Projects',
     'no_models': 'No models registered yet.',
     'no_projects': 'No projects yet.',
     'no_history': 'No jobs yet.',
   },
   de: {
-    'dashboard': 'Start', 'wizard': 'Zeitraffer-Editor', 'models': 'Modelle', 'train': 'Training', 'live': 'Live RTSP', 'history': 'Verlauf', 'projects': 'Projekte',
+    'dashboard': 'Start', 'wizard': 'Zeitraffer', 'cameras': 'Kameras', 'swiss': 'CSI',
+    'models': 'Modelle', 'train': 'Training', 'live': 'Live RTSP', 'filter': 'Filter',
+    'history': 'Verlauf', 'projects': 'Projekte',
     'no_models': 'Noch keine Modelle registriert.',
     'no_projects': 'Noch keine Projekte.',
     'no_history': 'Noch keine Jobs.',
@@ -547,8 +551,25 @@ function t(key) { return (STRINGS[currentLocale] || STRINGS.en)[key] || key; }
 
 function applyLocale() {
   document.querySelectorAll('.topnav-btn').forEach(b => {
-    b.textContent = t(b.dataset.page);
+    const label = t(b.dataset.page);
+    // Preserve any inline child markup (e.g. CSI flag dot, badges) by
+    // replacing only the leading text node, not the whole innerHTML.
+    let updated = false;
+    for (const node of b.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        node.nodeValue = label;
+        updated = true;
+        break;
+      }
+    }
+    if (!updated) {
+      b.insertBefore(document.createTextNode(label), b.firstChild);
+    }
   });
+  // The topnav layout may have shifted; resync the magic-line indicator.
+  if (typeof positionTopnavIndicator === 'function') {
+    requestAnimationFrame(positionTopnavIndicator);
+  }
 }
 
 $('locale-toggle').value = currentLocale;
