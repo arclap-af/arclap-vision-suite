@@ -458,7 +458,6 @@ function showPage(name) {
   document.querySelectorAll('.topnav-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.page === name);
   });
-  positionTopnavIndicator();
   localStorage.setItem('arclap_last_tab', name);
   if (name === 'dashboard') refreshDashboard();
   if (name === 'models') { refreshSuggested(); refreshModels(); }
@@ -474,51 +473,6 @@ function showPage(name) {
 document.querySelectorAll('.topnav-btn').forEach(b => {
   b.addEventListener('click', () => showPage(b.dataset.page));
 });
-
-// Magic-line indicator: position a single shared bar under the active topnav button.
-function positionTopnavIndicator() {
-  const nav = document.querySelector('.topnav');
-  if (!nav) return;
-  const active = nav.querySelector('.topnav-btn.active');
-  if (!active) {
-    nav.style.setProperty('--indicator-w', '0px');
-    return;
-  }
-  const navRect = nav.getBoundingClientRect();
-  const r = active.getBoundingClientRect();
-  // Inset the bar a little inside the button so it doesn't fully bridge gaps.
-  const inset = 16;
-  const left = (r.left - navRect.left) + nav.scrollLeft + inset;
-  const width = Math.max(0, r.width - inset * 2);
-  nav.style.setProperty('--indicator-x', `${left}px`);
-  nav.style.setProperty('--indicator-w', `${width}px`);
-}
-// Position on first paint (no animation), then enable animation.
-function initTopnavIndicator() {
-  const nav = document.querySelector('.topnav');
-  if (!nav) return;
-  nav.classList.add('no-anim');
-  positionTopnavIndicator();
-  // Force layout flush, then drop the no-anim class.
-  // eslint-disable-next-line no-unused-expressions
-  nav.offsetHeight;
-  requestAnimationFrame(() => {
-    nav.classList.remove('no-anim');
-  });
-}
-window.addEventListener('load', initTopnavIndicator);
-window.addEventListener('resize', () => {
-  // On resize, re-position without animation jitter.
-  const nav = document.querySelector('.topnav');
-  if (!nav) return;
-  nav.classList.add('no-anim');
-  positionTopnavIndicator();
-  requestAnimationFrame(() => nav.classList.remove('no-anim'));
-});
-// In case fonts load late and reshape buttons.
-if (document.fonts && document.fonts.ready) {
-  document.fonts.ready.then(() => positionTopnavIndicator());
-}
 document.addEventListener('click', (e) => {
   const t = e.target.closest('[data-quick-page]');
   if (t) showPage(t.dataset.quickPage);
@@ -530,16 +484,18 @@ document.addEventListener('click', (e) => {
 
 const STRINGS = {
   en: {
-    'dashboard': 'Home', 'wizard': 'Timelapse', 'cameras': 'Cameras', 'swiss': 'CSI',
-    'models': 'Models', 'train': 'Train', 'live': 'Live RTSP', 'filter': 'Filter',
+    'dashboard': 'Home', 'wizard': 'Timelapse Editor', 'models': 'Models',
+    'train': 'Train', 'live': 'Live RTSP', 'filter': 'Filter',
+    'cameras': 'Cameras', 'swiss': 'CSI',
     'history': 'History', 'projects': 'Projects',
     'no_models': 'No models registered yet.',
     'no_projects': 'No projects yet.',
     'no_history': 'No jobs yet.',
   },
   de: {
-    'dashboard': 'Start', 'wizard': 'Zeitraffer', 'cameras': 'Kameras', 'swiss': 'CSI',
-    'models': 'Modelle', 'train': 'Training', 'live': 'Live RTSP', 'filter': 'Filter',
+    'dashboard': 'Start', 'wizard': 'Zeitraffer-Editor', 'models': 'Modelle',
+    'train': 'Training', 'live': 'Live RTSP', 'filter': 'Filter',
+    'cameras': 'Kameras', 'swiss': 'CSI',
     'history': 'Verlauf', 'projects': 'Projekte',
     'no_models': 'Noch keine Modelle registriert.',
     'no_projects': 'Noch keine Projekte.',
@@ -551,25 +507,8 @@ function t(key) { return (STRINGS[currentLocale] || STRINGS.en)[key] || key; }
 
 function applyLocale() {
   document.querySelectorAll('.topnav-btn').forEach(b => {
-    const label = t(b.dataset.page);
-    // Preserve any inline child markup (e.g. CSI flag dot, badges) by
-    // replacing only the leading text node, not the whole innerHTML.
-    let updated = false;
-    for (const node of b.childNodes) {
-      if (node.nodeType === Node.TEXT_NODE) {
-        node.nodeValue = label;
-        updated = true;
-        break;
-      }
-    }
-    if (!updated) {
-      b.insertBefore(document.createTextNode(label), b.firstChild);
-    }
+    b.textContent = t(b.dataset.page);
   });
-  // The topnav layout may have shifted; resync the magic-line indicator.
-  if (typeof positionTopnavIndicator === 'function') {
-    requestAnimationFrame(positionTopnavIndicator);
-  }
 }
 
 $('locale-toggle').value = currentLocale;
