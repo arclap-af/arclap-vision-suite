@@ -94,22 +94,49 @@ class JobRunner:
         self._stop.set()
 
     def stop_current(self) -> bool:
-        """Terminate the currently-running subprocess, if any.
+        """Terminate the currently-running subprocess + its entire child tree,
+        then close stdout so the worker's readline() loop unblocks immediately.
+        On Windows, Ultralytics spawns child workers that inherit the stdout
+        pipe; killing only the parent leaves those grandchildren alive and
+        readline() blocks forever, hanging the queue worker thread.
         Returns True if a process was killed.
         """
         with self._proc_lock:
             p = self._proc
             jid = self._current_job_id
         if p and p.poll() is None:
-            p.terminate()
+            # Kill the whole tree first (parent + all descendants).
             try:
-                p.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                p.kill()
+                import psutil as _ps
+                proc_root = _ps.Process(p.pid)
+                for child in proc_root.children(recursive=True):
+                    try: child.kill()
+                    except Exception: pass
+                try: proc_root.kill()
+                except Exception: pass
+            except ImportError:
+                # psutil not installed — best-effort with stdlib only
+                p.terminate()
+                try: p.wait(timeout=5)
+                except subprocess.TimeoutExpired: p.kill()
+                # Windows-specific: kill the tree via taskkill
+                if hasattr(p, "pid"):
+                    try:
+                        import subprocess as _sp
+                        _sp.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                                capture_output=True, timeout=5)
+                    except Exception: pass
+            # Close stdout explicitly so readline() in the worker thread
+            # returns '' immediately and the worker can move on to the next job.
+            try:
+                if p.stdout: p.stdout.close()
+            except Exception: pass
+            try: p.wait(timeout=3)
+            except subprocess.TimeoutExpired: pass
             if jid:
                 self.db.update_job(jid, status="stopped",
                                    finished_at=time.time(),
-                                   returncode=p.returncode)
+                                   returncode=p.returncode if p.returncode is not None else -1)
                 self.db.append_log(jid, "[stopped by user]")
             return True
         return False

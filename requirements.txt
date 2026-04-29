@@ -19,6 +19,8 @@ fastapi>=0.115
 uvicorn>=0.30
 python-multipart>=0.0.20
 pydantic>=2.7
+psutil>=5.9                  # cross-platform process-tree kill (stop scan)
+pyyaml>=6.0                  # YOLO data.yaml read/write
 
 # Gradio web app (alternative UI: gui.py)
 gradio>=5.0
