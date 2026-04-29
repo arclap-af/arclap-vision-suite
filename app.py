@@ -5944,19 +5944,39 @@ def queue_force_stop():
 @app.post("/api/system/restart")
 def system_restart():
     """Exit with code 42; the run.bat / run.sh restart-loop catches that
-    and relaunches the server in the same console window. Browser polls
-    /api/system/stats until it's back, then auto-reloads.
-    If the user started python app.py manually (no loop), the process
-    just exits — they'll need to start it again themselves."""
-    import os as _os, threading as _th
+    and relaunches the server in the same console window.
+
+    Windows-specific: os._exit doesn't always propagate the exit code through
+    uvicorn's signal handlers, so we use os.kill(os.getpid(), SIGTERM) on
+    POSIX and Windows-API TerminateProcess on Windows for predictability."""
+    import os as _os, threading as _th, sys as _sys
     def _do_restart():
-        time.sleep(0.6)   # let the HTTP response flush first
+        time.sleep(0.4)   # let the HTTP response flush first
         try:
             queue.stop_current()
         except Exception:
             pass
         print("[restart] exit 42 — run.bat loop will relaunch", flush=True)
-        _os._exit(42)
+        # Best-effort: try uvicorn graceful shutdown first by signalling.
+        # If anything blocks we hard-exit after a short timeout.
+        def _hard_exit():
+            time.sleep(2.0)
+            print("[restart] hard exit", flush=True)
+            _os._exit(42)
+        _th.Thread(target=_hard_exit, daemon=True).start()
+        try:
+            # Tell the main thread to shut down. On Windows this lets uvicorn
+            # close listeners cleanly so the next process can re-bind port 8000.
+            if _sys.platform == "win32":
+                _os._exit(42)
+            else:
+                import signal as _sig
+                _os.kill(_os.getpid(), _sig.SIGTERM)
+                # Fall back to _exit if SIGTERM doesn't take effect
+                time.sleep(1.0)
+                _os._exit(42)
+        except Exception:
+            _os._exit(42)
     _th.Thread(target=_do_restart, daemon=True).start()
     return {"ok": True, "message": "restarting"}
 

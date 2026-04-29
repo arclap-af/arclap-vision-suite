@@ -209,50 +209,79 @@
                    'The browser will reload automatically once the server is back ' +
                    '(usually 5-10 seconds).')) return;
 
-      // Full-screen overlay
-      let ov = $('restart-overlay');
-      if (!ov) {
-        ov = document.createElement('div');
-        ov.id = 'restart-overlay';
-        ov.style.cssText =
-          'position:fixed;inset:0;background:rgba(11,18,32,0.92);z-index:9999;' +
-          'display:flex;align-items:center;justify-content:center;flex-direction:column;' +
-          'gap:18px;color:#fff;font-family:var(--font-ui);';
-        ov.innerHTML =
-          '<div style="width:48px;height:48px;border:3px solid rgba(255,255,255,0.2);' +
-          'border-top-color:var(--color-brand,#E5213C);border-radius:50%;' +
-          'animation:rspin 0.8s linear infinite"></div>' +
-          '<div style="font-size:18px;font-weight:600">Restarting Vision Suite…</div>' +
-          '<div id="restart-overlay-msg" style="font-size:13px;opacity:0.75;font-family:var(--font-mono)">stopping current process</div>' +
-          '<style>@keyframes rspin { to { transform: rotate(360deg); } }</style>';
-        document.body.appendChild(ov);
-      }
-      const msg = $('restart-overlay-msg');
+      // Full-screen overlay with an explicit Cancel button so the UI is never
+      // permanently blocked. Esc key + click-outside also dismiss.
+      let ov = document.getElementById('restart-overlay');
+      if (ov) ov.remove();
+      ov = document.createElement('div');
+      ov.id = 'restart-overlay';
+      ov.style.cssText =
+        'position:fixed;inset:0;background:rgba(11,18,32,0.92);z-index:9999;' +
+        'display:flex;align-items:center;justify-content:center;flex-direction:column;' +
+        'gap:18px;color:#fff;font-family:var(--font-ui);';
+      ov.innerHTML =
+        '<div style="width:48px;height:48px;border:3px solid rgba(255,255,255,0.2);' +
+        'border-top-color:var(--color-brand,#E5213C);border-radius:50%;' +
+        'animation:rspin 0.8s linear infinite"></div>' +
+        '<div style="font-size:18px;font-weight:600">Restarting Vision Suite…</div>' +
+        '<div id="restart-overlay-msg" style="font-size:13px;opacity:0.75;font-family:var(--font-mono);text-align:center;max-width:520px;padding:0 16px">sending stop signal…</div>' +
+        '<div style="display:flex;gap:8px;margin-top:10px">' +
+          '<button id="restart-overlay-reload" style="background:var(--color-brand,#E5213C);color:#fff;border:none;border-radius:7px;padding:8px 16px;font:inherit;font-weight:600;cursor:pointer">Reload now</button>' +
+          '<button id="restart-overlay-cancel" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:7px;padding:8px 16px;font:inherit;cursor:pointer">Close (Esc)</button>' +
+        '</div>' +
+        '<style>@keyframes rspin { to { transform: rotate(360deg); } }</style>';
+      document.body.appendChild(ov);
+      const msg = document.getElementById('restart-overlay-msg');
 
-      try {
-        await fetch('/api/system/restart', { method: 'POST' });
-      } catch (e) {
-        // Connection might drop mid-request — that's actually expected.
-      }
+      // Cancel handlers — Esc, click-outside, click on Cancel button
+      let cancelled = false;
+      const dismiss = () => {
+        cancelled = true;
+        ov.remove();
+        document.removeEventListener('keydown', escHandler);
+      };
+      const escHandler = (e) => { if (e.key === 'Escape') dismiss(); };
+      document.addEventListener('keydown', escHandler);
+      ov.addEventListener('click', (e) => { if (e.target === ov) dismiss(); });
+      document.getElementById('restart-overlay-cancel').onclick = dismiss;
+      document.getElementById('restart-overlay-reload').onclick = () => location.reload();
 
-      // Poll until the new server answers /api/system/stats
+      // Helper: fetch with hard 2s timeout (so a hung server doesn't lock us)
+      const ftimeout = async (url, opts = {}, ms = 2000) => {
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort(), ms);
+        try {
+          return await fetch(url, { ...opts, signal: ac.signal, cache: 'no-store' });
+        } finally { clearTimeout(t); }
+      };
+
+      // Fire the restart request (don't await — connection drops mid-request
+      // are expected when the server kills itself)
+      ftimeout('/api/system/restart', { method: 'POST' }, 1500).catch(() => {});
+
       msg.textContent = 'waiting for server to come back online';
       const startedAt = Date.now();
-      while (Date.now() - startedAt < 60000) {
+      while (!cancelled && Date.now() - startedAt < 30000) {
         await new Promise(r => setTimeout(r, 1000));
+        if (cancelled) return;
         try {
-          const r = await fetch('/api/system/stats', { cache: 'no-store' });
+          const r = await ftimeout('/api/system/stats', {}, 1500);
           if (r.ok) {
             msg.textContent = 'server back · reloading page';
-            await new Promise(r => setTimeout(r, 600));
-            location.reload();
+            setTimeout(() => location.reload(), 400);
             return;
           }
         } catch (e) { /* keep waiting */ }
         const elapsed = Math.round((Date.now() - startedAt) / 1000);
-        msg.textContent = `waiting for server to come back online (${elapsed}s)`;
+        msg.innerHTML =
+          `waiting for server to come back online · ${elapsed}s<br>` +
+          `<span style="opacity:0.7">if it doesn't come back, you may need to double-click run.bat manually</span>`;
       }
-      msg.textContent = 'server did not come back after 60s — you may need to start run.bat manually';
+      if (!cancelled) {
+        msg.innerHTML =
+          'server did not come back after 30s.<br>' +
+          '<span style="opacity:0.7">double-click run.bat or restart.bat in your project folder, then click Reload now.</span>';
+      }
     });
   }
 
