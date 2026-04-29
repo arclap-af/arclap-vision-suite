@@ -488,3 +488,446 @@ def export_cvat_zip(scan_db_path: str | Path,
 
     conn.close()
     return out_path
+
+
+# ════════════════════════════════════════════════════════════════════
+#  v2 EXTENSIONS — full Annotation Pipeline (matches the chart)
+# ════════════════════════════════════════════════════════════════════
+
+_SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS image_classagnostic (
+    path       TEXT NOT NULL,
+    box_idx    INTEGER NOT NULL,
+    x1         REAL, y1 REAL, x2 REAL, y2 REAL,
+    objectness REAL NOT NULL,
+    PRIMARY KEY (path, box_idx)
+);
+CREATE INDEX IF NOT EXISTS image_classagnostic_obj
+  ON image_classagnostic(objectness);
+
+CREATE TABLE IF NOT EXISTS image_class_need (
+    path     TEXT NOT NULL,
+    class_id INTEGER NOT NULL,
+    score    REAL NOT NULL,
+    PRIMARY KEY (path, class_id)
+);
+CREATE INDEX IF NOT EXISTS image_class_need_score
+  ON image_class_need(class_id, score DESC);
+
+CREATE TABLE IF NOT EXISTS image_cluster_v2 (
+    path          TEXT PRIMARY KEY,
+    cluster_id    INTEGER NOT NULL,
+    cluster_label TEXT
+);
+CREATE INDEX IF NOT EXISTS image_cluster_v2_id
+  ON image_cluster_v2(cluster_id);
+
+CREATE TABLE IF NOT EXISTS pick_run (
+    run_id          TEXT PRIMARY KEY,
+    started_at      REAL NOT NULL,
+    finished_at     REAL,
+    weights_json    TEXT,
+    config_json     TEXT,
+    n_picked        INTEGER,
+    n_approved      INTEGER DEFAULT 0,
+    n_rejected      INTEGER DEFAULT 0,
+    n_holdout       INTEGER DEFAULT 0,
+    dataset_hash    TEXT,
+    model_path      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pick_decision (
+    run_id     TEXT NOT NULL,
+    path       TEXT NOT NULL,
+    class_id   INTEGER,
+    score      REAL,
+    reason     TEXT,
+    status     TEXT DEFAULT 'pending',
+    curator    TEXT,
+    decided_at REAL,
+    PRIMARY KEY (run_id, path)
+);
+CREATE INDEX IF NOT EXISTS pick_decision_run ON pick_decision(run_id, status);
+"""
+
+
+def _open_v2(scan_db_path):
+    conn = _open(scan_db_path)
+    conn.executescript(_SCHEMA_V2)
+    conn.commit()
+    return conn
+
+
+# ─── Class-agnostic objectness pass (Filter C extension) ─────────────
+def detect_classagnostic(scan_db_path, *, model_path: str = "yolov8n.pt",
+                         conf: float = 0.05, max_per_image: int = 30,
+                         device: str | None = None) -> dict:
+    """Run YOLO at very-low confidence with class-agnostic NMS to find
+    'model saw something but isn't sure what' candidates. Caches one row
+    per box. Idempotent — skips images with existing rows."""
+    try:
+        from ultralytics import YOLO
+        import torch
+    except ImportError as e:
+        return {"error": f"ultralytics/torch missing: {e}"}
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    conn = _open_v2(scan_db_path)
+    todo = [r[0] for r in conn.execute(
+        "SELECT path FROM images "
+        "WHERE path NOT IN (SELECT DISTINCT path FROM image_classagnostic)"
+    ).fetchall()]
+    if not todo:
+        conn.close()
+        return {"computed": 0, "device": device, "note": "all cached"}
+
+    print(f"[picker] class-agnostic detect on {len(todo)} images "
+          f"(model={model_path}, conf={conf}, device={device})", flush=True)
+    model = YOLO(model_path)
+    n_done = 0
+    for p in todo:
+        try:
+            r = model.predict(p, conf=conf, device=device, verbose=False,
+                              agnostic_nms=True, max_det=max_per_image)[0]
+            boxes = []
+            if r.boxes is not None and len(r.boxes) > 0:
+                xyxy = r.boxes.xyxy.cpu().numpy()
+                confs = r.boxes.conf.cpu().numpy()
+                for j, (b, c) in enumerate(zip(xyxy, confs)):
+                    boxes.append((p, j,
+                                  float(b[0]), float(b[1]),
+                                  float(b[2]), float(b[3]),
+                                  float(c)))
+            if not boxes:
+                # sentinel so we don't reprocess
+                boxes = [(p, -1, 0.0, 0.0, 0.0, 0.0, 0.0)]
+            conn.executemany(
+                "INSERT OR REPLACE INTO image_classagnostic VALUES (?,?,?,?,?,?,?)",
+                boxes)
+            n_done += 1
+            if n_done % 50 == 0:
+                conn.commit()
+                print(f"[picker] class-agnostic {n_done}/{len(todo)}",
+                      flush=True)
+        except Exception as e:
+            print(f"[picker] class-agnostic skip {p}: {e}", flush=True)
+            continue
+    conn.commit()
+    conn.close()
+    return {"computed": n_done, "device": device, "model": model_path}
+
+
+# ─── CLIP text-image scoring (Filter A · class need) ─────────────────
+def score_class_need(scan_db_path,
+                     *, taxonomy: list[dict],
+                     model_name: str = "ViT-L-14",
+                     pretrained: str = "openai",
+                     device: str | None = None) -> dict:
+    """For each (image, class) pair, compute the max cosine similarity
+    between the image's CLIP embedding and the class's text prompts."""
+    try:
+        import open_clip
+        import torch
+        import numpy as np
+    except ImportError as e:
+        return {"error": f"open-clip-torch/torch/numpy missing: {e}"}
+
+    conn = _open_v2(scan_db_path)
+    rows = conn.execute(
+        "SELECT path, embedding, dim FROM image_clip"
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return {"error": "no image_clip rows — run ensure_clip_embeddings first"}
+    paths = [r[0] for r in rows]
+    img_feats = np.stack([
+        np.frombuffer(r[1], dtype=np.float32).reshape(r[2]) for r in rows
+    ])
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    print(f"[picker] class-need scoring {len(taxonomy)} classes "
+          f"x {len(paths)} images on {device}", flush=True)
+    model, _, _ = open_clip.create_model_and_transforms(
+        model_name, pretrained=pretrained, device=device)
+    tokenizer = open_clip.get_tokenizer(model_name)
+    model.eval()
+
+    n_inserted = 0
+    with torch.no_grad():
+        for cls in taxonomy:
+            prompts = cls.get("prompts") or [cls.get("en", f"class {cls['id']}")]
+            tok = tokenizer(prompts).to(device)
+            txt = model.encode_text(tok).cpu().numpy().astype("float32")
+            txt = txt / (np.linalg.norm(txt, axis=1, keepdims=True) + 1e-9)
+            sims = img_feats @ txt.T
+            best = sims.max(axis=1)
+            cls_id = int(cls["id"])
+            data = [(p, cls_id, float(s)) for p, s in zip(paths, best)]
+            conn.executemany(
+                "INSERT OR REPLACE INTO image_class_need(path, class_id, score) "
+                "VALUES (?, ?, ?)", data)
+            n_inserted += len(data)
+            print(f"[picker]   class {cls_id:2d} {cls['en'][:30]:30s} "
+                  f"need [{float(best.min()):.3f}, {float(best.max()):.3f}]",
+                  flush=True)
+    conn.commit()
+    conn.close()
+    return {"inserted": n_inserted, "device": device,
+            "n_classes": len(taxonomy), "n_images": len(paths)}
+
+
+# ─── Per-class quota ranker (Stage 5) ────────────────────────────────
+def pick_per_class(scan_db_path, *,
+                   taxonomy: list[dict],
+                   per_class_target: int = 250,
+                   weights: dict | None = None,
+                   need_threshold: float = 0.18,
+                   uncertainty_lo: float = 0.20,
+                   uncertainty_hi: float = 0.60) -> list[dict]:
+    """Stage 5 of the chart: per-class quota with leftover redistribution."""
+    weights = weights or {}
+    w_need = float(weights.get("need", 0.5))
+    w_div  = float(weights.get("diversity", 0.3))
+    w_diff = float(weights.get("difficulty", 0.2))
+    w_qual = float(weights.get("quality", 0.0))
+
+    conn = _open_v2(scan_db_path)
+
+    quality_of = dict(conn.execute(
+        "SELECT path, COALESCE(quality, 0.0) FROM images"
+    ).fetchall())
+    cluster_of = dict(conn.execute(
+        "SELECT path, cluster_id FROM image_cluster_v2"
+    ).fetchall())
+
+    unc_of: dict[str, float] = {}
+    for path, avg_conf in conn.execute(
+        "SELECT path, AVG(max_conf) FROM detections GROUP BY path"
+    ).fetchall():
+        ac = float(avg_conf or 0.0)
+        unc_of[path] = max(0.0, 1.0 - 2.0 * abs(ac - 0.5))
+
+    obj_of = set(p for (p,) in conn.execute(
+        "SELECT DISTINCT path FROM image_classagnostic "
+        "WHERE box_idx >= 0 AND objectness > 0.10"
+    ).fetchall())
+
+    picked_paths_global: set[str] = set()
+    seen_clusters_global: set[int] = set()
+    out_rows: list[dict] = []
+    leftover_budget = 0
+
+    def pick_for_class(cls_id: int, target: int) -> list[dict]:
+        if target <= 0: return []
+        candidates = conn.execute(
+            "SELECT n.path, n.score, COALESCE(d.max_conf, 0.0) "
+            "FROM image_class_need n "
+            "LEFT JOIN detections d ON n.path = d.path AND d.class_id = ? "
+            "WHERE n.class_id = ? AND n.score > ? "
+            "ORDER BY n.score DESC LIMIT 2000",
+            (cls_id, cls_id, need_threshold),
+        ).fetchall()
+        if not candidates: return []
+        scored = []
+        for path, need_score, det_conf in candidates:
+            if path in picked_paths_global: continue
+            unc = unc_of.get(path, 0.5 if det_conf > 0 else 0.85)
+            if det_conf > 0 and not (uncertainty_lo <= det_conf <= uncertainty_hi):
+                diff = 0.0
+            else:
+                diff = unc
+            qual = float(quality_of.get(path, 0.0))
+            cluster = cluster_of.get(path, -1)
+            div_bonus = 1.0 if cluster not in seen_clusters_global else 0.0
+            score = (w_need * float(need_score)
+                     + w_diff * diff
+                     + w_div  * div_bonus
+                     + w_qual * qual)
+            scored.append((path, float(need_score), unc, score, cluster, det_conf))
+        scored.sort(key=lambda r: r[3], reverse=True)
+        chosen = []
+        for path, need_score, unc, score, cluster, det_conf in scored:
+            if len(chosen) >= target: break
+            picked_paths_global.add(path)
+            seen_clusters_global.add(cluster)
+            why = []
+            if need_score > 0.25: why.append(f"clip-text {need_score:.2f}")
+            if unc > 0.5: why.append("model unsure")
+            if path in obj_of: why.append("class-agnostic hit")
+            chosen.append({
+                "path": path, "class_id": cls_id,
+                "score": score, "need": float(need_score),
+                "uncertainty": unc, "quality": qual,
+                "cluster": cluster, "det_conf": float(det_conf),
+                "reason": " · ".join(why) or "balanced sample",
+            })
+        return chosen
+
+    classes = sorted(taxonomy, key=lambda c: c["id"])
+    for cls in classes:
+        picks = pick_for_class(cls["id"], per_class_target)
+        if len(picks) < per_class_target:
+            leftover_budget += per_class_target - len(picks)
+        out_rows.extend(picks)
+
+    # Redistribute leftover
+    if leftover_budget > 0:
+        for cls in classes:
+            if leftover_budget <= 0: break
+            extra = pick_for_class(cls["id"], min(leftover_budget, per_class_target))
+            if extra:
+                out_rows.extend(extra)
+                leftover_budget -= len(extra)
+
+    conn.close()
+    return out_rows
+
+
+# ─── Cluster naming (auto-label clusters via prompts) ────────────────
+_PHASE_PROMPTS = [
+    ("winter, snow on construction site",     "winter"),
+    ("summer dust on construction site",      "summer dust"),
+    ("dawn early morning construction site",  "dawn"),
+    ("dusk evening construction site",        "dusk"),
+    ("rainy wet ground construction site",    "rain"),
+    ("foggy construction site",               "fog"),
+    ("excavation phase deep pit",             "excavation"),
+    ("foundation pour concrete",              "foundation"),
+    ("framing structure under construction",  "framing"),
+    ("finishing phase facade nearly complete","finishing"),
+    ("empty quiet construction site",         "empty"),
+    ("busy crowded construction site",        "busy"),
+]
+
+def cluster_v2(scan_db_path, *, n_clusters: int = 200,
+               model_name: str = "ViT-L-14",
+               pretrained: str = "openai",
+               device: str | None = None) -> dict:
+    """Re-cluster all CLIP embeddings into N clusters and auto-name each
+    by matching its centroid against a small set of phase prompts."""
+    try:
+        import numpy as np
+        from sklearn.cluster import MiniBatchKMeans
+        import open_clip, torch
+    except ImportError as e:
+        return {"error": f"missing dependency: {e}"}
+
+    conn = _open_v2(scan_db_path)
+    rows = conn.execute(
+        "SELECT path, embedding, dim FROM image_clip"
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return {"error": "no image_clip rows"}
+    paths = [r[0] for r in rows]
+    X = np.stack([
+        np.frombuffer(r[1], dtype=np.float32).reshape(r[2]) for r in rows
+    ])
+    n_clusters = max(1, min(n_clusters, len(paths)))
+    km = MiniBatchKMeans(n_clusters=n_clusters, random_state=42,
+                         batch_size=256, n_init=3)
+    labels = km.fit_predict(X)
+    centroids = km.cluster_centers_
+    centroids = centroids / (np.linalg.norm(centroids, axis=1, keepdims=True) + 1e-9)
+
+    # Auto-name centroids
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    model, _, _ = open_clip.create_model_and_transforms(
+        model_name, pretrained=pretrained, device=device)
+    tokenizer = open_clip.get_tokenizer(model_name)
+    model.eval()
+    prompts = [p[0] for p in _PHASE_PROMPTS]
+    with torch.no_grad():
+        tok = tokenizer(prompts).to(device)
+        txt = model.encode_text(tok).cpu().numpy().astype("float32")
+        txt = txt / (np.linalg.norm(txt, axis=1, keepdims=True) + 1e-9)
+    sims = centroids @ txt.T
+    best_idx = sims.argmax(axis=1)
+    cluster_label = [_PHASE_PROMPTS[i][1] for i in best_idx]
+
+    # Insert
+    conn.execute("DELETE FROM image_cluster_v2")
+    data = [(p, int(l), cluster_label[int(l)]) for p, l in zip(paths, labels)]
+    conn.executemany(
+        "INSERT INTO image_cluster_v2 VALUES (?, ?, ?)", data)
+    conn.commit()
+    conn.close()
+    return {"n_clusters": int(n_clusters), "n_images": len(paths),
+            "label_distribution": dict(zip(*np.unique(cluster_label,
+                                                      return_counts=True)))}
+
+
+# ─── Pick run lifecycle ─────────────────────────────────────────────
+import uuid as _uuid
+def start_pick_run(scan_db_path, *, weights: dict, config: dict,
+                   model_path: str | None = None,
+                   dataset_hash: str | None = None) -> str:
+    run_id = _uuid.uuid4().hex[:12]
+    conn = _open_v2(scan_db_path)
+    conn.execute(
+        "INSERT INTO pick_run(run_id, started_at, weights_json, config_json, "
+        "model_path, dataset_hash) VALUES (?, ?, ?, ?, ?, ?)",
+        (run_id, time.time(), json.dumps(weights), json.dumps(config),
+         model_path, dataset_hash),
+    )
+    conn.commit()
+    conn.close()
+    return run_id
+
+
+def store_pick_decisions(scan_db_path, run_id: str, picks: list[dict]):
+    conn = _open_v2(scan_db_path)
+    data = [(run_id, p["path"], int(p.get("class_id", -1)),
+             float(p.get("score", 0.0)), p.get("reason", ""))
+            for p in picks]
+    conn.executemany(
+        "INSERT OR REPLACE INTO pick_decision"
+        "(run_id, path, class_id, score, reason, status) "
+        "VALUES (?, ?, ?, ?, ?, 'pending')", data)
+    conn.execute(
+        "UPDATE pick_run SET n_picked = ? WHERE run_id = ?",
+        (len(picks), run_id))
+    conn.commit()
+    conn.close()
+
+
+def update_decision(scan_db_path, run_id: str, path: str,
+                    status: str, curator: str | None = None) -> None:
+    """Curator action: approve / reject / holdout / pending"""
+    if status not in ("approved", "rejected", "holdout", "pending"):
+        raise ValueError(f"bad status {status}")
+    conn = _open_v2(scan_db_path)
+    conn.execute(
+        "UPDATE pick_decision SET status = ?, curator = ?, decided_at = ? "
+        "WHERE run_id = ? AND path = ?",
+        (status, curator, time.time(), run_id, path))
+    # refresh counts
+    counts = dict(conn.execute(
+        "SELECT status, COUNT(*) FROM pick_decision WHERE run_id = ? GROUP BY status",
+        (run_id,)).fetchall())
+    conn.execute(
+        "UPDATE pick_run SET n_approved = ?, n_rejected = ?, n_holdout = ? "
+        "WHERE run_id = ?",
+        (counts.get("approved", 0), counts.get("rejected", 0),
+         counts.get("holdout", 0), run_id))
+    conn.commit()
+    conn.close()
+
+
+def get_run_summary(scan_db_path, run_id: str) -> dict:
+    conn = _open_v2(scan_db_path)
+    r = conn.execute(
+        "SELECT * FROM pick_run WHERE run_id = ?", (run_id,)).fetchone()
+    if not r:
+        conn.close()
+        return {}
+    cols = [c[0] for c in conn.execute("SELECT * FROM pick_run LIMIT 0").description]
+    summary = dict(zip(cols, r))
+    conn.close()
+    return summary
+

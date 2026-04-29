@@ -48,6 +48,7 @@ from core import disk as disk_core
 from core import alerts as alerts_core
 from core import registry as registry_core
 from core import annotation_picker as picker_core
+from core import taxonomy as taxonomy_core
 
 PYTHON = sys.executable
 ROOT = Path(__file__).parent.resolve()
@@ -2330,6 +2331,190 @@ def download_export(filename: str):
     if not p.is_file():
         raise HTTPException(404, "Export not found")
     return FileResponse(str(p), media_type="application/zip", filename=filename)
+
+
+# ───── Annotation Pipeline v2 (40-class CSI-Annotation-v3) ─────────────
+
+@app.get("/api/picker/image")
+def picker_image(path: str):
+    """Serve a thumbnail of a source image. Path is the absolute filesystem
+    path stored in the scan DB. Restricted to image files for safety."""
+    p = Path(path).resolve()
+    if not p.is_file():
+        raise HTTPException(404, "Image not found")
+    if p.suffix.lower() not in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
+        raise HTTPException(400, "Not an image")
+    return FileResponse(str(p), media_type="image/jpeg")
+
+
+@app.get("/api/picker/taxonomy/{job_id}")
+def picker_taxonomy(job_id: str):
+    db_path = _scan_db_for_job(job_id)
+    taxonomy_core.ensure_taxonomy(db_path)
+    return {"taxonomy": taxonomy_core.get_taxonomy(db_path)}
+
+
+class PickerStageReq(BaseModel):
+    model_path: str = "yolov8n.pt"     # for class-agnostic detect
+    clip_model: str = "ViT-L-14"       # CLIP variant
+    n_clusters: int = 200
+
+
+@app.post("/api/picker/{job_id}/stage1-phash")
+def picker_stage1(job_id: str):
+    db_path = _scan_db_for_job(job_id)
+    return picker_core.ensure_phashes(db_path)
+
+
+@app.post("/api/picker/{job_id}/stage2-clip")
+def picker_stage2(job_id: str, req: PickerStageReq):
+    db_path = _scan_db_for_job(job_id)
+    return picker_core.ensure_clip_embeddings(db_path, model_name=req.clip_model)
+
+
+@app.post("/api/picker/{job_id}/stage3-classagnostic")
+def picker_stage3(job_id: str, req: PickerStageReq):
+    db_path = _scan_db_for_job(job_id)
+    return picker_core.detect_classagnostic(db_path, model_path=req.model_path)
+
+
+@app.post("/api/picker/{job_id}/stage4-need")
+def picker_stage4(job_id: str, req: PickerStageReq):
+    db_path = _scan_db_for_job(job_id)
+    taxonomy_core.ensure_taxonomy(db_path)
+    tax = taxonomy_core.get_taxonomy(db_path)
+    return picker_core.score_class_need(db_path, taxonomy=tax,
+                                         model_name=req.clip_model)
+
+
+@app.post("/api/picker/{job_id}/stage4-cluster")
+def picker_stage4_cluster(job_id: str, req: PickerStageReq):
+    db_path = _scan_db_for_job(job_id)
+    return picker_core.cluster_v2(db_path, n_clusters=req.n_clusters,
+                                   model_name=req.clip_model)
+
+
+class PickerRunReq(BaseModel):
+    per_class_target: int = 250
+    weights: dict = {"need": 0.5, "diversity": 0.3, "difficulty": 0.2, "quality": 0.0}
+    need_threshold: float = 0.18
+    uncertainty_lo: float = 0.20
+    uncertainty_hi: float = 0.60
+
+
+@app.post("/api/picker/{job_id}/run")
+def picker_run(job_id: str, req: PickerRunReq):
+    db_path = _scan_db_for_job(job_id)
+    taxonomy_core.ensure_taxonomy(db_path)
+    tax = taxonomy_core.get_taxonomy(db_path)
+    run_id = picker_core.start_pick_run(
+        db_path, weights=req.weights, config=req.dict(),
+    )
+    picks = picker_core.pick_per_class(
+        db_path, taxonomy=tax,
+        per_class_target=req.per_class_target,
+        weights=req.weights,
+        need_threshold=req.need_threshold,
+        uncertainty_lo=req.uncertainty_lo,
+        uncertainty_hi=req.uncertainty_hi,
+    )
+    picker_core.store_pick_decisions(db_path, run_id, picks)
+    summary = picker_core.get_run_summary(db_path, run_id)
+    # Group counts per class for the UI
+    class_counts: dict[int, int] = {}
+    for p in picks:
+        class_counts[p["class_id"]] = class_counts.get(p["class_id"], 0) + 1
+    return {
+        "run_id": run_id,
+        "summary": summary,
+        "n_picked": len(picks),
+        "per_class_counts": class_counts,
+        "picks": picks,
+    }
+
+
+@app.get("/api/picker/{job_id}/runs")
+def picker_runs(job_id: str):
+    db_path = _scan_db_for_job(job_id)
+    conn = picker_core._open_v2(db_path)
+    rows = conn.execute(
+        "SELECT run_id, started_at, finished_at, n_picked, n_approved, "
+        "n_rejected, n_holdout FROM pick_run ORDER BY started_at DESC"
+    ).fetchall()
+    conn.close()
+    cols = ["run_id", "started_at", "finished_at", "n_picked", "n_approved",
+            "n_rejected", "n_holdout"]
+    return {"runs": [dict(zip(cols, r)) for r in rows]}
+
+
+@app.get("/api/picker/{job_id}/runs/{run_id}/picks")
+def picker_run_picks(job_id: str, run_id: str, status: str = "pending",
+                     limit: int = 1000, offset: int = 0):
+    db_path = _scan_db_for_job(job_id)
+    conn = picker_core._open_v2(db_path)
+    rows = conn.execute(
+        "SELECT path, class_id, score, reason, status FROM pick_decision "
+        "WHERE run_id = ? AND (status = ? OR ? = 'all') "
+        "ORDER BY class_id, score DESC LIMIT ? OFFSET ?",
+        (run_id, status, status, limit, offset),
+    ).fetchall()
+    conn.close()
+    return {"picks": [{"path": r[0], "class_id": r[1], "score": r[2],
+                        "reason": r[3], "status": r[4]} for r in rows]}
+
+
+class CuratorActionReq(BaseModel):
+    path: str
+    status: str   # approved / rejected / holdout / pending
+    curator: str | None = None
+
+
+@app.post("/api/picker/{job_id}/runs/{run_id}/curator")
+def picker_curator_action(job_id: str, run_id: str, req: CuratorActionReq):
+    db_path = _scan_db_for_job(job_id)
+    picker_core.update_decision(db_path, run_id, req.path,
+                                 req.status, req.curator)
+    return {"ok": True}
+
+
+@app.post("/api/picker/{job_id}/runs/{run_id}/export")
+def picker_export_run(job_id: str, run_id: str):
+    """Export the curator's APPROVED picks as a labeling-batch zip and
+    HOLDOUT picks as a benchmark zip."""
+    db_path = _scan_db_for_job(job_id)
+    conn = picker_core._open_v2(db_path)
+    approved = [r[0] for r in conn.execute(
+        "SELECT path FROM pick_decision WHERE run_id = ? AND status = 'approved'",
+        (run_id,)).fetchall()]
+    holdout = [r[0] for r in conn.execute(
+        "SELECT path FROM pick_decision WHERE run_id = ? AND status = 'holdout'",
+        (run_id,)).fetchall()]
+    conn.close()
+    out_dir = OUTPUTS / "annotation_exports"
+    result = {"run_id": run_id}
+    if approved:
+        zp = picker_core.export_cvat_zip(db_path, approved, out_dir=out_dir)
+        result["labeling_batch"] = {
+            "zip_path": str(zp), "filename": zp.name,
+            "n_images": len(approved),
+            "size_mb": round(zp.stat().st_size / 1024 / 1024, 2),
+            "download_url": f"/api/filter/download-export/{zp.name}",
+        }
+    if holdout:
+        zp = picker_core.export_cvat_zip(db_path, holdout, out_dir=out_dir)
+        # Rename so the holdout zip is recognisable
+        new_name = zp.name.replace("annotation_pick_", "benchmark_holdout_")
+        new_path = zp.with_name(new_name)
+        zp.rename(new_path)
+        result["benchmark_holdout"] = {
+            "zip_path": str(new_path), "filename": new_path.name,
+            "n_images": len(holdout),
+            "size_mb": round(new_path.stat().st_size / 1024 / 1024, 2),
+            "download_url": f"/api/filter/download-export/{new_path.name}",
+        }
+    if not approved and not holdout:
+        result["warning"] = "Nothing to export — curator has not approved any picks yet."
+    return result
 
 
 @app.post("/api/filter/{job_id}/feedback")

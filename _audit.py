@@ -74,15 +74,19 @@ def normalize(url):
     url = url.split("?")[0]
     url = re.sub(r"\$\{[^}]+\}", "{p}", url)
     url = re.sub(r"`\s*\+[^+]+\+\s*`?", "{p}", url)
+    # Replace any {p}/{anything} with [^/]+ for matching
     return url
 
 def matches_route(url, routes):
     u = normalize(url)
     if u in routes: return True
-    # Any route that is a prefix of u, where u has trailing path-param data
+    # Treat {p} placeholders in URL as matching anything
+    u_pattern = re.escape(u).replace(r"\{p\}", r"[^/]+")
     for r in routes:
         rp = re.sub(r"\{[^}]+\}", r"[^/]+", r)
         if re.fullmatch(rp, u): return True
+        # Also try u-as-pattern against literal route (handles template-literal URLs)
+        if re.fullmatch(u_pattern, r): return True
     # JS string-concat: '/api/scan/' + id → check if any route starts with this prefix + a {param}
     if u.endswith("/"):
         prefix = u

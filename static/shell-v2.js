@@ -560,6 +560,214 @@
     setTimeout(loadHomeV2, 200);
   }
 
+  // ── Pipeline (Annotation v2) ───────────────────────────────────────
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest('.swiss-subtab');
+    if (t && t.dataset.stab === 'pipeline') setTimeout(loadPipelinePage, 60);
+  });
+  let _ppActiveScan = null;
+  let _ppActiveRun = null;
+  let _ppPicks = [];
+  let _ppFocus = -1;
+
+  async function loadPipelinePage() {
+    const sel = $('pp-scan-pick');
+    if (!sel) return;
+    try {
+      const scans = await (await fetch('/api/filter/scans')).json();
+      const list = scans.scans || scans || [];
+      sel.innerHTML = '<option value="">— pick a scan —</option>' +
+        list.map(s => `<option value="${s.job_id || s.id}">${s.label || s.scan_id || s.job_id}</option>`).join('');
+      sel.onchange = () => { _ppActiveScan = sel.value || null; populateClassPicker(); };
+    } catch(e){}
+    if ($('pp-refresh-scans')) $('pp-refresh-scans').onclick = loadPipelinePage;
+
+    const stage = (n, ep) => {
+      const btn = $(`pp-s${n}-run`);
+      if (!btn) return;
+      btn.onclick = async () => {
+        if (!_ppActiveScan) { alert('Pick a scan first.'); return; }
+        const r = $(`pp-s${n}-result`);
+        r.textContent = `running stage ${n}…`;
+        btn.disabled = true;
+        try {
+          const body = {
+            model_path: $('pp-cag-model').value || 'yolov8n.pt',
+            clip_model: $('pp-clip').value || 'ViT-L-14',
+            n_clusters: 200,
+          };
+          const res = await fetch(`/api/picker/${_ppActiveScan}/${ep}`, {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+          r.textContent = JSON.stringify(data);
+        } catch(err) { r.textContent = 'ERROR: ' + err.message; }
+        finally { btn.disabled = false; }
+      };
+    };
+    stage(1, 'stage1-phash');
+    stage(2, 'stage2-clip');
+    stage(3, 'stage3-classagnostic');
+    // Stage 4 runs both class-need + cluster
+    if ($('pp-s4-run')) {
+      $('pp-s4-run').onclick = async () => {
+        if (!_ppActiveScan) { alert('Pick a scan first.'); return; }
+        const r = $('pp-s4-result');
+        const btn = $('pp-s4-run');
+        btn.disabled = true;
+        r.textContent = 'computing class-need scores (40 classes × N images)…';
+        try {
+          const body = { model_path: $('pp-cag-model').value, clip_model: $('pp-clip').value, n_clusters: 200 };
+          const a = await (await fetch(`/api/picker/${_ppActiveScan}/stage4-need`, {
+            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+          })).json();
+          r.textContent = 'need: ' + JSON.stringify(a) + ' · clustering…';
+          const b = await (await fetch(`/api/picker/${_ppActiveScan}/stage4-cluster`, {
+            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+          })).json();
+          r.textContent = 'need: ' + JSON.stringify(a) + ' · cluster: ' + JSON.stringify(b);
+        } catch(e){ r.textContent = 'ERROR: ' + e; }
+        finally { btn.disabled = false; }
+      };
+    }
+
+    // Stage 5: run picker
+    if ($('pp-s5-run')) {
+      $('pp-s5-run').onclick = async () => {
+        if (!_ppActiveScan) { alert('Pick a scan first.'); return; }
+        const r = $('pp-s5-result');
+        const btn = $('pp-s5-run');
+        btn.disabled = true;
+        r.textContent = 'running per-class quota picker…';
+        try {
+          const body = {
+            per_class_target: parseInt($('pp-target').value) || 250,
+            weights: {
+              need: (parseFloat($('pp-w-need').value)||0)/100,
+              diversity: (parseFloat($('pp-w-div').value)||0)/100,
+              difficulty: (parseFloat($('pp-w-diff').value)||0)/100,
+              quality: 0.0,
+            },
+            need_threshold: parseFloat($('pp-need-thr').value) || 0.18,
+            uncertainty_lo: 0.20, uncertainty_hi: 0.60,
+          };
+          const res = await fetch(`/api/picker/${_ppActiveScan}/run`, {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'failed');
+          _ppActiveRun = data.run_id;
+          _ppPicks = data.picks || [];
+          const counts = data.per_class_counts || {};
+          r.textContent = `picked ${data.n_picked} · run_id ${data.run_id} · classes covered ${Object.keys(counts).length}/40`;
+          // Pre-load curator with first 100
+          await loadCuratorPicks();
+        } catch(e){ r.textContent = 'ERROR: ' + e.message; }
+        finally { btn.disabled = false; }
+      };
+    }
+
+    // Stage 6: curator
+    if ($('pp-curator-load')) $('pp-curator-load').onclick = loadCuratorPicks;
+    if ($('pp-export')) $('pp-export').onclick = exportRun;
+
+    populateClassPicker();
+  }
+
+  async function populateClassPicker() {
+    if (!_ppActiveScan) return;
+    try {
+      const t = await (await fetch(`/api/picker/taxonomy/${_ppActiveScan}`)).json();
+      const sel = $('pp-curator-class');
+      sel.innerHTML = '<option value="">All classes</option>' +
+        (t.taxonomy || []).map(c => `<option value="${c.id}">${c.id} · ${c.en} (${c.de})${c.trained?' ✓':''}</option>`).join('');
+    } catch(e){}
+  }
+
+  async function loadCuratorPicks() {
+    if (!_ppActiveScan || !_ppActiveRun) return;
+    const status = $('pp-curator-status').value || 'pending';
+    const cls = $('pp-curator-class').value;
+    const url = new URL(`/api/picker/${_ppActiveScan}/runs/${_ppActiveRun}/picks`,
+                        window.location.origin);
+    url.searchParams.set('status', status);
+    url.searchParams.set('limit', '500');
+    let picks = (await (await fetch(url.toString())).json()).picks || [];
+    if (cls !== '') picks = picks.filter(p => String(p.class_id) === String(cls));
+    const grid = $('pp-curator-grid');
+    if (!picks.length) {
+      grid.innerHTML = '<p class="muted small" style="padding:14px;text-align:center">No picks match the current filter.</p>';
+      return;
+    }
+    grid.innerHTML = picks.map((p, i) => {
+      const fname = (p.path.split(/[\\/]/).pop() || p.path);
+      // Use the events-frame endpoint as a generic image fetcher? No — these are scan source images. Use a generic file-serve.
+      return `<div class="pp-card ${p.status||'pending'}" data-idx="${i}" data-path="${encodeURIComponent(p.path)}">
+        <img src="/api/picker/image?path=${encodeURIComponent(p.path)}" loading="lazy" alt="${fname}"/>
+        <div class="pp-card-meta">
+          <b>cls ${p.class_id}</b>
+          <span class="pp-card-conf">${(p.score||0).toFixed(2)}</span>
+        </div>
+        <div class="pp-card-actions">
+          <button data-act="approved">A</button>
+          <button data-act="holdout">H</button>
+          <button data-act="rejected">R</button>
+        </div>
+      </div>`;
+    }).join('');
+    grid.querySelectorAll('.pp-card-actions button').forEach(b => {
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        const card = b.closest('.pp-card');
+        const path = decodeURIComponent(card.dataset.path);
+        const status = b.dataset.act;
+        await fetch(`/api/picker/${_ppActiveScan}/runs/${_ppActiveRun}/curator`, {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ path, status }),
+        });
+        card.classList.remove('approved','rejected','holdout','pending');
+        card.classList.add(status);
+        updateCuratorCounts();
+      };
+    });
+    updateCuratorCounts();
+  }
+
+  async function updateCuratorCounts() {
+    if (!_ppActiveScan || !_ppActiveRun) return;
+    try {
+      const r = await (await fetch(`/api/picker/${_ppActiveScan}/runs`)).json();
+      const cur = (r.runs || []).find(x => x.run_id === _ppActiveRun);
+      if (cur) {
+        $('pp-curator-counts').textContent =
+          `picked ${cur.n_picked || 0} · approved ${cur.n_approved || 0} · holdout ${cur.n_holdout || 0} · rejected ${cur.n_rejected || 0}`;
+      }
+    } catch(e){}
+  }
+
+  async function exportRun() {
+    if (!_ppActiveScan || !_ppActiveRun) { alert('No active run to export.'); return; }
+    const r = $('pp-export-result');
+    r.textContent = 'building zips…';
+    try {
+      const res = await fetch(`/api/picker/${_ppActiveScan}/runs/${_ppActiveRun}/export`,
+                               { method: 'POST' });
+      const data = await res.json();
+      const lines = [];
+      if (data.labeling_batch) {
+        lines.push(`Labeling batch: ${data.labeling_batch.n_images} imgs · ${data.labeling_batch.size_mb} MB · <a href="${data.labeling_batch.download_url}" download>Download</a>`);
+      }
+      if (data.benchmark_holdout) {
+        lines.push(`Benchmark holdout: ${data.benchmark_holdout.n_images} imgs · ${data.benchmark_holdout.size_mb} MB · <a href="${data.benchmark_holdout.download_url}" download>Download</a>`);
+      }
+      if (data.warning) lines.push(`<b>${data.warning}</b>`);
+      r.innerHTML = lines.join('<br>');
+    } catch(e){ r.textContent = 'ERROR: ' + e; }
+  }
+
   // ── Registry page (Tier A reproducibility) ─────────────────────────
   window.loadRegistryPage = async function loadRegistryPage() {
     const sb = $('registry-snapshot-btn');
