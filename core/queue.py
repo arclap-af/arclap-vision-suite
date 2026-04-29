@@ -143,11 +143,19 @@ class JobRunner:
         self.db.update_job(jid, status="running", started_at=time.time())
         self.db.append_log(jid, "$ " + " ".join(str(c) for c in cmd))
 
+        # PYTHONUNBUFFERED=1 forces the child Python's stdout to be line-buffered
+        # so progress lines (`print(...)` without `flush=True`) reach the parent
+        # in real time. Without this the child block-buffers ~4 KB of output and
+        # the UI looks frozen for the first 5–30 seconds while YOLO loads.
+        import os as _os
+        env = _os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1, cwd=str(self.root),
             encoding="utf-8", errors="replace",
+            env=env,
         )
         with self._proc_lock:
             self._proc = proc
