@@ -1371,6 +1371,28 @@ def job_status(job_id: str):
     return _job_to_dict(j)
 
 
+@app.get("/api/jobs/{job_id}/status")
+def job_live_status(job_id: str):
+    """Return the live status JSON written by long-running jobs (rtsp_live.py
+    etc.). Falls back to the job record if no status file is present so callers
+    always get a valid object."""
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Job not found")
+    settings = j.settings or {}
+    status_path = settings.get("status_path")
+    if status_path:
+        p = Path(status_path)
+        if p.is_file():
+            try:
+                import json as _json
+                return _json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+    # Fallback: return the job record so charts/UI don't error out
+    return _job_to_dict(j)
+
+
 class VerifyRequest(BaseModel):
     model: str = "yolov8x-seg.pt"
     conf: float = 0.25

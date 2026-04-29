@@ -4610,8 +4610,8 @@ async function mcUpdateCharts() {
     const s = (sessions.sessions || sessions || [])[0];
     if (!s || !s.job_id) return;
     const j = await (await fetch(`/api/jobs/${s.job_id}/status`)).json();
-    const det = j.detections_per_sec || j.det_per_sec || 0;
-    const inf = j.inference_ms || j.infer_ms || 0;
+    const det = j.n_dets_this_frame ?? j.detections_per_sec ?? j.det_per_sec ?? 0;
+    const inf = j.infer_ms_p50 ?? j.inference_ms ?? j.infer_ms ?? 0;
     mcPushChart('det', det);
     mcPushChart('inf', inf);
   } catch(e) {}

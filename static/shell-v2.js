@@ -179,9 +179,11 @@
       const cams = await (await fetch('/api/cameras')).json().catch(()=>({}));
       const list = Array.isArray(cams) ? cams : (cams.cameras || []);
       const enabled = list.filter(c => c.enabled).length;
-      const versions = await (await fetch('/api/swiss/active')).json().catch(()=>({}));
-      if ($('ld-model')) $('ld-model').textContent = versions.active || 'CSI_V1';
-      if ($('ld-model-sub')) $('ld-model-sub').textContent = (versions.classes ? versions.classes + ' classes' : '16 trained classes');
+      const sw = await (await fetch('/api/swiss/state')).json().catch(()=>({}));
+      const activeName = sw.active_version || sw.active || 'CSI_V1';
+      const ncls = (sw.classes && sw.classes.length) || sw.n_classes || 16;
+      if ($('ld-model')) $('ld-model').textContent = activeName;
+      if ($('ld-model-sub')) $('ld-model-sub').textContent = `${ncls} classes`;
       if ($('ld-cams-online')) $('ld-cams-online').textContent = sys.cameras_running ?? enabled;
       if ($('ld-cams-sub')) $('ld-cams-sub').textContent = `${enabled} enabled · ${list.length} total`;
       if ($('ld-events-today')) $('ld-events-today').textContent = sys.events_today ?? 0;
@@ -325,8 +327,9 @@
       const s = (ss.sessions || ss || [])[0];
       if (!s || !s.job_id) return;
       const j = await (await fetch(`/api/jobs/${s.job_id}/status`)).json();
-      const det = j.detections_per_sec || j.det_per_sec || 0;
-      const inf = j.inference_ms || j.infer_ms || 0;
+      // Match the keys actually emitted by rtsp_live.py status JSON
+      const det = j.n_dets_this_frame ?? j.detections_per_sec ?? j.det_per_sec ?? 0;
+      const inf = j.infer_ms_p50 ?? j.inference_ms ?? j.infer_ms ?? 0;
       pushChart('det', det, 'Det/sec', '#22c55e');
       pushChart('inf', inf, 'Inference (ms)', '#f59e0b');
     } catch(e){}
