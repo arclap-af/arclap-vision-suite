@@ -5280,9 +5280,14 @@ function renderSwissActivity() {
   $('swiss-activity').innerHTML = log.map(entry => {
     const when = entry.at ? new Date(entry.at * 1000).toLocaleString() : '—';
     const summary = swissActivitySummary(entry);
-    return `<div class="swiss-activity-row">
-      <span class="muted small">${when}</span>
-      <span>${summary}</span>
+    const kindCls = (entry.kind || '').includes('train') ? 'kind-train'
+                   : (entry.kind || '').includes('import') ? 'kind-import'
+                   : (entry.kind || '').includes('error') ? 'kind-error'
+                   : '';
+    return `<div class="swiss-activity-row ${kindCls}">
+      <span class="when">${when}</span>
+      <span class="dot"></span>
+      <span class="body">${summary}</span>
     </div>`;
   }).join('');
 }
