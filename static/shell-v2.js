@@ -560,6 +560,374 @@
     setTimeout(loadHomeV2, 200);
   }
 
+  // ── Utilization (machine timesheet system) ────────────────────────
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest('.swiss-subtab');
+    if (t && t.dataset.stab === 'utilization') setTimeout(loadUtilizationPage, 60);
+  });
+  let _utilTimer = null;
+  let _utilSites = new Set();
+
+  async function loadUtilizationPage() {
+    await refreshUtilSummary();
+    await refreshUtilFilters();
+    await refreshUtilMachines();
+    if (_utilTimer) clearInterval(_utilTimer);
+    _utilTimer = setInterval(async () => {
+      await refreshUtilSummary();
+      await refreshUtilMachines();
+    }, 30000);
+    // Wire toolbar
+    const r = $('util-refresh'); if (r) r.onclick = async () => {
+      await refreshUtilSummary(); await refreshUtilMachines();
+    };
+    const a = $('util-add-machine'); if (a) a.onclick = () => openMachineModal();
+    const wh = $('util-edit-workhours'); if (wh) wh.onclick = openWorkhoursModal;
+    const ec1 = $('util-export-csv-machine'); if (ec1) ec1.onclick = () => exportUtilCsv('per-machine');
+    const ec2 = $('util-export-csv-site'); if (ec2) ec2.onclick = () => exportUtilCsv('per-site');
+    const ep = $('util-export-pdf'); if (ep) ep.onclick = exportUtilPdf;
+  }
+
+  async function refreshUtilSummary() {
+    try {
+      const r = await (await fetch('/api/utilization/fleet-snapshot')).json();
+      const _hms = (sec) => {
+        const s = Math.max(0, Math.round(sec));
+        const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+        return h ? `${h}h ${m}m` : `${m}m`;
+      };
+      $('util-active-now').textContent = r.machines_active_now || 0;
+      $('util-hours-today').textContent = _hms(r.today_active_s || 0);
+      $('util-hours-sub').textContent = `${r.machines_with_activity_today || 0} machine(s) reporting`;
+      $('util-machines').textContent = `${r.machines_total || 0}`;
+      $('util-machines-sub').textContent = `${r.machines_archived || 0} archived`;
+      $('util-sites').textContent = r.sites_total || 0;
+    } catch (e) { /* silent */ }
+  }
+
+  async function refreshUtilFilters() {
+    // Populate site filter from existing machines
+    try {
+      const r = await (await fetch('/api/machines?status=all')).json();
+      const sites = Array.from(new Set((r.machines || []).map(m => m.site_id).filter(Boolean)));
+      _utilSites = new Set(sites);
+      const sel = $('util-filter-site');
+      if (sel) sel.innerHTML = '<option value="">All sites</option>' +
+        sites.map(s => `<option value="${s}">${s}</option>`).join('');
+      const cls = Array.from(new Set((r.machines || []).map(m => `${m.class_id}|${m.class_name}`)));
+      const cs = $('util-filter-class');
+      if (cs) cs.innerHTML = '<option value="">All classes</option>' +
+        cls.map(c => { const [id, name] = c.split('|'); return `<option value="${id}">${name}</option>`; }).join('');
+    } catch (e) {}
+  }
+
+  async function refreshUtilMachines() {
+    const wrap = $('util-machines-list'); if (!wrap) return;
+    const site = $('util-filter-site') ? $('util-filter-site').value : '';
+    const cls = $('util-filter-class') ? $('util-filter-class').value : '';
+    const params = new URLSearchParams();
+    if (site) params.set('site_id', site);
+    if (cls) params.set('class_id', cls);
+    try {
+      const r = await (await fetch(`/api/machines?${params}`)).json();
+      const machines = r.machines || [];
+      if (!machines.length) {
+        wrap.innerHTML = '<p class="muted small" style="padding:14px;text-align:center">No machines yet. Click <b>+ Add machine</b> or go to the Cameras tab to auto-suggest from existing detections.</p>';
+        return;
+      }
+      // Pull today's stats for each
+      const today = new Date().toISOString().slice(0, 10);
+      const stats = await (await fetch(`/api/utilization/today`)).json();
+      const byMachine = {};
+      (stats.rows || []).forEach(s => { byMachine[s.machine_id] = s; });
+      wrap.innerHTML = machines.map(m => {
+        const s = byMachine[m.machine_id] || {active_s:0, present_s:0, idle_s:0, n_sessions:0, first_seen:null, last_seen:null};
+        const _hms = (sec) => {
+          const v = Math.max(0, Math.round(sec));
+          const h = Math.floor(v/3600), mn = Math.floor((v%3600)/60);
+          return h ? `${h}h ${mn}m` : `${mn}m`;
+        };
+        const cost = (m.rental_rate && s.active_s) ? `${m.rental_currency || 'CHF'} ${(m.rental_rate * s.active_s/3600).toFixed(2)}` : '';
+        return `<div class="util-machine-row" data-mid="${m.machine_id}">
+          <div class="row-head">
+            <span class="arrow">▸</span>
+            <div class="name">${m.display_name}<span class="mono">${m.machine_id}</span></div>
+            <div class="stat"><span class="val">${_hms(s.active_s)}</span><br>active</div>
+            <div class="stat">${_hms(s.present_s)}<br>present</div>
+            <div class="stat">${_hms(s.idle_s)}<br>idle</div>
+            <div>${cost ? `<div class="util-cost">today: <b>${cost}</b></div>` : '<span class="muted small">no rental rate</span>'}</div>
+            <div class="stat">${s.n_sessions || 0} sessions</div>
+          </div>
+          <div class="row-body" data-body-for="${m.machine_id}"></div>
+        </div>`;
+      }).join('');
+      // Wire row expand
+      wrap.querySelectorAll('.util-machine-row').forEach(row => {
+        row.querySelector('.row-head').onclick = () => toggleMachineRow(row);
+      });
+    } catch (e) {
+      wrap.innerHTML = `<p class="muted small">Error: ${e.message || e}</p>`;
+    }
+  }
+
+  async function toggleMachineRow(row) {
+    if (row.classList.contains('expanded')) {
+      row.classList.remove('expanded');
+      row.querySelector('.arrow').textContent = '▸';
+      return;
+    }
+    const mid = row.dataset.mid;
+    row.classList.add('expanded');
+    row.querySelector('.arrow').textContent = '▾';
+    const body = row.querySelector('.row-body');
+    body.innerHTML = '<p class="muted small">Loading sessions…</p>';
+    try {
+      const since = Math.floor(Date.now()/1000) - 86400 * 7;
+      const r = await (await fetch(`/api/machines/${mid}/sessions?since=${since}&limit=200`)).json();
+      const ss = r.sessions || [];
+      if (!ss.length) {
+        body.innerHTML = '<p class="muted small">No sessions in the last 7 days.</p>';
+        return;
+      }
+      const fmt = (ts) => new Date(ts*1000).toLocaleString();
+      const _hms = (sec) => {
+        const v = Math.max(0, Math.round(sec));
+        const h = Math.floor(v/3600), mn = Math.floor((v%3600)/60), ss = v%60;
+        return h ? `${h}h ${mn}m` : (mn ? `${mn}m ${ss}s` : `${ss}s`);
+      };
+      body.innerHTML = `<h4 style="margin:0 0 8px">Recent sessions (last 7 days)</h4>
+        <table class="util-session-table">
+          <thead><tr><th>Start</th><th>End</th><th>Duration</th><th>State</th><th>Camera</th><th style="text-align:right">Mean conf</th><th style="text-align:right">Movement (px)</th></tr></thead>
+          <tbody>${ss.map(s => `
+            <tr data-sid="${s.session_id}" data-mid="${mid}">
+              <td>${fmt(s.start_ts)}</td>
+              <td>${fmt(s.end_ts)}</td>
+              <td>${_hms(s.duration_s)}</td>
+              <td><span class="util-session-state ${s.state}">${s.state}</span></td>
+              <td>${s.camera_id || '—'}</td>
+              <td style="text-align:right">${(s.mean_conf||0).toFixed(2)}</td>
+              <td style="text-align:right">${Math.round(s.movement_px||0)}</td>
+            </tr>`).join('')}</tbody>
+        </table>`;
+      body.querySelectorAll('tr[data-sid]').forEach(tr => {
+        tr.onclick = () => openSessionDrawer(tr.dataset.mid, parseInt(tr.dataset.sid));
+      });
+    } catch (e) { body.innerHTML = `<p class="muted small">Error: ${e}</p>`; }
+  }
+
+  async function openSessionDrawer(mid, sid) {
+    const drawer = $('util-session-drawer');
+    drawer.classList.remove('hidden');
+    setTimeout(() => drawer.classList.add('open'), 10);
+    const body = $('util-drawer-body');
+    body.innerHTML = '<p class="muted small">Loading…</p>';
+    try {
+      const r = await (await fetch(`/api/machines/${mid}/sessions/${sid}`)).json();
+      const s = r.session;
+      const obs = r.observations || [];
+      const fmt = (ts) => new Date(ts*1000).toLocaleString();
+      const dur = Math.round(s.duration_s);
+      const h = Math.floor(dur/3600), mn = Math.floor((dur%3600)/60), ss = dur%60;
+      const durStr = h ? `${h}h ${mn}m` : (mn ? `${mn}m ${ss}s` : `${ss}s`);
+      $('util-drawer-title').textContent = `${mid} · ${fmt(s.start_ts).split(',')[1].trim()} → ${fmt(s.end_ts).split(',')[1].trim()}`;
+      // Frame strip: every Nth observation with frame_path
+      const withFrame = obs.filter(o => o.frame_path);
+      const stride = Math.max(1, Math.floor(withFrame.length / 8));
+      const strip = withFrame.filter((_,i) => i % stride === 0).slice(0, 8);
+      const stripHtml = strip.length
+        ? strip.map(o => `<img src="/api/picker/image?path=${encodeURIComponent(o.frame_path)}" style="width:64px;height:64px;object-fit:cover;border-radius:4px;background:#222;margin-right:4px" alt=""/>`).join('')
+        : '<span class="muted small">no frame thumbnails</span>';
+      body.innerHTML = `
+        <div style="background:var(--color-surface-alt);padding:14px;border-radius:8px;margin-bottom:14px">
+          <div><b>Camera:</b> ${s.camera_id} · <b>Site:</b> ${s.site_id || '—'}</div>
+          <div><b>Duration:</b> ${durStr} · <b>State:</b> <span class="util-session-state ${s.state}">${s.state}</span></div>
+          <div><b>Observations:</b> ${s.n_observations} · <b>Mean conf:</b> ${(s.mean_conf||0).toFixed(2)}</div>
+          <div><b>Movement:</b> ${Math.round(s.movement_px||0)} px total · <b>Peak speed:</b> ${(s.peak_speed_pps||0).toFixed(1)} px/s</div>
+          <div><b>Within workhours:</b> ${s.is_within_workhours ? '✓ yes' : '✗ no — outside configured hours'}</div>
+        </div>
+        <h4 style="margin:0 0 6px">Frame strip</h4>
+        <div style="overflow-x:auto;white-space:nowrap;padding-bottom:6px">${stripHtml}</div>
+        <div style="margin-top:10px;font-family:var(--font-mono);font-size:11px;color:var(--color-text-muted)">session_id ${s.session_id}</div>`;
+    } catch (e) { body.innerHTML = `<p class="muted small">Error: ${e}</p>`; }
+  }
+
+  if ($('util-drawer-close')) {
+    $('util-drawer-close').onclick = () => {
+      const d = $('util-session-drawer');
+      d.classList.remove('open');
+      setTimeout(() => d.classList.add('hidden'), 200);
+    };
+  }
+
+  async function openMachineModal(machine) {
+    const mod = $('util-machine-modal');
+    mod.classList.remove('hidden');
+    // Populate class list (reuse CSI taxonomy or fall back to detection class names)
+    try {
+      // Try filter scans → first one's taxonomy
+      const scans = await (await fetch('/api/filter/scans')).json();
+      const list = scans.scans || scans || [];
+      const sel = $('ummod-class');
+      if (list.length) {
+        const t = await (await fetch(`/api/picker/taxonomy/${list[0].job_id || list[0].id}`)).json();
+        sel.innerHTML = (t.taxonomy || []).map(c => `<option value="${c.id}|${c.en}">${c.id} · ${c.en}</option>`).join('');
+      }
+    } catch (e) {
+      $('ummod-class').innerHTML = '<option value="0|Object">0 · Object</option>';
+    }
+    // Populate cameras
+    try {
+      const r = await (await fetch('/api/cameras')).json();
+      const cams = Array.isArray(r) ? r : (r.cameras || []);
+      $('ummod-camera').innerHTML = '<option value="">— pick a camera —</option>' +
+        cams.map(c => `<option value="${c.id}">${c.id} · ${c.name || ''}</option>`).join('');
+    } catch (e) {}
+    // Pre-fill if editing
+    if (machine) {
+      $('ummod-id').value = machine.machine_id || '';
+      $('ummod-id').disabled = true;
+      $('ummod-name').value = machine.display_name || '';
+      $('ummod-site').value = machine.site_id || '';
+      $('ummod-camera').value = machine.camera_id || '';
+      $('ummod-zone').value = machine.zone_name || '';
+      $('ummod-serial').value = machine.serial_no || '';
+      $('ummod-rate').value = machine.rental_rate || '';
+      $('ummod-notes').value = machine.notes || '';
+    } else {
+      $('ummod-id').disabled = false;
+    }
+  }
+  if ($('util-machine-modal-close')) $('util-machine-modal-close').onclick = () => $('util-machine-modal').classList.add('hidden');
+  if ($('util-machine-modal-cancel')) $('util-machine-modal-cancel').onclick = () => $('util-machine-modal').classList.add('hidden');
+  if ($('util-machine-modal-save')) $('util-machine-modal-save').onclick = async () => {
+    const clsRaw = $('ummod-class').value || '0|Object';
+    const [cid, cname] = clsRaw.split('|');
+    const body = {
+      machine_id: $('ummod-id').value.trim() || null,
+      display_name: $('ummod-name').value.trim() || ('Unnamed ' + cname),
+      class_id: parseInt(cid),
+      class_name: cname,
+      site_id: $('ummod-site').value.trim() || null,
+      camera_id: $('ummod-camera').value || null,
+      zone_name: $('ummod-zone').value.trim() || null,
+      serial_no: $('ummod-serial').value.trim() || null,
+      rental_rate: parseFloat($('ummod-rate').value) || null,
+      rental_currency: 'CHF',
+      notes: $('ummod-notes').value.trim() || null,
+    };
+    try {
+      const r = await fetch('/api/machines', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || 'create failed');
+      // Auto-link to camera if both set
+      if (body.camera_id && body.class_id !== null) {
+        await fetch(`/api/cameras/${encodeURIComponent(body.camera_id)}/machine-links`, {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            camera_id: body.camera_id, class_id: body.class_id,
+            machine_id: data.machine_id, zone_name: body.zone_name,
+          }),
+        });
+      }
+      $('util-machine-modal').classList.add('hidden');
+      await refreshUtilFilters();
+      await refreshUtilMachines();
+      toast(`Machine ${data.machine_id} created`, 'success');
+    } catch (e) { alert('Error: ' + (e.message || e)); }
+  };
+
+  async function openWorkhoursModal() {
+    const mod = $('util-workhours-modal');
+    mod.classList.remove('hidden');
+    const sites = Array.from(_utilSites);
+    const sel = $('util-wh-site');
+    sel.innerHTML = sites.length
+      ? sites.map(s => `<option value="${s}">${s}</option>`).join('')
+      : '<option value="">No sites yet — assign machines to sites first</option>';
+    sel.onchange = () => loadWorkhoursFor(sel.value);
+    if (sites.length) await loadWorkhoursFor(sites[0]);
+  }
+  async function loadWorkhoursFor(site) {
+    if (!site) return;
+    const r = await (await fetch(`/api/sites/${encodeURIComponent(site)}/workhours`)).json();
+    const wh = r.workhours || [];
+    const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    $('util-wh-grid').innerHTML = wh.map(w => `
+      <div class="util-wh-row">
+        <label><input type="checkbox" data-wd="${w.weekday}" class="wh-en" ${w.enabled ? 'checked' : ''}/> ${days[w.weekday]}</label>
+        <span>start <input type="number" min="0" max="24" data-wd="${w.weekday}" class="wh-start" value="${w.start_hour}"/></span>
+        <span>end <input type="number" min="0" max="24" data-wd="${w.weekday}" class="wh-end" value="${w.end_hour}"/></span>
+        <span class="muted small">h</span>
+      </div>`).join('');
+  }
+  if ($('util-wh-close')) $('util-wh-close').onclick = () => $('util-workhours-modal').classList.add('hidden');
+  if ($('util-wh-cancel')) $('util-wh-cancel').onclick = () => $('util-workhours-modal').classList.add('hidden');
+  if ($('util-wh-save')) $('util-wh-save').onclick = async () => {
+    const site = $('util-wh-site').value;
+    if (!site) return;
+    const schedule = [];
+    document.querySelectorAll('.wh-en').forEach(cb => {
+      const wd = parseInt(cb.dataset.wd);
+      schedule.push({
+        weekday: wd, enabled: cb.checked,
+        start_hour: parseInt(document.querySelector(`.wh-start[data-wd="${wd}"]`).value) || 0,
+        end_hour: parseInt(document.querySelector(`.wh-end[data-wd="${wd}"]`).value) || 24,
+      });
+    });
+    await fetch(`/api/sites/${encodeURIComponent(site)}/workhours`, {
+      method: 'PUT', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ schedule }),
+    });
+    $('util-workhours-modal').classList.add('hidden');
+    toast(`Workhours saved for ${site}`, 'success');
+  };
+
+  async function exportUtilCsv(type) {
+    const status = $('util-export-status');
+    status.textContent = 'building CSV…';
+    try {
+      const params = new URLSearchParams();
+      params.set('type', type);
+      const site = $('util-filter-site') ? $('util-filter-site').value : '';
+      if (site) params.set('site_id', site);
+      const from = $('util-filter-from').value;
+      const to = $('util-filter-to').value;
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      window.open(`/api/reports/csv?${params}`, '_blank');
+      status.textContent = 'CSV download started';
+    } catch (e) { status.textContent = 'Error: ' + e; }
+  }
+  async function exportUtilPdf() {
+    const status = $('util-export-status');
+    status.textContent = 'building PDF report…';
+    try {
+      const params = new URLSearchParams();
+      const site = $('util-filter-site') ? $('util-filter-site').value : '';
+      if (site) params.set('site_id', site);
+      const from = $('util-filter-from').value;
+      const to = $('util-filter-to').value;
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      const r = await fetch(`/api/reports/pdf?${params}`, { method: 'POST' });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${r.status}`);
+      }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `utilization_report_${new Date().toISOString().slice(0,10)}.pdf`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      status.textContent = 'PDF downloaded';
+    } catch (e) { status.textContent = 'Error: ' + e.message; }
+  }
+
   // ── Pipeline (Annotation v2) ───────────────────────────────────────
   // Now lives as Step 6 of the Filter wizard. Reachable via
   // window.loadPipelinePage(scanId) which the wizard calls when the user

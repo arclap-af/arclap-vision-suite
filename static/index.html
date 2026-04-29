@@ -1864,6 +1864,7 @@
     <button class="swiss-subtab" data-stab="recordings">Recordings</button>
     <button class="swiss-subtab" data-stab="zones">Zones</button>
     <button class="swiss-subtab" data-stab="alerts">Alerts</button>
+    <button class="swiss-subtab" data-stab="utilization">Utilization</button>
     <button class="swiss-subtab" data-stab="registry">Registry</button>
     <button class="swiss-subtab" data-stab="help">Help</button>
     <button class="swiss-subtab" data-stab="activity">Activity</button>
@@ -2641,6 +2642,132 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
   </section>
 
   <!-- (Pipeline section moved into Filter wizard as Step 6) -->
+
+  <!-- ===== Utilization sub-tab — machine activity + timesheets ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="utilization">
+    <div class="card-header">
+      <h3>Machine utilization</h3>
+      <p>Per-machine activity timeline · daily/weekly/monthly hours · cost breakdown if rental rate set · session detail with thumbnails. Updates every 30 s while open. Uses the camera-machine link table — set those in the Cameras tab first so the tracker knows which excavator is "EX-04".</p>
+    </div>
+
+    <div style="padding:14px;display:flex;flex-direction:column;gap:18px">
+
+      <!-- Top summary strip -->
+      <div class="util-summary" id="util-summary">
+        <div class="util-card">
+          <div class="util-label">ACTIVE NOW</div>
+          <div class="util-val" id="util-active-now">—</div>
+          <div class="util-sub">live</div>
+        </div>
+        <div class="util-card">
+          <div class="util-label">HOURS TODAY</div>
+          <div class="util-val" id="util-hours-today">—</div>
+          <div class="util-sub" id="util-hours-sub">across all machines</div>
+        </div>
+        <div class="util-card">
+          <div class="util-label">MACHINES</div>
+          <div class="util-val" id="util-machines">—</div>
+          <div class="util-sub" id="util-machines-sub">— archived</div>
+        </div>
+        <div class="util-card">
+          <div class="util-label">SITES</div>
+          <div class="util-val" id="util-sites">—</div>
+          <div class="util-sub">reporting</div>
+        </div>
+      </div>
+
+      <!-- Filter bar -->
+      <div class="util-filterbar">
+        <label>Site</label>
+        <select id="util-filter-site" class="input"><option value="">All sites</option></select>
+        <label style="margin-left:14px">Class</label>
+        <select id="util-filter-class" class="input"><option value="">All classes</option></select>
+        <label style="margin-left:14px">From</label>
+        <input id="util-filter-from" type="date" class="input"/>
+        <label>to</label>
+        <input id="util-filter-to" type="date" class="input"/>
+        <span class="spacer"></span>
+        <button class="btn btn-secondary btn-small" id="util-refresh">Refresh</button>
+        <button class="btn btn-primary btn-small" id="util-add-machine">+ Add machine</button>
+      </div>
+
+      <!-- Machine list with Gantts -->
+      <div id="util-machines-list">
+        <p class="muted small" style="padding:14px;text-align:center">Loading machines…</p>
+      </div>
+
+      <!-- Reports footer -->
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--color-border);padding-top:14px">
+        <label>Export</label>
+        <button class="btn btn-secondary btn-small" id="util-export-csv-machine">CSV · per-machine</button>
+        <button class="btn btn-secondary btn-small" id="util-export-csv-site">CSV · per-site</button>
+        <button class="btn btn-secondary btn-small" id="util-export-pdf">PDF · weekly client report</button>
+        <span class="spacer"></span>
+        <button class="btn btn-ghost btn-small" id="util-edit-workhours">Edit workhours</button>
+      </div>
+      <div id="util-export-status" class="muted small"></div>
+    </div>
+  </section>
+
+  <!-- Add machine modal -->
+  <div id="util-machine-modal" class="folder-modal hidden">
+    <div class="folder-modal-card" style="height:auto;max-height:90vh">
+      <header><h3>Add / edit machine</h3>
+        <button class="btn btn-ghost btn-small" id="util-machine-modal-close">✕</button>
+      </header>
+      <div style="padding:18px;display:flex;flex-direction:column;gap:10px">
+        <label>Machine ID (optional — auto-generated if blank)<input id="ummod-id" class="input mono" placeholder="EX-04"/></label>
+        <label>Display name<input id="ummod-name" class="input" placeholder="Riedmatt East main excavator"/></label>
+        <label>Class
+          <select id="ummod-class" class="input"></select>
+        </label>
+        <label>Site
+          <input id="ummod-site" class="input" placeholder="riedmatt-east"/>
+        </label>
+        <label>Camera
+          <select id="ummod-camera" class="input"></select>
+        </label>
+        <label>Zone (optional)<input id="ummod-zone" class="input" placeholder="(any zone)"/></label>
+        <label>Serial / asset tag (optional)<input id="ummod-serial" class="input mono"/></label>
+        <label>Rental rate (CHF/hour, optional)<input id="ummod-rate" class="input" type="number" step="0.01"/></label>
+        <label>Notes<textarea id="ummod-notes" class="input" rows="2"></textarea></label>
+      </div>
+      <footer>
+        <button class="btn btn-secondary btn-small" id="util-machine-modal-cancel">Cancel</button>
+        <button class="btn btn-primary btn-small" id="util-machine-modal-save">Save machine</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Session drawer -->
+  <div id="util-session-drawer" class="util-drawer hidden">
+    <div class="util-drawer-inner">
+      <header><h4 id="util-drawer-title">Session</h4>
+        <button class="btn btn-ghost btn-small" id="util-drawer-close">✕</button>
+      </header>
+      <div id="util-drawer-body" style="padding:14px"></div>
+    </div>
+  </div>
+
+  <!-- Workhours modal -->
+  <div id="util-workhours-modal" class="folder-modal hidden">
+    <div class="folder-modal-card" style="height:auto;max-height:90vh">
+      <header><h3>Workhours · per site</h3>
+        <button class="btn btn-ghost btn-small" id="util-wh-close">✕</button>
+      </header>
+      <div style="padding:18px;display:flex;flex-direction:column;gap:10px">
+        <label>Site
+          <select id="util-wh-site" class="input"></select>
+        </label>
+        <div id="util-wh-grid"></div>
+        <p class="muted small">Default: 24h all days. Disable a day or restrict to a window — sessions outside the window get flagged in reports and trigger 'outside hours' alerts.</p>
+      </div>
+      <footer>
+        <button class="btn btn-secondary btn-small" id="util-wh-cancel">Cancel</button>
+        <button class="btn btn-primary btn-small" id="util-wh-save">Save schedule</button>
+      </footer>
+    </div>
+  </div>
 
   <section class="card swiss-stab-pane hidden" data-stab-pane="help">
     <div class="card-header"><h3>📚 Arclap CSI · Help</h3></div>

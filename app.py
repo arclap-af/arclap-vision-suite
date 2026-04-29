@@ -51,6 +51,10 @@ from core import annotation_picker as picker_core
 from core import taxonomy as taxonomy_core
 from core import picker_scheduler as picker_sched
 from core import face_blur as face_blur_core
+from core import machines as machines_core
+from core import machine_tracker as machine_tracker_core
+from core import machine_reports as machine_reports_core
+from core import machine_alerts as machine_alerts_core
 
 PYTHON = sys.executable
 ROOT = Path(__file__).parent.resolve()
@@ -307,6 +311,20 @@ def _startup() -> None:
         picker_sched.start(ROOT, _run_picker_for_schedule, check_every=3600)
     except Exception as e:
         print(f"Picker scheduler failed to start: {e}")
+
+    # Machine utilization tracker — turns events into observations,
+    # observations into sessions, sessions into daily rollups
+    try:
+        machine_tracker_core.start(ROOT, interval_s=5)
+    except Exception as e:
+        print(f"Machine tracker failed to start: {e}")
+
+    # Machine-utilization alert dispatcher (idle long, outside hours,
+    # no-show, fleet-low — separate from the main events alerts)
+    try:
+        machine_alerts_core.start(ROOT, interval_s=60)
+    except Exception as e:
+        print(f"Machine alerts dispatcher failed to start: {e}")
 
     # Auto-register any .pt files already on disk so the user doesn't have
     # to re-upload models that were downloaded in earlier runs.
@@ -2399,6 +2417,411 @@ def picker_schedules_add(req: PickerScheduleAddReq):
 def picker_schedules_remove(schedule_id: str):
     ok = picker_sched.remove_schedule(ROOT, schedule_id)
     return {"ok": ok}
+
+
+# ═════════════════════════════════════════════════════════════════════
+# MACHINE UTILIZATION — registry, sessions, rollups, reports, alerts
+# ═════════════════════════════════════════════════════════════════════
+
+class MachineCreateReq(BaseModel):
+    machine_id: str | None = None
+    display_name: str
+    class_id: int
+    class_name: str
+    site_id: str | None = None
+    camera_id: str | None = None
+    zone_name: str | None = None
+    serial_no: str | None = None
+    rental_rate: float | None = None
+    rental_currency: str = "CHF"
+    notes: str | None = None
+
+
+class MachineUpdateReq(BaseModel):
+    display_name: str | None = None
+    class_id: int | None = None
+    class_name: str | None = None
+    site_id: str | None = None
+    camera_id: str | None = None
+    zone_name: str | None = None
+    status: str | None = None
+    serial_no: str | None = None
+    rental_rate: float | None = None
+    rental_currency: str | None = None
+    notes: str | None = None
+
+
+@app.get("/api/machines")
+def machines_list(site_id: str | None = None,
+                  class_id: int | None = None,
+                  status: str = "active"):
+    return {"machines": machines_core.list_machines(
+        ROOT, site_id=site_id, class_id=class_id, status=status)}
+
+
+@app.get("/api/machines/auto-suggest")
+def _machines_auto_suggest_alias(camera_id: str):
+    """Suggest machines based on recent detections on this camera.
+    Defined here (before /{machine_id}) to win FastAPI's path-routing order."""
+    edb = ROOT / "_data" / "events.db"
+    if not edb.is_file():
+        return {"suggestions": []}
+    import sqlite3 as _sql
+    conn = _sql.connect(str(edb))
+    rows = conn.execute(
+        "SELECT class_id, class_name, COUNT(*) AS n FROM events "
+        "WHERE camera_id = ? AND timestamp > strftime('%s','now') - 86400 "
+        "GROUP BY class_id, class_name ORDER BY n DESC", (camera_id,),
+    ).fetchall()
+    conn.close()
+    suggestions = []
+    for cid, cname, n in rows:
+        prefix = (cname or "M")[:2].upper().replace(" ", "")
+        suggestions.append({
+            "class_id": int(cid),
+            "class_name": cname or f"class_{cid}",
+            "n_detections_24h": int(n),
+            "suggested_machine_id": f"{prefix}-{camera_id.replace('CAM-','').replace('cam-','')[:6].upper()}",
+        })
+    return {"suggestions": suggestions}
+
+
+@app.post("/api/machines")
+def machines_create(req: MachineCreateReq):
+    m = machines_core.register_machine(
+        ROOT,
+        machine_id=req.machine_id, display_name=req.display_name,
+        class_id=req.class_id, class_name=req.class_name,
+        site_id=req.site_id, camera_id=req.camera_id, zone_name=req.zone_name,
+        serial_no=req.serial_no, rental_rate=req.rental_rate,
+        rental_currency=req.rental_currency, notes=req.notes,
+    )
+    return m
+
+
+@app.get("/api/machines/{machine_id}")
+def machines_get(machine_id: str):
+    m = machines_core.get_machine(ROOT, machine_id)
+    if not m:
+        raise HTTPException(404, "Machine not found")
+    return m
+
+
+@app.patch("/api/machines/{machine_id}")
+def machines_update(machine_id: str, req: MachineUpdateReq):
+    fields = {k: v for k, v in req.dict().items() if v is not None}
+    m = machines_core.update_machine(ROOT, machine_id, **fields)
+    if not m:
+        raise HTTPException(404, "Machine not found")
+    return m
+
+
+@app.delete("/api/machines/{machine_id}")
+def machines_archive(machine_id: str):
+    ok = machines_core.archive_machine(ROOT, machine_id)
+    return {"ok": ok}
+
+
+@app.post("/api/machines/{machine_id}/restore")
+def machines_restore(machine_id: str):
+    ok = machines_core.restore_machine(ROOT, machine_id)
+    return {"ok": ok}
+
+
+@app.delete("/api/machines/{machine_id}/hard")
+def machines_hard_delete(machine_id: str):
+    ok = machines_core.delete_machine(ROOT, machine_id)
+    return {"ok": ok, "warning": "Use ?status=archived first if there are sessions."}
+
+
+# ─── Camera ↔ machine link map ───────────────────────────────────────
+class CameraLinkReq(BaseModel):
+    camera_id: str
+    class_id: int
+    machine_id: str
+    zone_name: str | None = None
+
+
+@app.get("/api/cameras/{camera_id}/machine-links")
+def cam_links_get(camera_id: str):
+    return {"links": machines_core.list_camera_links(ROOT, camera_id=camera_id)}
+
+
+@app.post("/api/cameras/{camera_id}/machine-links")
+def cam_links_add(camera_id: str, req: CameraLinkReq):
+    return machines_core.link_camera_to_machine(
+        ROOT, camera_id=req.camera_id, class_id=req.class_id,
+        machine_id=req.machine_id, zone_name=req.zone_name)
+
+
+@app.delete("/api/cameras/{camera_id}/machine-links/{link_id}")
+def cam_links_del(camera_id: str, link_id: int):
+    ok = machines_core.unlink_camera_from_machine(ROOT, link_id=link_id)
+    return {"ok": ok}
+
+
+@app.get("/api/machines/auto-suggest")
+def machines_auto_suggest(camera_id: str):
+    """Suggest machines based on recent detections on this camera.
+    Returns: [{class_id, class_name, n_detections, suggested_machine_id}, ...]"""
+    edb = ROOT / "_data" / "events.db"
+    if not edb.is_file():
+        return {"suggestions": []}
+    import sqlite3 as _sql
+    conn = _sql.connect(str(edb))
+    rows = conn.execute(
+        "SELECT class_id, class_name, COUNT(*) AS n FROM events "
+        "WHERE camera_id = ? AND timestamp > strftime('%s','now') - 86400 "
+        "GROUP BY class_id, class_name ORDER BY n DESC",
+        (camera_id,),
+    ).fetchall()
+    conn.close()
+    suggestions = []
+    for cid, cname, n in rows:
+        prefix = (cname or "M")[:2].upper().replace(" ", "")
+        suggestions.append({
+            "class_id": int(cid),
+            "class_name": cname or f"class_{cid}",
+            "n_detections_24h": int(n),
+            "suggested_machine_id": f"{prefix}-{camera_id.replace('CAM-','').replace('cam-','')[:6].upper()}",
+        })
+    return {"suggestions": suggestions}
+
+
+# ─── Workhours per site ──────────────────────────────────────────────
+class WorkhoursReq(BaseModel):
+    schedule: list[dict]  # [{weekday, start_hour, end_hour, enabled}, ...]
+
+
+@app.get("/api/sites/{site_id}/workhours")
+def sites_workhours_get(site_id: str):
+    return {"site_id": site_id,
+            "workhours": machines_core.get_workhours(ROOT, site_id)}
+
+
+@app.put("/api/sites/{site_id}/workhours")
+def sites_workhours_set(site_id: str, req: WorkhoursReq):
+    return {"site_id": site_id,
+            "workhours": machines_core.set_workhours(ROOT, site_id, req.schedule)}
+
+
+# ─── Sessions + observations (read API) ──────────────────────────────
+@app.get("/api/machines/{machine_id}/sessions")
+def machine_sessions_list(machine_id: str,
+                          since: float | None = None,
+                          until: float | None = None,
+                          state: str | None = None,
+                          limit: int = 1000):
+    return {"sessions": machines_core.list_sessions(
+        ROOT, machine_id=machine_id, since=since, until=until,
+        state=state, limit=limit)}
+
+
+@app.get("/api/machines/{machine_id}/observations")
+def machine_obs_list(machine_id: str,
+                     since: float | None = None,
+                     until: float | None = None,
+                     limit: int = 5000):
+    conn = machines_core.open_db(ROOT)
+    sql = "SELECT * FROM machine_observations WHERE machine_id = ?"
+    args = [machine_id]
+    if since is not None: sql += " AND ts >= ?"; args.append(since)
+    if until is not None: sql += " AND ts <= ?"; args.append(until)
+    sql += " ORDER BY ts ASC LIMIT ?"; args.append(int(limit))
+    rows = conn.execute(sql, args).fetchall()
+    conn.close()
+    return {"observations": [dict(r) for r in rows]}
+
+
+@app.get("/api/machines/{machine_id}/sessions/{session_id}")
+def machine_session_detail(machine_id: str, session_id: int):
+    s = machines_core.get_session(ROOT, session_id)
+    if not s or s["machine_id"] != machine_id:
+        raise HTTPException(404, "Session not found")
+    obs = machines_core.session_observations(ROOT, session_id)
+    return {"session": s, "observations": obs}
+
+
+@app.get("/api/machines/{machine_id}/sessions/{session_id}/thumbnail")
+def machine_session_thumb(machine_id: str, session_id: int):
+    s = machines_core.get_session(ROOT, session_id)
+    if not s or s["machine_id"] != machine_id:
+        raise HTTPException(404, "Session not found")
+    if s.get("thumbnail_path") and Path(s["thumbnail_path"]).is_file():
+        return FileResponse(s["thumbnail_path"], media_type="image/jpeg",
+                            headers={"Cache-Control": "no-store"})
+    # Fallback: pick highest-confidence observation in session
+    obs = machines_core.session_observations(ROOT, session_id)
+    candidates = [o for o in obs if o.get("frame_path") and Path(o["frame_path"]).is_file()]
+    if not candidates:
+        raise HTTPException(404, "No frame available")
+    best = max(candidates, key=lambda o: float(o.get("confidence") or 0))
+    return FileResponse(best["frame_path"], media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
+
+
+# ─── Utilization rollups ─────────────────────────────────────────────
+@app.get("/api/utilization/today")
+def util_today():
+    today = time.strftime("%Y-%m-%d")
+    return {"date": today,
+            "rows": machines_core.daily_totals(
+                ROOT, since_iso=today, until_iso=today)}
+
+
+@app.get("/api/utilization/range")
+def util_range(since: str | None = None,   # ISO date
+               until: str | None = None,
+               machine_id: str | None = None,
+               site_id: str | None = None):
+    return {"rows": machines_core.daily_totals(
+        ROOT, machine_id=machine_id, site_id=site_id,
+        since_iso=since, until_iso=until)}
+
+
+@app.get("/api/utilization/site/{site_id}")
+def util_site(site_id: str, since: str | None = None, until: str | None = None):
+    return {"rows": machines_core.daily_totals(
+        ROOT, site_id=site_id, since_iso=since, until_iso=until)}
+
+
+@app.get("/api/utilization/concurrent/{site_id}")
+def util_concurrent(site_id: str, date_iso: str | None = None):
+    """Approximate concurrent-machine count over a day, in 15-min buckets."""
+    if not date_iso:
+        date_iso = time.strftime("%Y-%m-%d")
+    conn = machines_core.open_db(ROOT)
+    # All sessions for site on date
+    rows = conn.execute(
+        "SELECT machine_id, start_ts, end_ts FROM machine_sessions "
+        "WHERE site_id = ? AND date(start_ts, 'unixepoch', 'localtime') = ?",
+        (site_id, date_iso),
+    ).fetchall()
+    conn.close()
+    # Bucket by 15 minutes
+    buckets = [0] * (24 * 4)
+    import datetime as _dt
+    midnight = _dt.datetime.fromisoformat(date_iso).timestamp()
+    for r in rows:
+        st = max(midnight, float(r["start_ts"]))
+        en = min(midnight + 86400, float(r["end_ts"]))
+        i_start = max(0, int((st - midnight) // 900))
+        i_end = min(95, int((en - midnight) // 900))
+        for i in range(i_start, i_end + 1):
+            buckets[i] += 1
+    peak = max(buckets) if buckets else 0
+    peak_at = midnight + buckets.index(peak) * 900 if peak > 0 else None
+    return {"site_id": site_id, "date_iso": date_iso,
+            "buckets_15min": buckets, "peak": peak, "peak_at": peak_at}
+
+
+@app.get("/api/utilization/fleet-snapshot")
+def util_fleet_snapshot():
+    return machines_core.fleet_snapshot(ROOT)
+
+
+@app.get("/api/utilization/live-now")
+def util_live_now():
+    """Machines that had a detection in the last 60 s."""
+    conn = machines_core.open_db(ROOT)
+    now = time.time()
+    rows = conn.execute(
+        "SELECT o.machine_id, m.display_name, m.class_name, m.site_id, "
+        "MAX(o.ts) AS last_ts, MAX(o.is_moving) AS any_moving "
+        "FROM machine_observations o "
+        "LEFT JOIN machines m ON o.machine_id = m.machine_id "
+        "WHERE o.ts > ? GROUP BY o.machine_id", (now - 60,),
+    ).fetchall()
+    conn.close()
+    return {"as_of": now, "machines": [dict(r) for r in rows]}
+
+
+# ─── Machine alert rules ─────────────────────────────────────────────
+class MachineAlertRuleReq(BaseModel):
+    rule_id: str | None = None
+    name: str
+    kind: str  # 'utilization.idle_long' | 'outside_hours' | 'no_show' | 'fleet_low'
+    enabled: bool = True
+    machine_id: str | None = None
+    site_id: str | None = None
+    min_minutes: float | None = None
+    min_active: int | None = None
+    expected_by_hour: int | None = None
+    cooldown_min: float = 60
+    deliver: dict = {}
+
+
+@app.get("/api/machine-alerts/rules")
+def malert_rules_list():
+    return {"rules": machine_alerts_core.list_rules(ROOT)}
+
+
+@app.post("/api/machine-alerts/rules")
+def malert_rules_upsert(req: MachineAlertRuleReq):
+    rule_dict = req.dict(exclude_none=True)
+    return machine_alerts_core.upsert_rule(ROOT, rule_dict)
+
+
+@app.delete("/api/machine-alerts/rules/{rule_id}")
+def malert_rules_delete(rule_id: str):
+    return {"ok": machine_alerts_core.delete_rule(ROOT, rule_id)}
+
+
+@app.get("/api/machine-alerts/history")
+def malert_history(limit: int = 50):
+    return {"history": machine_alerts_core.history(ROOT, limit=limit)}
+
+
+@app.post("/api/machine-alerts/evaluate")
+def malert_evaluate_now():
+    """Force immediate evaluation of all rules (skips cooldown bypass — still respected)."""
+    return {"fires": machine_alerts_core.evaluate(ROOT)}
+
+
+# ─── Reports (CSV / PDF) ─────────────────────────────────────────────
+@app.get("/api/reports/csv")
+def reports_csv(type: str = "per-machine",
+                machine_id: str | None = None,
+                site_id: str | None = None,
+                since: str | None = None,         # ISO date
+                until: str | None = None,         # ISO date
+                from_: str | None = None,         # alias
+                to: str | None = None):
+    if from_ and not since: since = from_
+    if to and not until: until = to
+    if type == "per-machine":
+        body = machine_reports_core.csv_per_machine(
+            ROOT, machine_id=machine_id, site_id=site_id,
+            since_iso=since, until_iso=until)
+    elif type == "per-site":
+        body = machine_reports_core.csv_per_site(
+            ROOT, site_id=site_id, since_iso=since, until_iso=until)
+    elif type == "sessions":
+        from datetime import datetime as _dt
+        since_ts = _dt.fromisoformat(since).timestamp() if since else None
+        until_ts = _dt.fromisoformat(until + "T23:59:59").timestamp() if until else None
+        body = machine_reports_core.csv_sessions(
+            ROOT, since=since_ts, until=until_ts, machine_id=machine_id)
+    else:
+        raise HTTPException(400, f"Unknown CSV type: {type}")
+    fname = f"util_{type}_{int(time.time())}.csv"
+    return Response(content=body, media_type="text/csv",
+                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@app.post("/api/reports/pdf")
+def reports_pdf(site_id: str | None = None,
+                since: str | None = None,
+                until: str | None = None,
+                from_: str | None = None,
+                to: str | None = None):
+    if from_ and not since: since = from_
+    if to and not until: until = to
+    p = machine_reports_core.pdf_weekly_report(
+        ROOT, site_id=site_id, since_iso=since, until_iso=until)
+    return FileResponse(str(p), media_type="application/pdf",
+                        filename=p.name,
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/picker/face-blur-backend")
