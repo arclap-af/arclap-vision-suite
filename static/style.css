@@ -27,10 +27,22 @@
   --arc-line:      #ECECEF;
   --arc-line-2:    #F1F1F4;
 
-  /* Status */
+  /* Status — full ramps so badges/banners can use soft + strong shades */
+  --arc-green-50:  #ECFDF5;
+  --arc-green-100: #D1FAE5;
   --arc-green-500: #22C55E;
+  --arc-green-600: #16A34A;
+  --arc-green-700: #15803D;
+  --arc-amber-50:  #FFFBEB;
+  --arc-amber-100: #FEF3C7;
   --arc-amber-500: #F59E0B;
+  --arc-amber-600: #D97706;
+  --arc-amber-700: #B45309;
+  --arc-blue-50:   #EFF6FF;
+  --arc-blue-100:  #DBEAFE;
   --arc-blue-500:  #2F6FED;
+  --arc-blue-600:  #2456C7;
+  --arc-blue-700:  #1E40AF;
 
   /* Vision-class colours (boxes / chips) */
   --arc-cls-person:  #F97316;
@@ -130,6 +142,17 @@ html[data-theme="dark"] {
   --arc-red-600: #FF5A72;
   --arc-red-50:  rgba(255,58,85,0.14);
   --arc-red-100: rgba(255,58,85,0.35);
+
+  /* Dark-mode status soft bg / muted strong text */
+  --arc-green-50:  rgba(34,197,94,0.14);
+  --arc-green-100: rgba(34,197,94,0.30);
+  --arc-green-700: #4ADE80;
+  --arc-amber-50:  rgba(245,158,11,0.14);
+  --arc-amber-100: rgba(245,158,11,0.30);
+  --arc-amber-700: #FBBF24;
+  --arc-blue-50:   rgba(47,111,237,0.14);
+  --arc-blue-100:  rgba(47,111,237,0.30);
+  --arc-blue-700:  #93C5FD;
 
   --shadow-2: 0 4px 12px -4px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.04);
   --shadow-3: 0 10px 30px -10px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04);

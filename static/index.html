@@ -1914,7 +1914,7 @@
         </div>
         <div class="ld-stat">
           <div class="lbl" data-icon="shield">Watchdog</div>
-          <div class="val" id="ld-watchdog-state" style="font-size:18px">All green</div>
+          <div class="val val-text" id="ld-watchdog-state">All green</div>
           <div class="sub" id="ld-watchdog-sub">no recent crashes</div>
         </div>
       </div>
@@ -1963,11 +1963,11 @@
             <span data-icon="polygon">Zones</span>
             <button class="lk" data-jump-stab="zones">Edit</button>
           </h4>
-          <div id="ld-zones-list" style="padding:8px 18px"><p class="muted small">—</p></div>
+          <div id="ld-zones-list" class="ld-list"><p class="muted small ld-empty">—</p></div>
         </div>
         <div class="ld-card">
           <h4><span data-icon="server">System</span></h4>
-          <div id="ld-system-stats" style="padding:8px 0"><p class="muted small" style="padding:0 18px">—</p></div>
+          <div id="ld-system-stats" class="ld-list"><p class="muted small ld-empty">—</p></div>
         </div>
       </div>
 
@@ -1982,8 +1982,8 @@
 
       <div class="ld-card">
         <h4><span data-icon="layers">Trained versions</span></h4>
-        <div id="swiss-versions" class="swiss-versions" style="padding:14px 18px">
-          <p class="muted small">Loading versions…</p>
+        <div id="swiss-versions" class="swiss-versions ld-list">
+          <p class="muted small ld-empty">Loading versions…</p>
         </div>
       </div>
 
