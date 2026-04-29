@@ -4353,24 +4353,43 @@ if ($('btn-zones-new')) $('btn-zones-new').addEventListener('click', () => {
 });
 
 if ($('btn-zones-snapshot')) $('btn-zones-snapshot').addEventListener('click', async () => {
-  // Take latest snapshot from any running session of this camera
-  if (rtspJobId) {
-    await fetch(`/api/rtsp/${rtspJobId}/update`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ snapshot: true }),
-    });
-    setTimeout(async () => {
-      const d = await fetch(`/api/rtsp/${rtspJobId}/snapshots`).then(r => r.json());
+  // Three sources for a snapshot, tried in order:
+  //   1. The camera registry: any running session for the picked camera
+  //   2. The Live RTSP page's last job (rtspJobId)
+  //   3. None → friendly error
+  const camId = $('zones-camera-pick') ? $('zones-camera-pick').value : null;
+  let jobId = null;
+  if (camId) {
+    try {
+      const ss = await (await fetch(`/api/cameras/${encodeURIComponent(camId)}/sessions?limit=1`)).json();
+      const s = (ss.sessions || ss || [])[0];
+      if (s && s.job_id && !s.stopped_at) jobId = s.job_id;
+    } catch (e) { /* fall through */ }
+  }
+  if (!jobId && typeof rtspJobId !== 'undefined' && rtspJobId) jobId = rtspJobId;
+  if (!jobId) {
+    toast('Start the camera first (Cameras tab → Start, or Live RTSP page) so we can grab a frame to draw on.', 'warn');
+    return;
+  }
+  await fetch(`/api/rtsp/${jobId}/update`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ snapshot: true }),
+  });
+  setTimeout(async () => {
+    try {
+      const d = await (await fetch(`/api/rtsp/${jobId}/snapshots`)).json();
       if (d.snapshots && d.snapshots.length) {
         const img = new Image();
         img.crossOrigin = 'anonymous';
         img.onload = () => { zonesCanvasImg = img; redrawZonesCanvas(); };
         img.src = d.snapshots[0].url;
+      } else {
+        toast('Snapshot did not appear yet — try once more in a second.', 'info');
       }
-    }, 1500);
-  } else {
-    toast('Start a live session for this camera first to capture a snapshot', 'warn');
-  }
+    } catch (e) {
+      toast('Could not fetch snapshot: ' + e, 'error');
+    }
+  }, 1500);
 });
 
 if ($('btn-zone-update')) $('btn-zone-update').addEventListener('click', () => {
