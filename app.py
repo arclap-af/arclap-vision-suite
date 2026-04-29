@@ -55,6 +55,8 @@ from core import machines as machines_core
 from core import machine_tracker as machine_tracker_core
 from core import machine_reports as machine_reports_core
 from core import machine_alerts as machine_alerts_core
+from core import util_report_scheduler as util_report_sched
+from core import notify as notify_core
 
 PYTHON = sys.executable
 ROOT = Path(__file__).parent.resolve()
@@ -325,6 +327,17 @@ def _startup() -> None:
         machine_alerts_core.start(ROOT, interval_s=60)
     except Exception as e:
         print(f"Machine alerts dispatcher failed to start: {e}")
+
+    # Weekly utilization-report scheduler — fires at scheduled day/time,
+    # generates PDF, emails to recipients
+    def _build_util_pdf(*, site_id, since_iso, until_iso):
+        return machine_reports_core.pdf_weekly_report(
+            ROOT, site_id=site_id, since_iso=since_iso, until_iso=until_iso)
+    try:
+        util_report_sched.start(ROOT, _build_util_pdf, notify_core.send_email,
+                                 check_every=3600)
+    except Exception as e:
+        print(f"Utilization report scheduler failed to start: {e}")
 
     # Auto-register any .pt files already on disk so the user doesn't have
     # to re-upload models that were downloaded in earlier runs.
@@ -2776,6 +2789,38 @@ def malert_history(limit: int = 50):
 def malert_evaluate_now():
     """Force immediate evaluation of all rules (skips cooldown bypass — still respected)."""
     return {"fires": machine_alerts_core.evaluate(ROOT)}
+
+
+# ─── Utilization-report scheduler ────────────────────────────────────
+class UtilReportScheduleReq(BaseModel):
+    schedule_id: str | None = None
+    kind: str = "weekly_pdf"
+    site_id: str | None = None
+    recipients: list[str] = []
+    day_of_week: int = 0   # 0=Mon ... 6=Sun
+    time_of_day: str = "09:00"
+    include_machines: list[str] = []
+    enabled: bool = True
+    label: str | None = None
+
+
+@app.get("/api/utilization/report-schedules")
+def util_report_sched_list():
+    return {"schedules": util_report_sched.list_schedules(ROOT)}
+
+
+@app.post("/api/utilization/report-schedules")
+def util_report_sched_add(req: UtilReportScheduleReq):
+    return util_report_sched.add_schedule(
+        ROOT, kind=req.kind, site_id=req.site_id,
+        recipients=req.recipients, day_of_week=req.day_of_week,
+        time_of_day=req.time_of_day, include_machines=req.include_machines,
+        enabled=req.enabled, label=req.label)
+
+
+@app.delete("/api/utilization/report-schedules/{schedule_id}")
+def util_report_sched_del(schedule_id: str):
+    return {"ok": util_report_sched.remove_schedule(ROOT, schedule_id)}
 
 
 # ─── Reports (CSV / PDF) ─────────────────────────────────────────────

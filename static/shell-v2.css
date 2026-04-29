@@ -805,3 +805,9 @@ body:not(.shell-v2) main.container {
 @media (max-width: 720px) {
   .util-summary { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* Mission Control machine-activity strip */
+.mc-seg { flex: 0 0 auto; min-width: 4px; height: 8px; border-radius: 1px; }
+.mc-seg.moving { background: var(--color-brand, #E5213C); }
+.mc-seg.present { background: #F59E0B; }
+.mc-seg.idle { background: rgba(0,0,0,0.18); }

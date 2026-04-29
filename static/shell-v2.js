@@ -297,7 +297,7 @@
   const _ld = { charts: { det: null, inf: null }, timer: null, currentCam: null };
 
   async function loadLiveDashboard() {
-    try { await Promise.all([renderHero(), renderCamsStrip(), renderEventsFeed(), renderSystemCard(), renderWatchdog()]); } catch(e){}
+    try { await Promise.all([renderHero(), renderCamsStrip(), renderEventsFeed(), renderSystemCard(), renderWatchdog(), renderFleetTile()]); } catch(e){}
     populateCamPicker();
     if (_ld.timer) clearInterval(_ld.timer);
     _ld.timer = setInterval(tickLiveDashboard, 5000);
@@ -306,7 +306,7 @@
   async function tickLiveDashboard() {
     if (!document.querySelector('[data-stab-pane="overview"]:not(.hidden)')) return;
     renderHero(); renderCamsStrip(); renderEventsFeed(); renderSystemCard();
-    renderFeatured(); renderZones(); pushCharts();
+    renderFeatured(); renderZones(); pushCharts(); renderFleetTile();
     const lu = $('ld-last-updated');
     if (lu) lu.textContent = 'updated ' + new Date().toLocaleTimeString();
   }
@@ -444,6 +444,44 @@
           <span class="ct">${(zone.rule&&zone.rule.allowed_classes||[]).length} allowed</span>
         </div>`).join('') : '<p class="muted small">No zones for this camera. <a href="#" data-jump-stab="zones">Define →</a></p>';
     } catch(e){ wrap.innerHTML = '<p class="muted small">—</p>'; }
+  }
+
+  async function renderFleetTile() {
+    const wrap = $('ld-fleet-tile'); if (!wrap) return;
+    try {
+      const snap = await (await fetch('/api/utilization/fleet-snapshot')).json();
+      const now = await (await fetch('/api/utilization/live-now')).json();
+      const today = await (await fetch('/api/utilization/today')).json();
+      const _hms = (sec) => {
+        const v = Math.max(0, Math.round(sec));
+        const h = Math.floor(v/3600), mn = Math.floor((v%3600)/60);
+        return h ? `${h}h ${mn}m` : `${mn}m`;
+      };
+      const liveMachines = (now.machines || []).slice(0, 6);
+      const todayRows = (today.rows || []).reduce((m, r) => (m[r.machine_id] = r, m), {});
+      let body = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;font-size:12.5px">
+        <div><b style="font-family:var(--font-brand);font-size:22px">${snap.machines_active_now || 0}</b><br><span class="muted small">active right now</span></div>
+        <div><b style="font-family:var(--font-brand);font-size:22px">${_hms(snap.today_active_s || 0)}</b><br><span class="muted small">total today</span></div>
+        <div><b style="font-family:var(--font-brand);font-size:22px">${snap.machines_total || 0}</b><br><span class="muted small">${snap.sites_total || 0} sites</span></div>
+      </div>`;
+      if (liveMachines.length) {
+        body += '<div style="margin-top:14px;display:flex;flex-direction:column;gap:6px">' +
+          liveMachines.map(m => {
+            const stats = todayRows[m.machine_id] || {};
+            return `<div style="display:flex;align-items:center;gap:10px;padding:6px 10px;background:var(--color-surface-alt,#F6F6F8);border-radius:7px;font-size:12px">
+              <span style="font-family:var(--font-mono);font-size:11px;color:var(--color-text-strong)">${m.machine_id}</span>
+              <span style="flex:1">${m.display_name || m.class_name || ''}</span>
+              <span style="font-family:var(--font-mono);font-size:11px;color:${m.any_moving ? 'var(--color-brand,#E5213C)' : 'var(--color-text-muted)'};font-weight:600">${m.any_moving ? '● MOVING' : '● PRESENT'}</span>
+              <span style="font-family:var(--font-mono);font-size:11px;color:var(--color-text-muted)">${_hms(stats.active_s || 0)}</span>
+            </div>`;
+          }).join('') + '</div>';
+      } else {
+        body += '<p class="muted small" style="margin-top:14px">No machines currently active. Configure Cameras → link to machines + start the camera streams to populate.</p>';
+      }
+      wrap.innerHTML = body;
+    } catch (e) {
+      wrap.innerHTML = '<p class="muted small">No data yet — register machines + link to cameras in the Cameras tab to start tracking.</p>';
+    }
   }
 
   async function renderSystemCard() {

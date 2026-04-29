@@ -1971,6 +1971,15 @@
         </div>
       </div>
 
+      <!-- Fleet tile — utilization snapshot 24h -->
+      <div class="ld-card">
+        <h4>
+          <span data-icon="cube">Fleet · 24h utilization</span>
+          <button class="lk" data-jump-stab="utilization">Open</button>
+        </h4>
+        <div id="ld-fleet-tile" style="padding:14px 18px"><p class="muted small">Loading…</p></div>
+      </div>
+
       <div class="ld-card">
         <h4><span data-icon="layers">Trained versions</span></h4>
         <div id="swiss-versions" class="swiss-versions" style="padding:14px 18px">
@@ -2578,6 +2587,10 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
           <h4>💻 System</h4>
           <div id="mc-system-stats"><p class="muted small">—</p></div>
         </div>
+        <div class="mc-cell" style="grid-column:span 2">
+          <h4>📊 Machine activity (this camera)</h4>
+          <div id="mc-machine-activity"><p class="muted small">No machines linked to this camera. Open the Cameras tab to link.</p></div>
+        </div>
       </div>
     </div>
   </section>
@@ -2816,6 +2829,75 @@ _data/alert_history.json  ← last 500 fires</pre>
         <li><code>ARCLAP_SMTP_HOST</code>, <code>ARCLAP_SMTP_PORT</code> (default 587)</li>
         <li><code>ARCLAP_SMTP_USER</code>, <code>ARCLAP_SMTP_PASS</code>, <code>ARCLAP_SMTP_FROM</code></li>
       </ul>
+
+      <hr style="margin:28px 0;border:none;border-top:1px solid var(--color-border)" />
+
+      <h4>📊 Machine Utilization System</h4>
+      <p>The Utilization sub-tab turns raw detections into business-grade fleet analytics: how many hours each excavator/crane/loader was actively working, how many CHF that costs, when machines sit idle, and weekly PDF reports for the project owner.</p>
+
+      <h5>How machine tracking works</h5>
+      <ol>
+        <li><b>Detection events</b> stream into <code>events.db</code> from every running camera (class + bounding box + timestamp).</li>
+        <li>The <b>machine tracker</b> daemon (wakes every 5 s) pulls new events and resolves each one to a registered machine using the camera→machine link map.</li>
+        <li>For each event it computes <code>is_moving</code> by comparing the bbox-center to the previous observation (threshold = 25 px).</li>
+        <li>Observations are <b>stitched into sessions</b> using a 60-second gap window — short occlusions don't fragment the data.</li>
+        <li>Each session is classified <code>moving</code> / <code>present</code> / <code>idle</code> by majority vote of its observations.</li>
+        <li>Daily rollups (<code>machine_daily_stats</code>, <code>site_daily_stats</code>) are recomputed every 60 s for fast UI rendering.</li>
+      </ol>
+
+      <h5>Configuring a machine</h5>
+      <ol>
+        <li>Open <b>CSI → Utilization → + Add machine</b>.</li>
+        <li>Enter display name, class (must match a YOLO class id from the loaded model), site, primary camera id, and rental rate in <b>CHF/hour</b>.</li>
+        <li>Optional: explicit <code>machine_id</code> (e.g. <code>EX-001</code>, <code>TC-AUDIT</code>). If left blank a UUID is auto-generated.</li>
+        <li>Camera links are auto-created from the primary camera. To map additional cameras (or restrict by zone), use the <b>Camera links</b> action on the machine row.</li>
+      </ol>
+
+      <h5>Workhours (per site, per weekday)</h5>
+      <ul>
+        <li>Default seeded on first use: <b>24 h × 7 days</b> all enabled — every detection counts.</li>
+        <li>Open <b>Edit workhours</b> on the Utilization filter bar to switch to e.g. Mon–Fri 06:00–18:00, Sat 07:00–12:00, Sun off.</li>
+        <li>Activity outside workhours is recorded but flagged as <code>outside_hours</code> for the alert engine — it does not change the rollup totals, only how alerts trigger.</li>
+      </ul>
+
+      <h5>Reports — CSV + weekly PDF</h5>
+      <ul>
+        <li><b>CSV (instant):</b> per-machine totals, per-site totals, raw session log — exported from the Utilization toolbar.</li>
+        <li><b>PDF weekly report:</b> 5 pages — cover, per-machine summary, per-day breakdown, anomalies, cost breakdown — generated via <code>POST /api/reports/pdf</code> and styled in Arclap brand red.</li>
+        <li><b>Scheduled email delivery:</b> create a schedule under <code>POST /api/utilization/report-schedules</code> with <code>day_of_week</code> (0=Mon) + <code>time_of_day</code> (HH:MM) + recipient list. The hourly cron checks weekday + time match, fires once per day, and sends the PDF as an SMTP attachment via the <code>ARCLAP_SMTP_*</code> environment variables.</li>
+      </ul>
+
+      <h5>Alert rules (4 kinds)</h5>
+      <ul>
+        <li><code>utilization.idle_long</code> — machine present but not moving for &gt; <code>min_minutes</code></li>
+        <li><code>utilization.outside_hours</code> — activity detected outside the configured workhours window</li>
+        <li><code>utilization.no_show</code> — registered machine had zero observations today (broken camera? machine off-site?)</li>
+        <li><code>utilization.fleet_low</code> — &lt; N machines active across the site (under-utilized day)</li>
+      </ul>
+      <p>Each rule has a <code>cooldown_min</code> (don't spam the same alert) and <code>deliver</code> map (<code>email</code> + <code>webhook</code>). Background thread evaluates every 60 s. History persists to <code>_data/machine_alert_history.json</code>.</p>
+
+      <h5>Storage layout (utilization)</h5>
+      <pre style="background:var(--color-surface-2);padding:10px;border-radius:6px;font-size:12px">_data/machines.db                      ← machines + sessions + rollups + workhours
+_data/machine_tracker_cursor.txt       ← last events.db row id consumed
+_data/machine_alert_rules.json         ← alert rule definitions
+_data/machine_alert_history.json       ← alert fire log (last 500)
+_data/util_report_schedules.json       ← weekly PDF schedules</pre>
+
+      <h5>API surface (utilization)</h5>
+      <ul style="font-family:var(--font-mono);font-size:12.5px">
+        <li>GET / POST / PATCH / DELETE <code>/api/machines</code></li>
+        <li>GET <code>/api/machines/{id}/sessions</code></li>
+        <li>GET / POST / DELETE <code>/api/cameras/{id}/machine-links</code></li>
+        <li>GET / PUT <code>/api/sites/{id}/workhours</code></li>
+        <li>GET <code>/api/utilization/today</code> · <code>/fleet-snapshot</code> · <code>/live-now</code> · <code>/concurrent/{site}</code></li>
+        <li>GET <code>/api/reports/csv?type=per-machine|per-site|sessions</code></li>
+        <li>POST <code>/api/reports/pdf</code></li>
+        <li>GET / POST / DELETE <code>/api/machine-alerts/rules</code> + <code>/evaluate</code> + <code>/history</code></li>
+        <li>GET / POST / DELETE <code>/api/utilization/report-schedules</code></li>
+      </ul>
+
+      <h5>Regression test</h5>
+      <p>Run <code>python _audit_machines.py</code> for a 10-phase end-to-end regression: machine CRUD, camera links, workhours, synthetic event injection, tracker stitching, rollups, CSV+PDF reports, alert rules, scheduler, cleanup. Boots the server on port 8840 and exits non-zero on any failure.</p>
 
       <p class="muted small" style="margin-top:24px">Arclap Vision Suite · CSI_V1 · runs locally on your RTX 3090 box. No cloud, no telemetry. All data stays on the operator machine.</p>
     </div>

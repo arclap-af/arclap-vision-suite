@@ -4613,6 +4613,38 @@ async function mcTickAll() {
     const el = $('mc-health');
     if (el) el.innerHTML = `<span class="health-badge ${h.state||'green'}">${(h.state||'OK').toUpperCase()} · ${h.recent_crashes||0} crashes/h</span>`;
   } catch(e) {}
+  // Machine activity strip
+  try {
+    const links = await (await fetch(`/api/cameras/${encodeURIComponent(_mcCurrentCam)}/machine-links`)).json();
+    const wrap = $('mc-machine-activity');
+    if (wrap) {
+      const ll = links.links || [];
+      if (!ll.length) {
+        wrap.innerHTML = '<p class="muted small">No machines linked to this camera. Open the Cameras tab → "Linked machines" → add one.</p>';
+      } else {
+        const since = Math.floor(Date.now()/1000) - 6*3600;
+        const _hms = (sec) => { const v=Math.max(0,Math.round(sec)); const h=Math.floor(v/3600), mn=Math.floor((v%3600)/60); return h?`${h}h ${mn}m`:`${mn}m`; };
+        const fmt = (ts) => new Date(ts*1000).toLocaleTimeString().slice(0,5);
+        const sections = await Promise.all(ll.map(async (l) => {
+          try {
+            const r = await (await fetch(`/api/machines/${encodeURIComponent(l.machine_id)}/sessions?since=${since}&limit=20`)).json();
+            const sessions = r.sessions || [];
+            const total = sessions.reduce((s, x) => s + (x.duration_s || 0), 0);
+            const segs = sessions.map(s => `<span class="mc-seg ${s.state}" title="${fmt(s.start_ts)}–${fmt(s.end_ts)} · ${_hms(s.duration_s)} · ${s.state}"></span>`).join('');
+            return `<div style="margin-bottom:8px;padding:6px 10px;background:var(--color-surface-alt,#F6F6F8);border-radius:7px">
+              <div style="display:flex;align-items:center;gap:8px">
+                <b style="font-family:var(--font-mono);font-size:11px;color:var(--color-text-strong)">${l.machine_id}</b>
+                <span style="font-size:11.5px;color:var(--color-text-muted)">${l.machine_name || l.class_name}</span>
+                <span style="margin-left:auto;font-family:var(--font-mono);font-size:11px">${_hms(total)} (6h)</span>
+              </div>
+              <div style="display:flex;gap:1px;margin-top:6px;height:8px;background:rgba(0,0,0,0.04);border-radius:3px;overflow:hidden">${segs}</div>
+            </div>`;
+          } catch(e) { return ''; }
+        }));
+        wrap.innerHTML = sections.join('') || '<p class="muted small">No machine sessions yet.</p>';
+      }
+    }
+  } catch(e) {}
   try {
     const ev = await (await fetch(`/api/events/list?camera_id=${encodeURIComponent(_mcCurrentCam)}&limit=12`)).json();
     const evs = ev.events || [];
@@ -4693,16 +4725,46 @@ async function loadSitesPage() {
     list.forEach(c => { const k = c.site || 'Unassigned'; (bySite[k] ||= []).push(c); });
     const stats = await (await fetch('/api/system/stats')).json().catch(()=>({}));
     const evToday = stats.events_today || 0;
-    const html = Object.entries(bySite).map(([site, cs]) => `
-      <div class="site-card">
-        <div class="site-head"><h4>🏗️ ${site}</h4><span class="muted small">${cs.length} camera(s)</span></div>
+    // Pull machine + utilization data per site
+    const machines = await (await fetch('/api/machines?status=all')).json().catch(()=>({machines:[]}));
+    const today = await (await fetch('/api/utilization/today')).json().catch(()=>({rows:[]}));
+    const machinesBySite = {};
+    (machines.machines || []).forEach(m => {
+      const k = m.site_id || 'Unassigned';
+      (machinesBySite[k] ||= []).push(m);
+    });
+    const totalsByMachine = {};
+    (today.rows || []).forEach(r => totalsByMachine[r.machine_id] = r);
+    const _hms = (sec) => {
+      const v = Math.max(0, Math.round(sec));
+      const h = Math.floor(v/3600), mn = Math.floor((v%3600)/60);
+      return h ? `${h}h ${mn}m` : `${mn}m`;
+    };
+    const html = Object.entries(bySite).map(([site, cs]) => {
+      const ms = machinesBySite[site] || [];
+      const siteActiveS = ms.reduce((sum, m) => sum + ((totalsByMachine[m.machine_id] || {}).active_s || 0), 0);
+      const machinesHtml = ms.length ? `
+        <div style="margin-top:10px;border-top:1px solid var(--color-border);padding-top:10px">
+          <div class="small muted" style="margin-bottom:6px"><b>${ms.length} machine(s)</b> · ${_hms(siteActiveS)} active today</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            ${ms.map(m => {
+              const t = totalsByMachine[m.machine_id] || {};
+              const cost = (m.rental_rate && t.active_s) ? `· ${m.rental_currency || 'CHF'} ${(m.rental_rate * t.active_s/3600).toFixed(0)}` : '';
+              return `<span style="padding:4px 10px;background:var(--color-surface-alt,#F6F6F8);border-radius:7px;font-family:var(--font-mono);font-size:11.5px"><b>${m.machine_id}</b> · ${_hms(t.active_s||0)} ${cost}</span>`;
+            }).join('')}
+          </div>
+        </div>` : '';
+      return `<div class="site-card">
+        <div class="site-head"><h4>${site}</h4><span class="muted small">${cs.length} camera(s)</span></div>
         <div class="site-cams">
           ${cs.map(c => `<div class="site-cam-pill" onclick="document.querySelector('[data-stab=&quot;mission&quot;]').click(); setTimeout(()=>mcSwitchCamera('${c.id}'),300)">
             <b>${c.name||c.id}</b>
             <span class="muted small">${c.enabled?'enabled':'disabled'}</span>
           </div>`).join('')}
         </div>
-      </div>`).join('') || '<p class="muted small">No cameras configured. Use 📹 Cameras tab to add one.</p>';
+        ${machinesHtml}
+      </div>`;
+    }).join('') || '<p class="muted small">No cameras configured. Use the Cameras tab to add one.</p>';
     wrap.innerHTML = `<div class="muted small" style="margin-bottom:10px">${evToday} event(s) across all sites today</div>${html}`;
   } catch(e) { wrap.innerHTML = `<p class="muted small">Error: ${e}</p>`; }
 }
