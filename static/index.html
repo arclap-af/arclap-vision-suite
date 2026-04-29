@@ -12,7 +12,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <link rel="stylesheet" href="/static/style.css" />
-<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-p-diag" />
+<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-q-revert" />
 </head>
 <body>
 
@@ -1098,9 +1098,6 @@
       <p>For every picture, the model runs once on the GPU, the detections are written to the scan database (class, confidence, count, bounding box), and three quality numbers are computed from a downsampled grayscale copy: <em>brightness</em> (mean pixel value), <em>sharpness</em> (Laplacian variance — high = crisp edges), and <em>contrast</em> (pixel std-dev). The filename is also parsed for a timestamp like <code>YYYY-MM-DD_HH-MM-SS</code> so date/hour filtering works later. You can leave this tab — when the scan finishes a notification fires.</p>
     </div>
 
-    <div class="filter-scan-preview-wrap" id="filter-scan-preview-wrap" style="display:none;margin-bottom:14px">
-      <img id="filter-scan-thumb" alt="Latest scanned frame with detections"/>
-    </div>
     <pre id="filter-log" class="log-output">Waiting…</pre>
     <div class="actions" style="margin-top:14px">
       <button class="btn btn-secondary" id="btn-index-continue" disabled>Continue → Analyse</button>
@@ -2813,6 +2810,6 @@ _data/alert_history.json  ← last 500 fires</pre>
 <div class="toasts" id="toasts"></div>
 
 <script src="/static/app.js?v=2026-04-30-e-tier4"></script>
-<script src="/static/shell-v2.js?v=2026-04-30-p-diag"></script>
+<script src="/static/shell-v2.js?v=2026-04-30-q-revert"></script>
 </body>
 </html>
