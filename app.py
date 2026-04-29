@@ -27,7 +27,7 @@ import numpy as np
 import torch
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -46,6 +46,7 @@ from core import events as events_core
 from core import watchdog as watchdog_core
 from core import disk as disk_core
 from core import alerts as alerts_core
+from core import registry as registry_core
 
 PYTHON = sys.executable
 ROOT = Path(__file__).parent.resolve()
@@ -5948,6 +5949,88 @@ def alerts_test_channels(payload: dict):
         )
         out["webhook"] = {"ok": ok, "msg": msg}
     return out
+
+
+# ───────── Tier A: Reproducibility registry ───────────────────────────
+class SnapshotDatasetReq(BaseModel):
+    dataset_root: str
+
+
+@app.post("/api/registry/snapshot")
+def registry_snapshot(req: SnapshotDatasetReq):
+    """Compute the dataset.lock.json for a folder so future training runs
+    pin to a hash-addressable corpus."""
+    p = Path(req.dataset_root)
+    if not p.is_dir():
+        raise HTTPException(404, f"Not a directory: {p}")
+    try:
+        return registry_core.snapshot_dataset(ROOT, p)
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {e}")
+
+
+class StartRunReq(BaseModel):
+    version_name: str
+    dataset_hash: str
+    hparams: dict = {}
+    seed: int | None = None
+
+
+@app.post("/api/registry/runs/start")
+def registry_start_run(req: StartRunReq):
+    """Create a run record. Caller passes a dataset_hash from a previous
+    /snapshot; we look the lock up and seed the run.json with it."""
+    locks = ROOT / "_data" / "dataset_locks" / f"{req.dataset_hash}.json"
+    if not locks.is_file():
+        raise HTTPException(404, f"No such dataset_hash: {req.dataset_hash}")
+    lock = json.loads(locks.read_text(encoding="utf-8"))
+    rid = registry_core.start_run(ROOT, req.version_name, lock,
+                                   req.hparams, seed=req.seed)
+    return {"run_id": rid}
+
+
+class FinalizeRunReq(BaseModel):
+    run_id: str
+    mAP50: float | None = None
+    mAP5095: float | None = None
+    weights_path: str | None = None
+    status: str = "ok"
+    extra_metrics: dict | None = None
+
+
+@app.post("/api/registry/runs/finalize")
+def registry_finalize_run(req: FinalizeRunReq):
+    return registry_core.finalize_run(
+        ROOT, req.run_id,
+        mAP50=req.mAP50, mAP5095=req.mAP5095,
+        weights_path=req.weights_path, status=req.status,
+        extra_metrics=req.extra_metrics,
+    )
+
+
+@app.get("/api/registry/runs")
+def registry_list_runs():
+    return {"runs": registry_core.list_runs(ROOT)}
+
+
+@app.get("/api/registry/runs/{run_id}")
+def registry_get_run(run_id: str):
+    r = registry_core.get_run(ROOT, run_id)
+    if not r:
+        raise HTTPException(404, "Run not found")
+    return r
+
+
+@app.get("/api/registry/runs/{run_id}/model-card")
+def registry_get_model_card(run_id: str):
+    p = ROOT / "_data" / "runs" / run_id / "MODEL_CARD.md"
+    if not p.is_file():
+        # Try to generate now if the run exists
+        try:
+            registry_core.generate_model_card(ROOT, run_id)
+        except Exception as e:
+            raise HTTPException(404, f"No model card: {e}")
+    return PlainTextResponse(p.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -4417,6 +4417,7 @@ document.addEventListener('click', e => {
   if (t.dataset.stab === 'sites') loadSitesPage();
   if (t.dataset.stab === 'grid') loadGridPage();
   if (t.dataset.stab === 'alerts') loadAlertsPage();
+  if (t.dataset.stab === 'registry' && typeof loadRegistryPage === 'function') loadRegistryPage();
 });
 
 /* ─── Tier 4: Alerts page ─────────────────────────────── */

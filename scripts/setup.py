@@ -178,9 +178,48 @@ def verify_imports() -> None:
         "print(f'  Ultralytics : {ultralytics.__version__}'); "
         "print(f'  OpenCV      : {cv2.__version__}'); "
         "print(f'  FastAPI     : {fastapi.__version__}'); "
-        "print('  All imports OK')"
+        "print('  All third-party imports OK')"
     )
     run([venv_python(), "-c", code])
+    # Also verify Arclap core modules — fails fast if a refactor broke imports.
+    step("Verifying Arclap core modules")
+    core_check = (
+        "import importlib; mods = [\n"
+        "    'core.cameras','core.events','core.discovery','core.zones',\n"
+        "    'core.disk','core.watchdog','core.alerts','core.notify',\n"
+        "    'core.swiss','core.queue','core.db','core.seed','core.cv_eval',\n"
+        "    'core.registry','core.presets','core.playground',\n"
+        "    'core.roboflow_workflow',\n"
+        "]; \n"
+        "[importlib.import_module(m) for m in mods]; \n"
+        "print(f'  All {len(mods)} core modules import cleanly.')"
+    )
+    run([venv_python(), "-c", core_check], cwd=str(ROOT))
+
+
+def run_audit() -> None:
+    """Runs _audit.py to confirm the install is wired correctly end-to-end."""
+    audit = ROOT / "_audit.py"
+    if not audit.is_file():
+        return
+    step("Running full audit (syntax + imports + endpoint cross-check)")
+    try:
+        r = subprocess.run([venv_python(), str(audit)],
+                           capture_output=True, text=True, cwd=str(ROOT),
+                           timeout=120)
+        if r.returncode == 0:
+            # Print just the summary
+            for line in r.stdout.splitlines():
+                if line.startswith(("  PASS:", "  WARN:", "  FAIL:", "  Audit", "===")):
+                    print(line)
+            print("  Audit clean.")
+        else:
+            print(r.stdout[-2000:])
+            print("  [WARN] audit reported issues — see above.")
+    except subprocess.TimeoutExpired:
+        print("  [WARN] audit timed out.")
+    except Exception as e:
+        print(f"  [WARN] audit failed to run: {e}")
 
 
 def check_ffmpeg() -> None:
@@ -224,6 +263,7 @@ def main() -> int:
         fetch_weights()
         check_ffmpeg()
         verify_imports()
+        run_audit()
     except subprocess.CalledProcessError as e:
         print(f"\n[FAILED] Step exited with code {e.returncode}")
         print("Re-running setup.py is safe; it will resume from the failed step.")
