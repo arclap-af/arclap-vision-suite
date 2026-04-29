@@ -138,10 +138,12 @@ class JobRunner:
     def _run_one(self, jid: str) -> None:
         job = self.db.get_job(jid)
         if job is None:
+            print(f"[queue] WARN: job {jid} dropped (not found in DB)", flush=True)
             return
         cmd = self.build_cmd(job)
         self.db.update_job(jid, status="running", started_at=time.time())
         self.db.append_log(jid, "$ " + " ".join(str(c) for c in cmd))
+        print(f"[queue] job {jid} STARTED  ({job.mode})  →  {' '.join(str(c) for c in cmd[:3])}", flush=True)
 
         # PYTHONUNBUFFERED=1 forces the child Python's stdout to be line-buffered
         # so progress lines (`print(...)` without `flush=True`) reach the parent
@@ -174,6 +176,7 @@ class JobRunner:
                 last_progress_at = now
             self.db.append_log(jid, cleaned)
         proc.wait()
+        print(f"[queue] job {jid} FINISHED  rc={proc.returncode}", flush=True)
 
         with self._proc_lock:
             self._proc = None

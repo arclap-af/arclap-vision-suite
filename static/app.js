@@ -1707,18 +1707,29 @@ function streamFilterScan(jobId) {
   if (filterScanEventSource) filterScanEventSource.close();
   filterScanEventSource = new EventSource(`/api/jobs/${jobId}/stream`);
   const out = $('filter-log');
-  // Reassuring placeholder while YOLO loads its weights (~5–10 s) before
-  // the first batch lands. Cleared on first real log line.
-  out.textContent = '[scan] connecting to job ' + jobId + '\n[scan] loading YOLO weights — first progress line appears after the first batch (32 frames by default)…\n';
+  // Show diagnostic state so you can tell at a glance if the server is
+  // talking to us. If you only ever see the "connecting" line, the
+  // backend isn't streaming — restart the server (queue.py change).
+  out.textContent = '';
+  const status = $('filter-index-status');
+  if (status) status.textContent = `connecting to /api/jobs/${jobId}/stream …`;
   // Hide stale thumb from a previous run, start polling for the new one
   const wrap = $('filter-scan-preview-wrap');
   if (wrap) wrap.style.display = 'none';
   _startFilterThumbPoll(jobId);
   let firstLog = true;
+  filterScanEventSource.onopen = () => {
+    if (status) status.textContent = `stream open · waiting for first log…`;
+  };
   filterScanEventSource.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.type === 'log') {
-      if (firstLog) { out.textContent = ''; firstLog = false; }
+      if (firstLog) {
+        out.textContent = '';
+        firstLog = false;
+        const status = $('filter-index-status');
+        if (status) status.textContent = 'streaming…';
+      }
       out.textContent += m.line + '\n';
       out.scrollTop = out.scrollHeight;
     } else if (m.type === 'end') {
