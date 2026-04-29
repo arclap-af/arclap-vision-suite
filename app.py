@@ -47,6 +47,7 @@ from core import watchdog as watchdog_core
 from core import disk as disk_core
 from core import alerts as alerts_core
 from core import registry as registry_core
+from core import annotation_picker as picker_core
 
 PYTHON = sys.executable
 ROOT = Path(__file__).parent.resolve()
@@ -2259,6 +2260,76 @@ class FrameFeedbackRequest(BaseModel):
     path: str
     verdict: str = Field(pattern="^(good|bad)$")  # 👍 or 👎
     note: str | None = None
+
+
+# ───── Smart Annotation Picker (4 phases combined) ────────────────────
+class AnnotationPickRequest(BaseModel):
+    n: int = 500
+    weights: dict | None = None        # diversity / uncertainty / quality / balance
+    dedup_threshold: int = 5
+    use_clip: bool = True
+    n_clusters: int | None = None
+    compute_phashes: bool = True
+    compute_clip: bool = False         # opt-in (slow on big sets)
+
+
+def _scan_db_for_job(job_id: str) -> Path:
+    j = db.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Job not found")
+    p = Path(j.output_path)
+    if not p.is_file():
+        raise HTTPException(404, f"Scan DB not found: {p}")
+    return p
+
+
+@app.post("/api/filter/{job_id}/annotation-pick")
+def annotation_pick(job_id: str, req: AnnotationPickRequest):
+    db_path = _scan_db_for_job(job_id)
+    info = {"job_id": job_id}
+    if req.compute_phashes:
+        info["phash"] = picker_core.ensure_phashes(db_path)
+    if req.compute_clip and req.use_clip:
+        info["clip"] = picker_core.ensure_clip_embeddings(db_path)
+    picks = picker_core.pick_top_n(
+        db_path, n=req.n, weights=req.weights or {},
+        dedup_threshold=req.dedup_threshold, use_clip=req.use_clip,
+        n_clusters=req.n_clusters,
+    )
+    info["picks"] = picks
+    info["n_picked"] = len(picks)
+    return info
+
+
+class CvatExportRequest(BaseModel):
+    image_paths: list[str]
+    include_pre_labels: bool = True
+
+
+@app.post("/api/filter/{job_id}/export-cvat")
+def export_cvat(job_id: str, req: CvatExportRequest):
+    db_path = _scan_db_for_job(job_id)
+    out_dir = OUTPUTS / "annotation_exports"
+    zip_path = picker_core.export_cvat_zip(
+        db_path, req.image_paths,
+        out_dir=out_dir,
+        include_pre_labels=req.include_pre_labels,
+    )
+    return {
+        "ok": True,
+        "zip_path": str(zip_path),
+        "size_mb": round(zip_path.stat().st_size / 1024 / 1024, 2),
+        "n_images": len(req.image_paths),
+        "download_url": f"/api/filter/download-export/{zip_path.name}",
+    }
+
+
+@app.get("/api/filter/download-export/{filename}")
+def download_export(filename: str):
+    p = OUTPUTS / "annotation_exports" / filename
+    if not p.is_file():
+        raise HTTPException(404, "Export not found")
+    return FileResponse(str(p), media_type="application/zip", filename=filename)
 
 
 @app.post("/api/filter/{job_id}/feedback")
