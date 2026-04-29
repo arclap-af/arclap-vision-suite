@@ -163,8 +163,16 @@ class JobRunner:
             self._proc = proc
             self._current_job_id = jid
 
+        # CRITICAL: don't use `for raw in proc.stdout` — that goes through
+        # Python's iterator protocol which has an internal read-ahead buffer
+        # that holds output for tens of seconds on Windows, even with
+        # PYTHONUNBUFFERED=1 + bufsize=1 on Popen. readline() bypasses that
+        # buffer and gives one line at a time, immediately.
         last_progress_at = 0.0
-        for raw in proc.stdout:
+        while True:
+            raw = proc.stdout.readline()
+            if not raw:
+                break
             cleaned = _normalise_line(raw)
             if not cleaned:
                 continue
