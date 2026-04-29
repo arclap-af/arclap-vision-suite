@@ -9,6 +9,13 @@
   --topbar-h: 56px;
 }
 
+/* When shell-v2 is NOT active, hide its DOM (sidebar + topbar crumbs +
+   home-v2 mount + mobile toggle). Legacy top-nav layout takes over. */
+body:not(.shell-v2) .shell-sb,
+body:not(.shell-v2) .topbar-title,
+body:not(.shell-v2) .sb-mtoggle,
+body:not(.shell-v2) .home-v2-mount { display: none !important; }
+
 body.shell-v2 {
   margin: 0;
   display: grid;
@@ -561,4 +568,128 @@ body.shell-v2 .swiss-subtabs { display: none; }
     stroke: var(--color-text); fill: none;
     stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
   }
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   DS-strict overrides for the LEGACY top-nav layout
+   (applied always so both shell modes look like the design system)
+   ════════════════════════════════════════════════════════════════════ */
+
+body:not(.shell-v2) .topbar,
+body:not(.shell-v2) .app-header {
+  position: sticky; top: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 12px 32px;
+  background: color-mix(in oklab, var(--color-bg) 85%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(12px);
+          backdrop-filter: saturate(180%) blur(12px);
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* Brand block (DS .brand) */
+body:not(.shell-v2) .brand {
+  display: flex; align-items: center; gap: 10px;
+}
+body:not(.shell-v2) .logo-wordmark { display: none; }   /* use DS brand-mark */
+body:not(.shell-v2) .brand::before {
+  content: "A";
+  width: 28px; height: 28px; border-radius: 6px;
+  background: var(--color-brand); color: #fff;
+  display: grid; place-items: center;
+  font-family: var(--font-brand); font-weight: 700; font-size: 14px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.04);
+  flex-shrink: 0;
+}
+body:not(.shell-v2) .brand-text { display: flex; flex-direction: column; }
+body:not(.shell-v2) .brand-eyebrow {
+  font-family: var(--font-brand); font-weight: 600;
+  font-size: 16px; letter-spacing: -0.02em;
+  color: var(--color-text-strong);
+}
+body:not(.shell-v2) .brand-text .subtitle {
+  font-size: 11px; color: var(--color-text-muted);
+  margin: 0; font-family: var(--font-mono);
+}
+
+/* Top nav — DS .seg-tabs pattern */
+body:not(.shell-v2) .topnav {
+  display: inline-flex; flex-wrap: wrap;
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  padding: 2px; gap: 2px;
+}
+body:not(.shell-v2) .topnav-btn {
+  font: 500 12px/1 var(--font-ui);
+  color: var(--color-text-muted);
+  padding: 7px 12px; border-radius: 5px;
+  border: none; background: transparent;
+  cursor: pointer; transition: background var(--dur-1) var(--ease-out), color var(--dur-1);
+}
+body:not(.shell-v2) .topnav-btn:hover {
+  color: var(--color-text-strong);
+  background: color-mix(in oklab, var(--color-surface) 60%, transparent);
+}
+body:not(.shell-v2) .topnav-btn.active {
+  background: var(--color-surface);
+  color: var(--color-text-strong);
+  font-weight: 600;
+  box-shadow: var(--shadow-1);
+}
+body:not(.shell-v2) .topnav-btn:focus-visible {
+  outline: none; box-shadow: var(--ring-focus);
+}
+
+/* Right-side icon buttons — DS .btn-secondary + .btn-icon */
+body:not(.shell-v2) .header-right {
+  display: flex; align-items: center; gap: 8px;
+}
+body:not(.shell-v2) .icon-btn,
+body:not(.shell-v2) .theme-toggle,
+body:not(.shell-v2) .locale-select {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  padding: 6px 10px;
+  font: 500 12px/1 var(--font-ui);
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out);
+}
+body:not(.shell-v2) .icon-btn { width: 32px; height: 32px; padding: 0; }
+body:not(.shell-v2) .theme-toggle { width: 32px; height: 32px; padding: 0; font-size: 14px; color: var(--color-text); }
+body:not(.shell-v2) .icon-btn:hover,
+body:not(.shell-v2) .theme-toggle:hover,
+body:not(.shell-v2) .locale-select:hover { background: var(--color-surface-alt); }
+body:not(.shell-v2) .icon-btn:focus-visible,
+body:not(.shell-v2) .theme-toggle:focus-visible,
+body:not(.shell-v2) .locale-select:focus-visible {
+  outline: none; box-shadow: var(--ring-focus);
+}
+body:not(.shell-v2) #gpu-badge,
+body:not(.shell-v2) .badge-muted {
+  display: inline-flex; align-items: center;
+  padding: 4px 10px; border-radius: var(--radius-pill);
+  font-size: 10.5px; font-weight: 600;
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  font-family: var(--font-mono);
+}
+body:not(.shell-v2) .bell-dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--color-brand);
+  position: relative; top: -8px; right: 4px;
+}
+
+/* Container content padding follows DS */
+body:not(.shell-v2) main.container {
+  padding: 32px 40px 80px;
+  max-width: 1280px; margin: 0 auto;
+}
+@media (max-width: 760px) {
+  body:not(.shell-v2) .topbar,
+  body:not(.shell-v2) .app-header { padding: 12px 16px; flex-wrap: wrap; }
+  body:not(.shell-v2) main.container { padding: 24px 16px 80px; }
 }
