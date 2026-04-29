@@ -3073,12 +3073,21 @@ async function refreshDashboard() {
     } else {
       recent.innerHTML = d.recent_outputs.map(o => {
         const when = new Date(o.created_at * 1000).toLocaleString();
-        const isVideo = /\.mp4$|\.mov$|\.webm$/i.test(o.name);
+        const isVideo = /\.(mp4|mov|webm|mkv|avi)$/i.test(o.name);
+        const isImage = /\.(png|jpe?g|webp|gif|bmp)$/i.test(o.name);
+        const ext = (o.name.split('.').pop() || 'file').toUpperCase();
+        let media;
+        if (isVideo) {
+          media = `<video src="${o.output_url}" muted preload="metadata"></video>`;
+        } else if (isImage) {
+          media = `<img src="${o.output_url}" alt="${escapeHtml(o.name)}" loading="lazy"/>`;
+        } else {
+          // Non-renderable output (.db, .json, .txt, etc.) — show typed placeholder
+          media = `<div class="recent-tile-placeholder"><span class="ext">${escapeHtml(ext)}</span><span>${escapeHtml(o.mode || 'output')}</span></div>`;
+        }
         return `
-          <a class="recent-tile" href="${o.output_url}" target="_blank">
-            ${isVideo
-              ? `<video src="${o.output_url}" muted preload="metadata"></video>`
-              : `<img src="${o.output_url}" alt="${escapeHtml(o.name)}"/>`}
+          <a class="recent-tile" href="${o.output_url}" target="_blank" rel="noopener">
+            ${media}
             <div class="meta">
               <strong>${escapeHtml(o.mode)}</strong>
               <span class="muted">${escapeHtml(o.name)} · ${when}</span>
