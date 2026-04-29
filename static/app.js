@@ -1680,41 +1680,26 @@ if ($('btn-filter-scan')) {
   });
 }
 
-// Poll the job record every 1s and show its log. Verbose state header
-// at the top so the user can ALWAYS see what state the job is in even
-// before the pipeline produces stdout.
+// Poll the job record every 1s and show ITS LOG, raw, nothing else.
+// If the pipeline emits nothing, the box stays empty — that's the truth.
 let filterScanPollTimer = null;
 async function streamFilterScan(jobId) {
   if (filterScanPollTimer) clearInterval(filterScanPollTimer);
   const out = $('filter-log');
+  out.textContent = '';
   let stoppedDom = false;
-  let pollCount = 0;
-  out.textContent = `[ui] starting poll for job ${jobId}\n`;
 
   const poll = async () => {
-    pollCount++;
     try {
-      const r = await fetch(`/api/jobs/${jobId}`);
-      if (!r.ok) {
-        out.textContent = `[ui] /api/jobs/${jobId} returned HTTP ${r.status}\n`;
-        return;
-      }
-      const j = await r.json();
-      const log = j.log || '';
-      const elapsed = j.started_at ? Math.round(Date.now()/1000 - j.started_at) : 0;
-      const header =
-        `[ui] poll #${pollCount}  ·  status: ${j.status}  ·  log: ${log.length} chars  ·  elapsed: ${elapsed}s\n` +
-        `─────────────────────────────────────────────────────\n`;
-      out.textContent = header + (log || '(pipeline has not produced any stdout yet — first batch can take 5–30 s while YOLO loads)');
+      const j = await (await fetch(`/api/jobs/${jobId}`)).json();
+      out.textContent = j.log || '';
       out.scrollTop = out.scrollHeight;
-
+      $('filter-index-status').textContent = j.status || '';
       if (j.status === 'done' || j.status === 'failed' || j.status === 'stopped') {
         if (stoppedDom) return;
         stoppedDom = true;
         clearInterval(filterScanPollTimer); filterScanPollTimer = null;
         $('btn-index-continue').disabled = (j.status !== 'done');
-        $('filter-index-status').textContent =
-          j.status === 'done' ? 'Done' : `${j.status} (exit ${j.returncode})`;
         if (j.status === 'done') {
           toast('Scan finished', 'success');
           refreshFilterScans();
@@ -1723,10 +1708,12 @@ async function streamFilterScan(jobId) {
         }
       }
     } catch (e) {
-      out.textContent = `[ui] poll #${pollCount} ERROR: ${e}\n` + (out.textContent || '');
+      // Stop polling on error rather than fake activity.
+      clearInterval(filterScanPollTimer); filterScanPollTimer = null;
+      $('filter-index-status').textContent = 'connection error';
     }
   };
-  await poll();                        // immediate
+  await poll();
   filterScanPollTimer = setInterval(poll, 1000);
 }
 
