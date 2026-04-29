@@ -81,6 +81,48 @@ def main():
                 "Make sure your CVAT export uses the 'Ultralytics YOLO' format."
             )
 
+    # Rewrite data.yaml with ABSOLUTE paths so Ultralytics can't resolve them
+    # against its global datasets_dir (which produces 'images not found' errors
+    # like the Roboflow-export failure mode). YOLO accepts absolute paths fine.
+    print(f"[1/3] Normalizing dataset paths in {yaml_path.name}…")
+    try:
+        import yaml as _yaml
+        with open(yaml_path, "r", encoding="utf-8") as fh:
+            data = _yaml.safe_load(fh) or {}
+        # Resolve each split relative to the data.yaml's directory.
+        # Roboflow zips often have train: ../train/images plus path: .
+        # CVAT uses train: train/images
+        base = yaml_path.parent
+        if "path" in data:
+            base = (yaml_path.parent / str(data["path"])).resolve()
+        for key in ("train", "val", "test"):
+            v = data.get(key)
+            if v:
+                cand = (base / str(v)).resolve()
+                if not cand.is_dir():
+                    # Try the dataset root directly (handles ../train/images)
+                    alt = (yaml_path.parent / str(v)).resolve()
+                    if alt.is_dir():
+                        cand = alt
+                    else:
+                        # Strip leading ../ and try inside dataset root
+                        cleaned = str(v).lstrip("./").replace("..\\", "").replace("../", "")
+                        alt2 = (yaml_path.parent / cleaned).resolve()
+                        if alt2.is_dir():
+                            cand = alt2
+                if cand.is_dir():
+                    data[key] = str(cand).replace("\\", "/")
+                    print(f"        {key}: {cand}")
+                else:
+                    print(f"        [WARN] {key} path could not be resolved: {v}")
+        # Drop the relative 'path' key so Ultralytics won't combine it with
+        # its datasets_dir.
+        data.pop("path", None)
+        with open(yaml_path, "w", encoding="utf-8") as fh:
+            _yaml.safe_dump(data, fh, sort_keys=False)
+    except Exception as e:
+        print(f"        [warn] could not normalize paths: {e} — proceeding anyway")
+
     models_dir = Path(args.models_dir).resolve()
     models_dir.mkdir(parents=True, exist_ok=True)
     project_dir = Path(args.project).resolve()
