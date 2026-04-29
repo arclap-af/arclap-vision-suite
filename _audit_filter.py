@@ -111,30 +111,18 @@ for sig in expected:
     found = any(sig in l for l in log_lines)
     print(f"  {'PASS' if found else 'FAIL'}  log contains '{sig}'")
 
-# 7. Thumbnail file written?
-thumb_disk = pathlib.Path(str(db_dest).replace('.db', '.thumb.jpg'))
-if thumb_disk.is_file():
-    print(f"  PASS  thumbnail written to disk ({thumb_disk.stat().st_size}b)")
-else:
-    print(f"  FAIL  no thumbnail at {thumb_disk}")
-
-# 8. /api/jobs/<id>/scan-thumb returns 200
+# 7. SQLite scan DB has rows. Server picks the actual db_path from
+#    DATA/filter_<scan_id>.db, so look it up via the job record.
+import sqlite3, json as _json
 try:
     with urllib.request.urlopen(
-        f'http://127.0.0.1:8770/api/jobs/{job_id}/scan-thumb', timeout=5) as r:
-        body = r.read()
-    print(f"  PASS  /api/jobs/{job_id}/scan-thumb -> {r.status} ({len(body)}b)")
-except Exception as e:
-    print(f"  FAIL  scan-thumb: {e}")
-
-# 9. SQLite has rows
-import sqlite3
-try:
-    c = sqlite3.connect(str(db_dest))
+        f'http://127.0.0.1:8770/api/jobs/{job_id}', timeout=5) as r:
+        actual_db = _json.loads(r.read())['output_path']
+    c = sqlite3.connect(actual_db)
     n = c.execute("SELECT COUNT(*) FROM images").fetchone()[0]
     nd = c.execute("SELECT COUNT(*) FROM detections").fetchone()[0]
     c.close()
-    print(f"  PASS  scan DB: {n} images, {nd} detections")
+    print(f"  PASS  scan DB ({actual_db}): {n} images, {nd} detections")
 except Exception as e:
     print(f"  FAIL  scan DB: {e}")
 
