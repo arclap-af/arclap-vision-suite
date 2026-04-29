@@ -89,6 +89,17 @@ class JobRunner:
 
     def start(self) -> None:
         self._thread.start()
+        # Watchdog: if the worker thread ever dies (uncaught exception bubbling
+        # out of _loop, OS-level signal, etc.), respawn it so the queue never
+        # gets permanently stuck. Checks every 5 s.
+        def _watchdog():
+            while not self._stop.is_set():
+                time.sleep(5)
+                if not self._thread.is_alive():
+                    print("[queue] WORKER THREAD DIED — respawning", flush=True)
+                    self._thread = threading.Thread(target=self._loop, name="JobRunner", daemon=True)
+                    self._thread.start()
+        threading.Thread(target=_watchdog, name="JobRunnerWatchdog", daemon=True).start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -148,19 +159,36 @@ class JobRunner:
     # ---- internals -----------------------------------------------------
 
     def _loop(self) -> None:
+        print("[queue] worker thread alive", flush=True)
         while not self._stop.is_set():
-            jid = self.q.next(timeout=1.0)
+            try:
+                jid = self.q.next(timeout=1.0)
+            except Exception as e:
+                print(f"[queue] q.next() raised: {e} — sleeping 1s", flush=True)
+                time.sleep(1.0)
+                continue
             if jid is None:
                 continue
+            print(f"[queue] picked up job {jid}", flush=True)
             try:
                 self._run_one(jid)
             except Exception as e:
-                self.db.update_job(
-                    jid, status="failed",
-                    finished_at=time.time(),
-                    returncode=-1,
-                )
-                self.db.append_log(jid, f"[runner exception] {e}")
+                import traceback as _tb
+                print(f"[queue] _run_one({jid}) crashed: {e}", flush=True)
+                _tb.print_exc()
+                try:
+                    self.db.update_job(
+                        jid, status="failed",
+                        finished_at=time.time(),
+                        returncode=-1,
+                    )
+                    self.db.append_log(jid, f"[runner exception] {e}")
+                except Exception:
+                    pass
+                # Reset proc state so the next job isn't blocked
+                with self._proc_lock:
+                    self._proc = None
+                    self._current_job_id = None
 
     def _run_one(self, jid: str) -> None:
         job = self.db.get_job(jid)

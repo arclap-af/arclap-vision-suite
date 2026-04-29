@@ -5910,6 +5910,37 @@ def recording_delete_endpoint(path: str):
     return {"ok": True}
 
 
+@app.get("/api/queue/status")
+def queue_status():
+    """Diagnostic: is the worker thread alive? what's currently running?
+    how many jobs queued? Use this to debug 'my job is stuck queued'."""
+    import threading as _th
+    threads = {t.name: t.is_alive() for t in _th.enumerate()}
+    return {
+        "worker_alive": "JobRunner" in threads and threads["JobRunner"],
+        "watchdog_alive": "JobRunnerWatchdog" in threads and threads["JobRunnerWatchdog"],
+        "current_job": runner.is_running(),
+        "queue_size": queue.qsize() if hasattr(queue, "qsize") else queue._q.qsize(),
+        "all_threads": threads,
+    }
+
+
+@app.post("/api/queue/force-stop-current")
+def queue_force_stop():
+    """If a job is stuck running and stop_current() doesn't move on, this
+    forcibly kills the subprocess + clears the worker's proc state so the
+    next job can be picked up."""
+    killed = runner.stop_current()
+    # Force-clear worker state in case stop_current didn't release the lock
+    try:
+        with runner._proc_lock:
+            runner._proc = None
+            runner._current_job_id = None
+    except Exception:
+        pass
+    return {"ok": True, "killed": killed}
+
+
 @app.post("/api/system/restart")
 def system_restart():
     """Exit with code 42; the run.bat / run.sh restart-loop catches that
