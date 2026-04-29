@@ -295,15 +295,15 @@ code {
 .brand-link:focus-visible { outline: none; box-shadow: var(--ring-focus); }
 
 .brand-mark {
-  width: 32px;
-  height: 32px;
+  width: 38px;
+  height: 38px;
   display: grid;
   place-items: center;
   background: var(--color-brand);
   color: #fff;
   font-family: var(--font-brand);
   font-weight: 700;
-  font-size: 16px;
+  font-size: 18px;
   border-radius: var(--radius-2);
   flex-shrink: 0;
   letter-spacing: 0;
@@ -312,14 +312,14 @@ code {
 .brand-name {
   font-family: var(--font-brand);
   font-weight: 700;
-  font-size: 13px;
+  font-size: 15px;
   letter-spacing: 0.14em;
   color: var(--color-text-strong);
   white-space: nowrap;
 }
 .brand-divider {
   width: 1px;
-  height: 22px;
+  height: 26px;
   background: var(--color-border);
   margin-left: var(--space-2);
 }
@@ -345,10 +345,10 @@ code {
   background: transparent;
   color: var(--color-text-muted);
   border: none;
-  padding: var(--space-3) var(--space-3);
+  padding: var(--space-4) var(--space-4);
   cursor: pointer;
   font-family: inherit;
-  font-size: 13px;
+  font-size: 14.5px;
   font-weight: 500;
   letter-spacing: 0.01em;
   white-space: nowrap;
@@ -361,9 +361,9 @@ code {
   content: "";
   position: absolute;
   left: 50%;
-  bottom: 6px;
+  bottom: 8px;
   width: 0;
-  height: 2px;
+  height: 3px;
   background: var(--color-text-strong);
   border-radius: var(--radius-pill);
   transform: translateX(-50%);
@@ -384,7 +384,7 @@ code {
 .topnav-btn.active::after {
   width: calc(100% - var(--space-5));
   background: var(--color-brand);
-  height: 2px;
+  height: 3px;
 }
 
 .topnav-btn:focus-visible {
@@ -402,9 +402,9 @@ code {
   content: "";
   position: absolute;
   top: 50%;
-  left: 0;
-  width: 4px;
-  height: 4px;
+  left: 4px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: var(--color-brand);
   transform: translateY(-50%);
@@ -413,7 +413,7 @@ code {
   opacity: 1;
 }
 .topnav-btn-feature {
-  padding-left: calc(var(--space-3) + 10px);
+  padding-left: calc(var(--space-4) + 10px);
 }
 .topnav-btn-feature:hover { color: var(--color-brand-hover); }
 .topnav-btn-feature.active {
