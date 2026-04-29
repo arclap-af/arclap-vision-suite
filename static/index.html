@@ -12,7 +12,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <link rel="stylesheet" href="/static/style.css" />
-<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-g-a11y" />
+<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-h-audit" />
 </head>
 <body class="shell-v2">
 
@@ -68,6 +68,10 @@
     <button class="sb-item" data-page="swiss" data-stab="alerts">
       <svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
       Alerts
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="activity">
+      <svg viewBox="0 0 24 24"><polyline points="3 12 7 12 10 5 14 19 17 12 21 12"/></svg>
+      Activity
     </button>
 
     <div class="sb-section">Modeling</div>
@@ -181,7 +185,7 @@
     </button>
     <button class="icon-btn" id="help-btn" title="Help / shortcuts" aria-label="Help">?</button>
     <button class="theme-toggle" id="theme-toggle"
-            title="Toggle light/dark theme">◐</button>
+            title="Toggle light/dark theme" aria-label="Toggle light/dark theme">◐</button>
     <select id="locale-toggle" class="locale-select"
             title="Interface language" aria-label="Language">
       <option value="en">EN</option>
@@ -1705,12 +1709,12 @@
 <main class="container hidden" id="page-cameras">
   <section class="card">
     <div class="card-header">
-      <h2>📹 Cameras — multi-site, multi-camera registry</h2>
+      <h2>Cameras — multi-site, multi-camera registry</h2>
       <p>Register every camera across every construction site. Each camera runs in its own background process; sessions auto-restart on crash; discovery + zones are tagged per camera so collected data tracks back to its source. Designed for days/months of continuous operation.</p>
     </div>
     <div class="actions">
       <button class="btn btn-primary btn-small" id="btn-add-camera">+ Add camera</button>
-      <button class="btn btn-ghost btn-small" id="btn-cameras-refresh">🔄 Refresh</button>
+      <button class="btn btn-ghost btn-small" id="btn-cameras-refresh" aria-label="Refresh cameras"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 4 21 10 15 10"/></svg> Refresh</button>
       <span class="muted small" id="cameras-summary">—</span>
     </div>
     <div id="cameras-list" class="cameras-list">
@@ -1791,26 +1795,26 @@
     </div>
   </section>
 
-  <!-- Sub-tab navigation -->
-  <nav class="swiss-subtabs">
-    <button class="swiss-subtab active" data-stab="overview">📊 Overview</button>
-    <button class="swiss-subtab" data-stab="mission">🎛️ Mission Control</button>
-    <button class="swiss-subtab" data-stab="sites">🏗️ Sites</button>
-    <button class="swiss-subtab" data-stab="grid">🎬 Grid</button>
-    <button class="swiss-subtab" data-stab="classes">📋 Classes</button>
-    <button class="swiss-subtab" data-stab="data">📦 Data</button>
-    <button class="swiss-subtab" data-stab="train">🧠 Train</button>
-    <button class="swiss-subtab" data-stab="charts">📈 Charts</button>
-    <button class="swiss-subtab" data-stab="evaluate">🧪 Evaluate</button>
-    <button class="swiss-subtab" data-stab="compare">⚖️ Compare</button>
-    <button class="swiss-subtab" data-stab="deploy">🚀 Deploy</button>
-    <button class="swiss-subtab" data-stab="review">👁️ Review queue</button>
-    <button class="swiss-subtab" data-stab="events">🎯 Events</button>
-    <button class="swiss-subtab" data-stab="recordings">📼 Recordings</button>
-    <button class="swiss-subtab" data-stab="zones">📐 Zones</button>
-    <button class="swiss-subtab" data-stab="alerts">🔔 Alerts</button>
-    <button class="swiss-subtab" data-stab="help">📚 Help</button>
-    <button class="swiss-subtab" data-stab="activity">🕒 Activity</button>
+  <!-- Sub-tab navigation (hidden under shell-v2; sidebar is primary nav) -->
+  <nav class="swiss-subtabs" aria-label="CSI sections">
+    <button class="swiss-subtab active" data-stab="overview">Overview</button>
+    <button class="swiss-subtab" data-stab="mission">Mission Control</button>
+    <button class="swiss-subtab" data-stab="sites">Sites</button>
+    <button class="swiss-subtab" data-stab="grid">Grid</button>
+    <button class="swiss-subtab" data-stab="classes">Classes</button>
+    <button class="swiss-subtab" data-stab="data">Data</button>
+    <button class="swiss-subtab" data-stab="train">Train</button>
+    <button class="swiss-subtab" data-stab="charts">Charts</button>
+    <button class="swiss-subtab" data-stab="evaluate">Evaluate</button>
+    <button class="swiss-subtab" data-stab="compare">Compare</button>
+    <button class="swiss-subtab" data-stab="deploy">Deploy</button>
+    <button class="swiss-subtab" data-stab="review">Review queue</button>
+    <button class="swiss-subtab" data-stab="events">Events</button>
+    <button class="swiss-subtab" data-stab="recordings">Recordings</button>
+    <button class="swiss-subtab" data-stab="zones">Zones</button>
+    <button class="swiss-subtab" data-stab="alerts">Alerts</button>
+    <button class="swiss-subtab" data-stab="help">Help</button>
+    <button class="swiss-subtab" data-stab="activity">Activity</button>
   </nav>
 
   <!-- ===== Overview sub-tab — Wide Live Dashboard ===== -->
@@ -2886,6 +2890,6 @@ _data/alert_history.json  ← last 500 fires</pre>
 <div class="toasts" id="toasts"></div>
 
 <script src="/static/app.js?v=2026-04-30-e-tier4"></script>
-<script src="/static/shell-v2.js?v=2026-04-30-g-a11y"></script>
+<script src="/static/shell-v2.js?v=2026-04-30-h-audit"></script>
 </body>
 </html>

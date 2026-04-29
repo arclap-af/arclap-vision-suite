@@ -438,3 +438,6 @@ body.shell-v2 #page-dashboard .home-v2-mount { display: block; }
   .ld-bigstream .ld-bigstream-bar .ld-cam-pill::before { animation: none; opacity: 1; }
   .home-tile-v2:hover, .ld-cam-tile:hover { transform: none; }
 }
+
+/* Hide redundant sub-tab strip under shell-v2 — sidebar is primary nav */
+body.shell-v2 .swiss-subtabs { display: none; }

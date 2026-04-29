@@ -3,6 +3,49 @@
 
 (function () {
   const $ = (id) => document.getElementById(id);
+
+  // ── A11y shim: any <input>/<select>/<textarea> without an aria-label and
+  // without an associated <label for=…> gets aria-label inferred from
+  // placeholder, title, or nearest preceding text. Runs on load + on
+  // dynamic mutations so even JS-injected inputs get covered.
+  function applyA11yShim(root) {
+    const fields = (root || document).querySelectorAll(
+      'input:not([type="hidden"]), select, textarea'
+    );
+    fields.forEach((el) => {
+      if (el.hasAttribute('aria-label') || el.hasAttribute('aria-labelledby')) return;
+      const id = el.id;
+      if (id && document.querySelector(`label[for="${id}"]`)) return;
+      // walk up to a wrapping <label>
+      if (el.closest('label')) return;
+      const lbl = el.placeholder || el.title || el.name ||
+        (el.previousElementSibling && el.previousElementSibling.textContent || '').trim().slice(0, 60) ||
+        (el.type ? el.type + ' input' : 'input');
+      if (lbl) el.setAttribute('aria-label', lbl);
+    });
+    // icon-only buttons (text length 0-2, no aria-label, no title)
+    (root || document).querySelectorAll('button').forEach((b) => {
+      if (b.hasAttribute('aria-label') || b.hasAttribute('aria-labelledby')) return;
+      if (b.title) { b.setAttribute('aria-label', b.title); return; }
+      const txt = (b.textContent || '').trim();
+      if (txt.length <= 2 && b.querySelector('svg, img')) {
+        // try to infer from sibling/title
+        const inferred = b.dataset.action || b.dataset.page || b.dataset.stab || 'button';
+        b.setAttribute('aria-label', inferred);
+      }
+    });
+  }
+  document.addEventListener('DOMContentLoaded', () => applyA11yShim(document));
+  // Re-run when new content is injected (modal opens, list renders, etc.)
+  const mo = new MutationObserver((muts) => {
+    for (const m of muts) {
+      m.addedNodes.forEach((n) => {
+        if (n.nodeType === 1) applyA11yShim(n);
+      });
+    }
+  });
+  mo.observe(document.body, { childList: true, subtree: true });
+
   const TITLES = {
     overview: 'Live Dashboard', mission: 'Mission Control', grid: 'Camera Grid',
     sites: 'Sites', events: 'Events', review: 'Review queue',
