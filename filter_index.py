@@ -402,11 +402,13 @@ def scan(args) -> None:
         return
 
     # Lazy import — keeps `summary` and `export` cheap
+    print(f"[scan] loading YOLO model {args.model} on {args.device}…", flush=True)
     from ultralytics import YOLO
     import cv2
     import numpy as np
 
     model = YOLO(args.model)
+    print(f"[scan] model loaded; processing {len(todo)} image(s) in batches of {args.batch}…", flush=True)
     names = getattr(model, "names", {}) or {}
 
     def quality_and_conditions(path: str):

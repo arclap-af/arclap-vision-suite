@@ -1684,9 +1684,14 @@ function streamFilterScan(jobId) {
   if (filterScanEventSource) filterScanEventSource.close();
   filterScanEventSource = new EventSource(`/api/jobs/${jobId}/stream`);
   const out = $('filter-log');
+  // Reassuring placeholder while YOLO loads its weights (~5–10 s) before
+  // the first batch lands. Cleared on first real log line.
+  out.textContent = '[scan] connecting to job ' + jobId + '\n[scan] loading YOLO weights — first progress line appears after the first batch (32 frames by default)…\n';
+  let firstLog = true;
   filterScanEventSource.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.type === 'log') {
+      if (firstLog) { out.textContent = ''; firstLog = false; }
       out.textContent += m.line + '\n';
       out.scrollTop = out.scrollHeight;
     } else if (m.type === 'end') {
