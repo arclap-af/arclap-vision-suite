@@ -3135,7 +3135,25 @@ def roboflow_run(req: RoboflowRunRequest):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return FileResponse(STATIC / "index.html")
+    """Serve index.html with two protections that make caching impossible:
+      1. Cache-Control: no-store on the response itself.
+      2. Rewrite every ?v=... query in <script src> / <link href> with a
+         fresh server-uptime timestamp so the browser MUST re-download
+         the asset on every page load. This kills 'why is my JS old?' bugs."""
+    import time as _t
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    bust = f"v={int(_t.time())}"
+    import re as _re
+    # Replace ?v=anything in src/href to a per-request timestamp
+    html = _re.sub(r'\?v=[a-zA-Z0-9._\-]+', '?' + bust, html)
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 # ----------------------------------------------------------------------------
