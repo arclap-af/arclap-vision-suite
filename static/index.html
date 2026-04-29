@@ -1633,6 +1633,9 @@
   <!-- Sub-tab navigation -->
   <nav class="swiss-subtabs">
     <button class="swiss-subtab active" data-stab="overview">📊 Overview</button>
+    <button class="swiss-subtab" data-stab="mission">🎛️ Mission Control</button>
+    <button class="swiss-subtab" data-stab="sites">🏗️ Sites</button>
+    <button class="swiss-subtab" data-stab="grid">🎬 Grid</button>
     <button class="swiss-subtab" data-stab="classes">📋 Classes</button>
     <button class="swiss-subtab" data-stab="data">📦 Data</button>
     <button class="swiss-subtab" data-stab="train">🧠 Train</button>
@@ -2226,6 +2229,60 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
       <p class="muted small" style="padding:14px">No activity yet.</p>
     </div>
   </section>
+
+  <!-- ===== Mission Control sub-tab ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="mission">
+    <div class="card-header">
+      <h3>🎛️ Mission Control</h3>
+      <p>Live unified view: pick a camera, see stream + charts + recent events + zone state + GPU/disk in one screen.</p>
+    </div>
+    <div style="padding:14px">
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+        <label>Camera:</label>
+        <select id="mc-camera-pick" style="min-width:220px"></select>
+        <span id="mc-health"></span>
+        <button class="btn btn-small btn-ghost" id="mc-refresh">🔄 Refresh</button>
+      </div>
+      <div class="mc-grid">
+        <div class="mc-cell mc-stream">
+          <h4>📺 Live</h4>
+          <div id="mc-stream-wrap" class="rtsp-stream-wrap"><div class="muted small">Pick a camera</div></div>
+        </div>
+        <div class="mc-cell mc-events-feed">
+          <h4>🎯 Recent events</h4>
+          <div id="mc-events-feed"><p class="muted small">—</p></div>
+        </div>
+        <div class="mc-cell mc-chart"><h4>📈 Detections / sec</h4><canvas id="mc-chart-det"></canvas></div>
+        <div class="mc-cell mc-chart"><h4>📈 Inference ms</h4><canvas id="mc-chart-inf"></canvas></div>
+        <div class="mc-cell mc-zones">
+          <h4>📐 Zones</h4>
+          <div id="mc-zones-state"><p class="muted small">—</p></div>
+        </div>
+        <div class="mc-cell mc-system">
+          <h4>💻 System</h4>
+          <div id="mc-system-stats"><p class="muted small">—</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Sites sub-tab ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="sites">
+    <div class="card-header">
+      <h3>🏗️ Sites</h3>
+      <p>Per-site rollups: cameras online, total events today, recent activity per construction site.</p>
+    </div>
+    <div id="sites-list" style="padding:14px"><p class="muted small">Loading…</p></div>
+  </section>
+
+  <!-- ===== Grid sub-tab ===== -->
+  <section class="card swiss-stab-pane hidden" data-stab-pane="grid">
+    <div class="card-header">
+      <h3>🎬 Multi-camera grid</h3>
+      <p>Tiled live MJPEG of every running camera. Click a tile to jump to Mission Control.</p>
+    </div>
+    <div id="grid-tiles" style="padding:14px"><p class="muted small">No cameras running.</p></div>
+  </section>
 </main>
 
 <!-- Swiss: add-class modal -->
@@ -2478,6 +2535,6 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
 
-<script src="/static/app.js?v=2026-04-30-c-tier2"></script>
+<script src="/static/app.js?v=2026-04-30-d-tier3"></script>
 </body>
 </html>

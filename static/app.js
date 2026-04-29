@@ -4413,7 +4413,171 @@ document.addEventListener('click', e => {
   if (!t) return;
   if (t.dataset.stab === 'recordings') loadRecordings();
   if (t.dataset.stab === 'zones') loadZonesPage();
+  if (t.dataset.stab === 'mission') loadMissionControl();
+  if (t.dataset.stab === 'sites') loadSitesPage();
+  if (t.dataset.stab === 'grid') loadGridPage();
 });
+
+/* ─── Tier 3: Mission Control ─────────────────────────────── */
+let _mcCharts = { det: null, inf: null };
+let _mcTimer = null;
+let _mcCurrentCam = null;
+
+async function loadMissionControl() {
+  try {
+    const cams = await (await fetch('/api/cameras')).json();
+    const sel = $('mc-camera-pick');
+    if (!sel) return;
+    const list = Array.isArray(cams) ? cams : (cams.cameras || []);
+    sel.innerHTML = list.map(c => `<option value="${c.id}">${c.name || c.id} ${c.site ? '— '+c.site : ''}</option>`).join('') || '<option value="">No cameras</option>';
+    sel.onchange = () => mcSwitchCamera(sel.value);
+    if ($('mc-refresh')) $('mc-refresh').onclick = () => mcSwitchCamera(sel.value);
+    if (list.length) mcSwitchCamera(list[0].id);
+  } catch(e) { console.error('mission control load:', e); }
+}
+
+async function mcSwitchCamera(camId) {
+  if (!camId) return;
+  _mcCurrentCam = camId;
+  try {
+    const sessions = await (await fetch(`/api/cameras/${encodeURIComponent(camId)}/sessions?limit=1`)).json();
+    const s = (sessions.sessions || sessions || [])[0];
+    const wrap = $('mc-stream-wrap');
+    if (s && s.job_id && !s.stopped_at) {
+      wrap.innerHTML = `<img src="/api/rtsp/${s.job_id}/mjpeg" style="width:100%;border-radius:6px" alt="live"/>`;
+    } else {
+      wrap.innerHTML = `<div class="muted small" style="padding:14px">Camera not running. <button class="btn btn-small" onclick="startCameraJob('${camId}')">▶ Start</button></div>`;
+    }
+  } catch(e) {}
+  mcTickAll();
+  if (_mcTimer) clearInterval(_mcTimer);
+  _mcTimer = setInterval(mcTickAll, 5000);
+}
+
+async function mcTickAll() {
+  if (!_mcCurrentCam) return;
+  try {
+    const h = await (await fetch(`/api/cameras/${encodeURIComponent(_mcCurrentCam)}/health`)).json();
+    const el = $('mc-health');
+    if (el) el.innerHTML = `<span class="health-badge ${h.state||'green'}">${(h.state||'OK').toUpperCase()} · ${h.recent_crashes||0} crashes/h</span>`;
+  } catch(e) {}
+  try {
+    const ev = await (await fetch(`/api/events/list?camera_id=${encodeURIComponent(_mcCurrentCam)}&limit=12`)).json();
+    const evs = ev.events || [];
+    const feed = $('mc-events-feed');
+    if (feed) {
+      feed.innerHTML = evs.length ? evs.map(e => `
+        <div class="mc-event-row">
+          <img src="/api/events/${e.id}/crop" onerror="this.style.display='none'"/>
+          <div><b>${e.class_name || ('cls '+e.class_id)}</b> · ${((e.confidence||0)*100).toFixed(0)}%
+          <div class="muted small">${new Date((e.timestamp||0)*1000).toLocaleTimeString()} ${e.zone_name?'· '+e.zone_name:''}</div></div>
+        </div>`).join('') : '<p class="muted small">No events yet.</p>';
+    }
+  } catch(e) {}
+  try {
+    const sys = await (await fetch('/api/system/stats')).json();
+    const el = $('mc-system-stats');
+    if (el) {
+      const d = sys.disk || {};
+      el.innerHTML = `
+        <div class="kv"><span>Disk free</span><b>${d.free_human||'?'} / ${d.total_human||'?'} (${d.free_pct||0}%)</b></div>
+        <div class="kv"><span>GPU</span><b>${sys.gpu_name || '—'}</b></div>
+        <div class="kv"><span>Cameras enabled</span><b>${sys.cameras_enabled || 0}</b></div>
+        <div class="kv"><span>Events today</span><b>${sys.events_today || 0}</b></div>`;
+    }
+  } catch(e) {}
+  try {
+    const z = await (await fetch(`/api/zones/${encodeURIComponent(_mcCurrentCam)}`)).json();
+    const zs = $('mc-zones-state');
+    const list = z.zones || [];
+    if (zs) zs.innerHTML = list.length ? list.map(zone => `
+      <div class="mc-zone-row">
+        <span class="zone-swatch" style="background:${zone.color||'#888'}"></span>
+        <b>${zone.name}</b> <span class="muted small">${(zone.rule&&zone.rule.allowed_classes||[]).length} allowed</span>
+      </div>`).join('') : '<p class="muted small">No zones defined.</p>';
+  } catch(e) {}
+  mcUpdateCharts();
+}
+
+async function mcUpdateCharts() {
+  try {
+    const sessions = await (await fetch(`/api/cameras/${encodeURIComponent(_mcCurrentCam)}/sessions?limit=1`)).json();
+    const s = (sessions.sessions || sessions || [])[0];
+    if (!s || !s.job_id) return;
+    const j = await (await fetch(`/api/jobs/${s.job_id}/status`)).json();
+    const det = j.detections_per_sec || j.det_per_sec || 0;
+    const inf = j.inference_ms || j.infer_ms || 0;
+    mcPushChart('det', det);
+    mcPushChart('inf', inf);
+  } catch(e) {}
+}
+
+function mcPushChart(key, val) {
+  if (typeof Chart === 'undefined') return;
+  const id = key === 'det' ? 'mc-chart-det' : 'mc-chart-inf';
+  const cv = $(id); if (!cv) return;
+  if (!_mcCharts[key]) {
+    _mcCharts[key] = new Chart(cv.getContext('2d'), {
+      type: 'line',
+      data: { labels: [], datasets: [{ label: key, data: [], borderColor: key==='det'?'#22c55e':'#f59e0b', tension: 0.3, fill: false }] },
+      options: { responsive: true, animation: false, plugins: { legend: { display: false } }, scales: { x: { display: false } } }
+    });
+  }
+  const c = _mcCharts[key];
+  c.data.labels.push('');
+  c.data.datasets[0].data.push(val);
+  if (c.data.labels.length > 30) { c.data.labels.shift(); c.data.datasets[0].data.shift(); }
+  c.update();
+}
+
+/* ─── Tier 3: Sites view ─────────────────────────────── */
+async function loadSitesPage() {
+  const wrap = $('sites-list'); if (!wrap) return;
+  wrap.innerHTML = '<p class="muted small">Loading…</p>';
+  try {
+    const cams = await (await fetch('/api/cameras')).json();
+    const list = Array.isArray(cams) ? cams : (cams.cameras || []);
+    const bySite = {};
+    list.forEach(c => { const k = c.site || 'Unassigned'; (bySite[k] ||= []).push(c); });
+    const stats = await (await fetch('/api/system/stats')).json().catch(()=>({}));
+    const evToday = stats.events_today || 0;
+    const html = Object.entries(bySite).map(([site, cs]) => `
+      <div class="site-card">
+        <div class="site-head"><h4>🏗️ ${site}</h4><span class="muted small">${cs.length} camera(s)</span></div>
+        <div class="site-cams">
+          ${cs.map(c => `<div class="site-cam-pill" onclick="document.querySelector('[data-stab=&quot;mission&quot;]').click(); setTimeout(()=>mcSwitchCamera('${c.id}'),300)">
+            <b>${c.name||c.id}</b>
+            <span class="muted small">${c.enabled?'enabled':'disabled'}</span>
+          </div>`).join('')}
+        </div>
+      </div>`).join('') || '<p class="muted small">No cameras configured. Use 📹 Cameras tab to add one.</p>';
+    wrap.innerHTML = `<div class="muted small" style="margin-bottom:10px">${evToday} event(s) across all sites today</div>${html}`;
+  } catch(e) { wrap.innerHTML = `<p class="muted small">Error: ${e}</p>`; }
+}
+
+/* ─── Tier 3: Grid view ─────────────────────────────── */
+async function loadGridPage() {
+  const wrap = $('grid-tiles'); if (!wrap) return;
+  wrap.innerHTML = '<p class="muted small">Loading…</p>';
+  try {
+    const cams = await (await fetch('/api/cameras')).json();
+    const list = Array.isArray(cams) ? cams : (cams.cameras || []);
+    const tiles = await Promise.all(list.map(async c => {
+      try {
+        const ss = await (await fetch(`/api/cameras/${encodeURIComponent(c.id)}/sessions?limit=1`)).json();
+        const s = (ss.sessions || ss || [])[0];
+        if (s && s.job_id && !s.stopped_at) {
+          return `<div class="grid-tile" onclick="document.querySelector('[data-stab=&quot;mission&quot;]').click(); setTimeout(()=>mcSwitchCamera('${c.id}'),300)">
+            <img src="/api/rtsp/${s.job_id}/mjpeg" alt="${c.name||c.id}"/>
+            <div class="grid-tile-label">${c.name||c.id}</div>
+          </div>`;
+        }
+        return `<div class="grid-tile grid-tile-off"><div class="muted small">${c.name||c.id} · offline</div></div>`;
+      } catch(e) { return ''; }
+    }));
+    wrap.innerHTML = tiles.length ? `<div class="grid-tiles-wrap">${tiles.join('')}</div>` : '<p class="muted small">No cameras configured.</p>';
+  } catch(e) { wrap.innerHTML = `<p class="muted small">Error: ${e}</p>`; }
+}
 
 // =============================================================================
 // Swiss Detector tab — full lifecycle of the multi-class construction model
