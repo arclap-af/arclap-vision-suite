@@ -2117,6 +2117,30 @@
       <h3>🧠 Train a new version</h3>
       <p>Fine-tune from the active version (transfer learning) or start from a stock YOLO. Training output appears in the Overview tab's Versions list; activate or roll back from there.</p>
     </div>
+
+    <!-- Dataset panel — what this run will train on, with quick actions -->
+    <div id="train-dataset-panel" class="train-ds-panel">
+      <div class="train-ds-head">
+        <h4>Dataset for this run</h4>
+        <div class="train-ds-actions">
+          <button class="btn btn-secondary btn-small" id="btn-train-add-folder" type="button">+ Add images from folder</button>
+          <button class="btn btn-secondary btn-small" id="btn-train-add-zip" type="button">+ Upload Roboflow / CVAT zip</button>
+          <button class="btn btn-secondary btn-small" id="btn-train-add-video" type="button">+ Extract frames from video</button>
+          <button class="btn btn-ghost btn-small" id="btn-train-open-data" type="button">Open Data tab →</button>
+          <button class="btn btn-ghost btn-small" id="btn-train-refresh-ds" type="button" title="Reload dataset stats">↻ Refresh</button>
+        </div>
+      </div>
+      <div class="train-ds-stats" id="train-ds-stats">
+        <div class="train-ds-stat"><div class="lbl">Train images</div><div class="val" id="tds-train">—</div></div>
+        <div class="train-ds-stat"><div class="lbl">Val images</div><div class="val" id="tds-val">—</div></div>
+        <div class="train-ds-stat"><div class="lbl">Total labels</div><div class="val" id="tds-labels">—</div></div>
+        <div class="train-ds-stat"><div class="lbl">Active classes</div><div class="val" id="tds-classes">—</div></div>
+        <div class="train-ds-stat"><div class="lbl">Staging waiting</div><div class="val" id="tds-staging">—</div><div class="sub" id="tds-staging-sub"></div></div>
+      </div>
+      <div class="train-ds-warning hidden" id="train-ds-warning"></div>
+      <div class="train-ds-classes" id="train-ds-classes"></div>
+    </div>
+
     <div class="swiss-train-grid">
       <label class="text-row">
         <span>Base weights</span>

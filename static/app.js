@@ -4464,6 +4464,7 @@ document.addEventListener('click', e => {
   if (t.dataset.stab === 'grid') loadGridPage();
   if (t.dataset.stab === 'alerts') loadAlertsPage();
   if (t.dataset.stab === 'registry' && typeof loadRegistryPage === 'function') loadRegistryPage();
+  if (t.dataset.stab === 'train' && typeof loadSwissState === 'function') loadSwissState();
 });
 
 /* ─── Tier 4: Alerts page ─────────────────────────────── */
@@ -4810,6 +4811,7 @@ async function loadSwissState() {
     renderSwissHero();
     renderSwissClassGrid();
     renderSwissDataBars();
+    renderTrainDataset();
     renderSwissVersions();
     renderSwissActivity();
     populateCvToolDropdowns();
@@ -5039,6 +5041,95 @@ function renderSwissDataBars() {
         <div class="swiss-bar-num">${n.toLocaleString()}</div>
       </div>`;
   }).join('');
+}
+
+// ─── Train sub-tab: dataset panel ────────────────────────────────────────
+function renderTrainDataset() {
+  const s = swissState;
+  if (!s) return;
+  const panel = $('train-dataset-panel');
+  if (!panel) return;
+  const stats = s.stats || {};
+  const classes = (s.classes || []).filter(c => c.active);
+  const counts = stats.per_class_counts || {};
+  const staging = stats.staging || {};
+  const trainN = stats.train_images || 0;
+  const valN = stats.val_images || 0;
+  const totalLabels = Object.values(counts).reduce((a, b) => a + (b || 0), 0);
+  const stagingTotal = Object.values(staging).reduce((a, b) => a + (b || 0), 0);
+
+  // Top stats
+  const setVal = (id, txt, cls) => {
+    const el = $(id); if (!el) return;
+    el.textContent = txt;
+    el.classList.remove('warn', 'brand');
+    if (cls) el.classList.add(cls);
+  };
+  setVal('tds-train', trainN.toLocaleString(), trainN < 10 ? 'warn' : null);
+  setVal('tds-val', valN.toLocaleString(), valN < 5 ? 'warn' : null);
+  setVal('tds-labels', totalLabels.toLocaleString(), totalLabels === 0 ? 'warn' : null);
+  setVal('tds-classes', classes.length, classes.length === 0 ? 'warn' : null);
+  setVal('tds-staging', stagingTotal.toLocaleString(), stagingTotal > 0 ? 'brand' : null);
+  const stagSub = $('tds-staging-sub');
+  if (stagSub) stagSub.textContent = stagingTotal > 0 ? 'will merge on train' : 'none';
+
+  // Warning banner
+  const warn = $('train-ds-warning');
+  if (warn) {
+    warn.classList.remove('danger');
+    if (trainN === 0 && stagingTotal === 0) {
+      warn.classList.remove('hidden');
+      warn.classList.add('danger');
+      warn.innerHTML = '<b>Empty dataset.</b> No images to train on. Use the actions above to add a folder, upload a Roboflow zip, or import from F:\\ — or promote frames from the Events tab.';
+    } else if (trainN > 0 && trainN < 10) {
+      warn.classList.remove('hidden');
+      warn.classList.add('danger');
+      warn.innerHTML = `<b>Dataset too small (${trainN} train images).</b> The trainer requires at least 10. Add more images before launching.`;
+    } else {
+      const under = classes
+        .map(c => ({ c, n: counts[c.id] || 0 }))
+        .filter(x => x.n > 0 && x.n < 30)
+        .map(x => x.c.en);
+      const empty = classes
+        .filter(c => (counts[c.id] || 0) === 0)
+        .map(c => c.en);
+      if (empty.length || under.length) {
+        warn.classList.remove('hidden');
+        const parts = [];
+        if (empty.length) parts.push(`<b>${empty.length} class${empty.length===1?'':'es'} with zero labels:</b> ${escapeHtml(empty.slice(0, 5).join(', '))}${empty.length > 5 ? '…' : ''}`);
+        if (under.length) parts.push(`<b>${under.length} class${under.length===1?'':'es'} under 30 images:</b> ${escapeHtml(under.slice(0, 5).join(', '))}${under.length > 5 ? '…' : ''}`);
+        warn.innerHTML = parts.join('<br/>') + '<br/><span class="muted small">Training will still run, but expect weaker recall on these classes.</span>';
+      } else {
+        warn.classList.add('hidden');
+        warn.innerHTML = '';
+      }
+    }
+  }
+
+  // Per-class breakdown
+  const grid = $('train-ds-classes');
+  if (grid) {
+    if (!classes.length) {
+      grid.innerHTML = '<p class="muted small">No active classes. Define classes in the Classes tab first.</p>';
+    } else {
+      grid.innerHTML = classes.map(c => {
+        const n = counts[c.id] || 0;
+        const cls = n === 0 ? 'empty' : (n < 30 ? 'under' : '');
+        return `<div class="train-ds-class ${cls}" title="${escapeHtml(c.en)} (id ${c.id})">
+          <span class="name">${escapeHtml(c.en)}</span>
+          <span class="count">${n.toLocaleString()}</span>
+        </div>`;
+      }).join('');
+    }
+  }
+}
+
+// Deep-link helper: switch CSI sub-tab, optionally fire a click on a target inside it.
+function _jumpToSubtab(stab, afterFn) {
+  const btn = document.querySelector(`[data-stab="${stab}"]`);
+  if (!btn) return;
+  btn.click();
+  if (afterFn) setTimeout(afterFn, 80);
 }
 
 function renderSwissVersions() {
@@ -5654,6 +5745,43 @@ if ($('btn-swiss-inspect-pick-other')) {
 }
 if ($('btn-swiss-train')) {
   $('btn-swiss-train').addEventListener('click', swissTrainNewVersion);
+}
+
+// Train sub-tab · Dataset panel deep-links to the Data tab actions
+if ($('btn-train-add-folder')) {
+  $('btn-train-add-folder').addEventListener('click', () => {
+    _jumpToSubtab('data', () => {
+      const b = $('btn-swiss-pick-folder');
+      if (b) { b.click(); b.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    });
+  });
+}
+if ($('btn-train-add-zip')) {
+  $('btn-train-add-zip').addEventListener('click', () => {
+    _jumpToSubtab('data', () => {
+      const b = $('btn-swiss-import-zip');
+      if (b) { b.click(); b.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    });
+  });
+}
+if ($('btn-train-add-video')) {
+  $('btn-train-add-video').addEventListener('click', () => {
+    _jumpToSubtab('data', () => {
+      const v = $('cv-frames-video');
+      if (v) { v.scrollIntoView({ behavior: 'smooth', block: 'center' }); v.focus(); }
+    });
+  });
+}
+if ($('btn-train-open-data')) {
+  $('btn-train-open-data').addEventListener('click', () => _jumpToSubtab('data'));
+}
+if ($('btn-train-refresh-ds')) {
+  $('btn-train-refresh-ds').addEventListener('click', async () => {
+    const btn = $('btn-train-refresh-ds');
+    btn.disabled = true;
+    try { await loadSwissState(); toast('Dataset stats refreshed', 'success'); }
+    finally { btn.disabled = false; }
+  });
 }
 // Esc closes any swiss modal
 document.addEventListener('keydown', e => {
