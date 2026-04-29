@@ -218,7 +218,17 @@ app = FastAPI(
         "site analytics, and more."
     ),
 )
-app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+class _NoCacheStaticFiles(StaticFiles):
+    """Serve /static/* with Cache-Control: no-store so browsers can never
+    serve a stale app.js / shell-v2.js / index.html."""
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+        return resp
+
+app.mount("/static", _NoCacheStaticFiles(directory=str(STATIC)), name="static")
 app.mount("/files/uploads", StaticFiles(directory=str(UPLOADS)), name="uploads")
 app.mount("/files/outputs", StaticFiles(directory=str(OUTPUTS)), name="outputs")
 

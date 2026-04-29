@@ -1691,7 +1691,7 @@ async function streamFilterScan(jobId) {
 
   const poll = async () => {
     try {
-      const j = await (await fetch(`/api/jobs/${jobId}`)).json();
+      const j = await (await fetch(`/api/jobs/${jobId}`, { cache: 'no-store' })).json();
       out.textContent = j.log || '';
       out.scrollTop = out.scrollHeight;
       $('filter-index-status').textContent = j.status || '';
