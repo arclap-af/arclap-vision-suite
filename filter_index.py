@@ -588,14 +588,17 @@ def scan(args) -> None:
         except Exception:
             pass  # thumbnail is best-effort; never break the scan
 
+        # Progress + DB flush: every batch (was every 10 → 30 s of silence).
+        # Flush DB only every 10 batches to keep INSERTs cheap, but ALWAYS
+        # emit a progress line so the user sees the scan is alive.
+        done = i + len(batch_paths)
+        elapsed = time.monotonic() - started
+        rate = done / max(0.01, elapsed)
+        eta = (len(todo) - done) / max(0.01, rate)
+        print(f"[scan] {done}/{len(todo)}  {rate:.1f} img/s  ETA {eta:.0f}s",
+              flush=True)
         if (i // BATCH) % 10 == 0:
             flush()
-            done = i + len(batch_paths)
-            elapsed = time.monotonic() - started
-            rate = done / max(0.01, elapsed)
-            eta = (len(todo) - done) / max(0.01, rate)
-            print(f"[scan] {done}/{len(todo)}  {rate:.1f} img/s  ETA {eta:.0f}s",
-                  flush=True)
 
     flush()
     compute_camera_baselines(conn)
