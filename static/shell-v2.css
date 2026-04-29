@@ -11,10 +11,12 @@
 
 /* When shell-v2 is NOT active, hide its DOM (sidebar + topbar crumbs +
    home-v2 mount + mobile toggle). Legacy top-nav layout takes over. */
-body:not(.shell-v2) .shell-sb,
-body:not(.shell-v2) .topbar-title,
-body:not(.shell-v2) .sb-mtoggle,
-body:not(.shell-v2) .home-v2-mount { display: none !important; }
+/* Sidebar shell is fully disabled — single source of nav is the topbar.
+   These selectors hide it regardless of body.shell-v2 state. */
+.shell-sb,
+.topbar-title,
+.sb-mtoggle,
+.home-v2-mount { display: none !important; }
 
 body.shell-v2 {
   margin: 0;
