@@ -128,7 +128,11 @@
 
   function setTitle(text) {
     const t = $('topbar-title');
-    if (t) t.querySelector('span').textContent = text;
+    if (!t) return;
+    // DS .crumbs format: "Vision Suite · <strong>Page</strong>"
+    const strong = t.querySelector('strong');
+    if (strong) { strong.textContent = text; }
+    else { t.innerHTML = `Vision Suite · <strong>${text}</strong>`; }
   }
 
   // ── Sidebar item wiring ──────────────────────────────────────────
