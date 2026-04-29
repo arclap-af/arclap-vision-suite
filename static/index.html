@@ -2639,41 +2639,77 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
   </section>
 
   <!-- ===== Mission Control sub-tab ===== -->
-  <section class="card swiss-stab-pane hidden" data-stab-pane="mission">
-    <div class="card-header">
-      <h3>🎛️ Mission Control</h3>
-      <p>Live unified view: pick a camera, see stream + charts + recent events + zone state + GPU/disk in one screen.</p>
-    </div>
-    <div style="padding:14px">
-      <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
-        <label>Camera:</label>
-        <select id="mc-camera-pick" style="min-width:220px"></select>
-        <span id="mc-health"></span>
-        <button class="btn btn-small btn-ghost" id="mc-refresh">🔄 Refresh</button>
+  <section class="card swiss-stab-pane hidden mc-pane" data-stab-pane="mission">
+    <div class="card-header card-header-row">
+      <div>
+        <h3>Mission Control</h3>
+        <p>Single-camera live view: stream · engineering charts · zones · system · machine activity, all on one screen.</p>
       </div>
-      <div class="mc-grid">
-        <div class="mc-cell mc-stream">
-          <h4>📺 Live</h4>
-          <div id="mc-stream-wrap" class="rtsp-stream-wrap"><div class="muted small">Pick a camera</div></div>
+      <div class="mc-toolbar">
+        <label class="mc-toolbar-field">
+          <span>Camera</span>
+          <select id="mc-camera-pick" class="input"></select>
+        </label>
+        <span id="mc-health"></span>
+        <button class="btn btn-ghost btn-sm" id="mc-refresh">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="mc-quad">
+      <!-- Quadrant 1: Live stream (large, top-left, spans 2 rows) -->
+      <div class="mc-cell mc-cell-stream">
+        <div class="mc-cell-head">
+          <span class="mc-cell-title">Live stream</span>
+          <span class="mc-cell-meta" id="mc-stream-meta"></span>
         </div>
-        <div class="mc-cell mc-events-feed">
-          <h4>🎯 Recent events</h4>
-          <div id="mc-events-feed"><p class="muted small">—</p></div>
+        <div id="mc-stream-wrap" class="rtsp-stream-wrap"><div class="muted small">Pick a camera to start</div></div>
+      </div>
+
+      <!-- Quadrant 2: Recent events (top-right) -->
+      <div class="mc-cell mc-cell-events">
+        <div class="mc-cell-head">
+          <span class="mc-cell-title">Recent events</span>
+          <button class="lk" data-jump-stab="events">All →</button>
         </div>
-        <div class="mc-cell mc-chart"><h4>📈 Detections / sec</h4><canvas id="mc-chart-det"></canvas></div>
-        <div class="mc-cell mc-chart"><h4>📈 Inference ms</h4><canvas id="mc-chart-inf"></canvas></div>
-        <div class="mc-cell mc-zones">
-          <h4>📐 Zones</h4>
-          <div id="mc-zones-state"><p class="muted small">—</p></div>
+        <div id="mc-events-feed" class="mc-cell-body"><p class="muted small">—</p></div>
+      </div>
+
+      <!-- Quadrant 3: Charts (bottom-left, side-by-side) -->
+      <div class="mc-cell mc-cell-charts">
+        <div class="mc-cell-head"><span class="mc-cell-title">Engineering</span></div>
+        <div class="mc-charts-row">
+          <div class="mc-chart-wrap">
+            <div class="mc-chart-label">Det / sec</div>
+            <canvas id="mc-chart-det"></canvas>
+          </div>
+          <div class="mc-chart-wrap">
+            <div class="mc-chart-label">Inference (ms)</div>
+            <canvas id="mc-chart-inf"></canvas>
+          </div>
         </div>
-        <div class="mc-cell mc-system">
-          <h4>💻 System</h4>
-          <div id="mc-system-stats"><p class="muted small">—</p></div>
+      </div>
+
+      <!-- Quadrant 4: Zones + System (bottom-right, stacked) -->
+      <div class="mc-cell mc-cell-side">
+        <div class="mc-side-section">
+          <div class="mc-cell-head">
+            <span class="mc-cell-title">Zones</span>
+            <button class="lk" data-jump-stab="zones">Edit →</button>
+          </div>
+          <div id="mc-zones-state" class="mc-cell-body"><p class="muted small">—</p></div>
         </div>
-        <div class="mc-cell" style="grid-column:span 2">
-          <h4>📊 Machine activity (this camera)</h4>
-          <div id="mc-machine-activity"><p class="muted small">No machines linked to this camera. Open the Cameras tab to link.</p></div>
+        <div class="mc-side-section">
+          <div class="mc-cell-head"><span class="mc-cell-title">System</span></div>
+          <div id="mc-system-stats" class="mc-cell-body"><p class="muted small">—</p></div>
         </div>
+      </div>
+
+      <!-- Full-width row: Machine activity strip -->
+      <div class="mc-cell mc-cell-machines">
+        <div class="mc-cell-head">
+          <span class="mc-cell-title">Machine activity (this camera, last 6h)</span>
+          <button class="lk" data-jump-stab="utilization">Open Utilization →</button>
+        </div>
+        <div id="mc-machine-activity" class="mc-cell-body"><p class="muted small">No machines linked to this camera. Open the Cameras tab to link.</p></div>
       </div>
     </div>
   </section>
