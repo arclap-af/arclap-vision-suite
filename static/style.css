@@ -2263,6 +2263,145 @@ input[type="number"].input::-webkit-outer-spin-button {
 /* =========================================================================
    Empty states
    ========================================================================= */
+/* ════════════════════════════════════════════════════════════════════
+   Loading + Error states (universal primitives)
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Skeleton shimmer for content that's loading */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-surface-alt) 0%,
+    var(--color-border) 50%,
+    var(--color-surface-alt) 100%
+  );
+  background-size: 200% 100%;
+  border-radius: var(--radius-2);
+  animation: skeleton-shimmer 1.4s linear infinite;
+  color: transparent;
+  pointer-events: none;
+}
+@keyframes skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.skeleton-line { height: 12px; margin-bottom: var(--space-2); }
+.skeleton-line.lg { height: 18px; }
+.skeleton-line.sm { height: 10px; }
+.skeleton-line.w-50 { width: 50%; }
+.skeleton-line.w-75 { width: 75%; }
+.skeleton-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-3);
+  padding: var(--space-4) var(--space-5);
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; background: var(--color-surface-alt); }
+}
+
+/* Inline spinner for buttons / async loaders */
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-brand);
+  border-radius: 50%;
+  animation: spinner-rotate 0.8s linear infinite;
+}
+.spinner.lg { width: 24px; height: 24px; border-width: 3px; }
+@keyframes spinner-rotate {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+}
+
+/* Error banner — dismissible inline error */
+.error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-brand-soft);
+  border: 1px solid var(--color-brand-border);
+  border-left: 3px solid var(--color-brand);
+  border-radius: var(--radius-2);
+  font-size: 13px;
+  color: var(--color-text);
+  margin: var(--space-3) 0;
+}
+.error-banner b,
+.error-banner strong {
+  color: var(--color-brand);
+  font-weight: 600;
+}
+.error-banner .error-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0 var(--space-1);
+}
+.error-banner .error-close:hover { color: var(--color-text-strong); }
+.error-banner .error-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--color-brand);
+}
+
+/* Info banner (neutral / info) */
+.info-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--arc-blue-50);
+  border: 1px solid var(--arc-blue-100);
+  border-left: 3px solid var(--color-info);
+  border-radius: var(--radius-2);
+  font-size: 13px;
+  color: var(--color-text);
+  margin: var(--space-3) 0;
+}
+.info-banner b { color: var(--arc-blue-700); }
+
+/* Success banner */
+.success-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--arc-green-50);
+  border: 1px solid var(--arc-green-100);
+  border-left: 3px solid var(--color-success);
+  border-radius: var(--radius-2);
+  font-size: 13px;
+  color: var(--color-text);
+  margin: var(--space-3) 0;
+}
+.success-banner b { color: var(--arc-green-700); }
+
+/* Warning banner */
+.warning-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--arc-amber-50);
+  border: 1px solid var(--arc-amber-100);
+  border-left: 3px solid var(--color-warning);
+  border-radius: var(--radius-2);
+  font-size: 13px;
+  color: var(--color-text);
+  margin: var(--space-3) 0;
+}
+.warning-banner b { color: var(--arc-amber-700); }
+
 /* ─── Empty state (no data / first-run hint) ──────────────────────── */
 .empty-state {
   text-align: center;
