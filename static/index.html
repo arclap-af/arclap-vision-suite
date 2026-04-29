@@ -71,21 +71,55 @@
 <header class="topbar">
   <a href="#" class="brand brand-link" data-page="dashboard" aria-label="Arclap Vision Suite home">
     <span class="brand-mark">A</span>
-    <span class="brand-name">VISION SUITE</span>
-    <span class="brand-divider" aria-hidden="true"></span>
+    <span class="brand-text-block">
+      <span class="brand-eyebrow-mini">Arclap</span>
+      <span class="brand-name">VISION SUITE</span>
+    </span>
   </a>
   <nav class="topnav" aria-label="Primary">
-    <button class="topnav-btn active" data-page="dashboard">Home</button>
-    <button class="topnav-btn" data-page="wizard">Timelapse</button>
-    <button class="topnav-btn" data-page="cameras">Cameras</button>
-    <button class="topnav-btn topnav-btn-feature" data-page="swiss">CSI</button>
-    <button class="topnav-btn" data-page="models">Models</button>
-    <button class="topnav-btn" data-page="train">Train</button>
-    <button class="topnav-btn" data-page="live">Live RTSP</button>
-    <button class="topnav-btn" data-page="filter">Filter</button>
-    <button class="topnav-btn" data-page="history">History</button>
-    <button class="topnav-btn" data-page="projects">Projects</button>
+    <button class="topnav-btn active" data-page="dashboard" type="button">
+      <svg class="topnav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12l9-9 9 9"/><path d="M5 10v10a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-5h2v5a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V10"/></svg>
+      <span>Home</span>
+    </button>
+    <button class="topnav-btn" data-page="wizard" type="button">
+      <svg class="topnav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12c0 5.523-4.477 10-10 10S2 17.523 2 12 6.477 2 12 2"/><path d="M22 4l-10 10-3-3"/></svg>
+      <span>Timelapse</span>
+    </button>
+    <button class="topnav-btn" data-page="cameras" type="button">
+      <svg class="topnav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+      <span>Cameras</span>
+    </button>
+    <button class="topnav-btn topnav-btn-feature" data-page="swiss" type="button">
+      <svg class="topnav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h6v6H2z"/><path d="M16 3h6v6h-6z"/><path d="M2 15h6v6H2z"/><path d="M16 15h6v6h-6z"/></svg>
+      <span>CSI</span>
+      <span class="topnav-badge">v1</span>
+    </button>
+    <button class="topnav-btn" data-page="models" type="button">
+      <svg class="topnav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/><path d="M2 8.5l10 6.5 10-6.5"/><path d="M12 22V15"/></svg>
+      <span>Models</span>
+    </button>
+    <button class="topnav-btn" data-page="train" type="button">
+      <svg class="topnav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12c0-4.97 4.03-9 9-9 3.5 0 6.5 2 8 5"/><path d="M21 12c0 4.97-4.03 9-9 9-3.5 0-6.5-2-8-5"/><polyline points="20 4 20 9 15 9"/><polyline points="4 20 4 15 9 15"/></svg>
+      <span>Train</span>
+    </button>
+    <button class="topnav-btn" data-page="live" type="button">
+      <svg class="topnav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.5 12a7.5 7.5 0 0 1-15 0 7.5 7.5 0 0 1 15 0z"/><path d="M2 12h2M20 12h2M12 2v2M12 20v2"/></svg>
+      <span>Live RTSP</span>
+    </button>
+    <button class="topnav-btn" data-page="filter" type="button">
+      <svg class="topnav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+      <span>Filter</span>
+    </button>
+    <button class="topnav-btn" data-page="history" type="button">
+      <svg class="topnav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <span>History</span>
+    </button>
+    <button class="topnav-btn" data-page="projects" type="button">
+      <svg class="topnav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+      <span>Projects</span>
+    </button>
   </nav>
+  <div class="topbar-spacer" aria-hidden="true"></div>
   <div class="topbar-title" id="topbar-title">
     Vision Suite · <strong>Live Dashboard</strong>
   </div>

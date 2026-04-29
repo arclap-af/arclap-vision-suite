@@ -263,170 +263,214 @@ code {
   top: 0;
   z-index: 50;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
-  gap: var(--space-6);
-  padding: var(--space-3) var(--space-7);
-  background: color-mix(in oklab, var(--color-bg) 85%, transparent);
-  -webkit-backdrop-filter: saturate(180%) blur(12px);
-          backdrop-filter: saturate(180%) blur(12px);
+  gap: var(--space-5);
+  padding: var(--space-3) var(--space-6);
+  background: color-mix(in oklab, var(--color-surface) 92%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+          backdrop-filter: saturate(180%) blur(14px);
   border-bottom: 1px solid var(--color-border);
+  box-shadow: var(--shadow-1);
+  min-height: 64px;
 }
 /* ════════════════════════════════════════════════════════════════════
-   TOP NAVIGATION — redesigned 2026
-   Brand block (mark + wordmark + divider) on the left, underline-driven
-   pill-free nav in the centre, right-aligned utilities on the right.
-   The CSI button gets a brand-red feature treatment to flag it as the
-   product's main surface.
+   TOP NAVIGATION — premium 2026 redesign
+   Three zones: BRAND | NAV | UTILITIES
+   Brand: 44x44 mark + stacked Arclap eyebrow / VISION SUITE wordmark
+   Nav: pill-active treatment (brand-soft fill + brand text + 600 weight)
+        with inline icon + label, hover surface-alt pill
+   Utilities: pinned right via flex spacer
    ════════════════════════════════════════════════════════════════════ */
 
-/* Brand block — clickable, leads back home */
+/* ─── Brand block ─────────────────────────────────────────────────── */
 .brand-link {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   text-decoration: none;
-  padding: 4px var(--space-2);
-  margin: -4px calc(-1 * var(--space-2));
-  border-radius: var(--radius-2);
+  padding: var(--space-2) var(--space-3);
+  margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-3));
+  border-radius: var(--radius-3);
   transition: background var(--dur-1) var(--ease-out);
+  flex-shrink: 0;
 }
 .brand-link:hover { background: var(--color-surface-alt); text-decoration: none; }
 .brand-link:focus-visible { outline: none; box-shadow: var(--ring-focus); }
 
 .brand-mark {
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
   background: var(--color-brand);
   color: #fff;
   font-family: var(--font-brand);
   font-weight: 700;
-  font-size: 18px;
-  border-radius: var(--radius-2);
+  font-size: 22px;
+  border-radius: var(--radius-3);
   flex-shrink: 0;
   letter-spacing: 0;
-  box-shadow: var(--shadow-1);
+  box-shadow:
+    0 0 0 1px rgba(0,0,0,0.04),
+    0 4px 10px -2px rgba(229, 33, 60, 0.35);
+  position: relative;
+}
+.brand-mark::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(180deg, rgba(255,255,255,0.18), transparent 50%);
+  pointer-events: none;
+}
+.brand-text-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1;
+}
+.brand-eyebrow-mini {
+  font-family: var(--font-brand);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-brand);
 }
 .brand-name {
   font-family: var(--font-brand);
   font-weight: 700;
-  font-size: 15px;
-  letter-spacing: 0.14em;
+  font-size: 16px;
+  letter-spacing: 0.10em;
   color: var(--color-text-strong);
   white-space: nowrap;
-}
-.brand-divider {
-  width: 1px;
-  height: 26px;
-  background: var(--color-border);
-  margin-left: var(--space-2);
+  line-height: 1.1;
 }
 @media (max-width: 720px) {
-  .brand-name { display: none; }
-  .brand-divider { display: none; }
+  .brand-text-block { display: none; }
 }
 
-/* Main nav — underline-driven (no pills, no rails) */
+/* ─── Topbar spacer (pushes utilities to the right) ───────────────── */
+.topbar-spacer { flex: 1 1 auto; min-width: 0; }
+
+/* ─── Main nav — pill-active 2026 ─────────────────────────────────── */
 .topnav {
   display: flex;
-  align-items: stretch;
-  gap: var(--space-2);
+  align-items: center;
+  gap: 2px;
   background: transparent;
   border: none;
   padding: 0;
   border-radius: 0;
-  flex-wrap: wrap;
-  margin: 0 var(--space-3);
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+.topnav::-webkit-scrollbar { display: none; }
+
 .topnav-btn {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   background: transparent;
   color: var(--color-text-muted);
-  border: none;
-  padding: var(--space-4) var(--space-4);
+  border: 1px solid transparent;
+  padding: var(--space-2) var(--space-3);
   cursor: pointer;
   font-family: inherit;
-  font-size: 14.5px;
+  font-size: 13.5px;
   font-weight: 500;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.005em;
   white-space: nowrap;
-  border-radius: 0;
-  transition: color var(--dur-1) var(--ease-out);
+  border-radius: var(--radius-2);
+  transition: background var(--dur-1) var(--ease-out),
+              color var(--dur-1) var(--ease-out),
+              border-color var(--dur-1) var(--ease-out),
+              transform var(--dur-1) var(--ease-out);
+  height: 38px;
 }
-
-/* Animated underline that grows from the centre on hover */
-.topnav-btn::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: 8px;
-  width: 0;
-  height: 3px;
-  background: var(--color-text-strong);
-  border-radius: var(--radius-pill);
-  transform: translateX(-50%);
-  transition: width var(--dur-2) var(--ease-out),
-              background var(--dur-1) var(--ease-out);
+.topnav-btn .topnav-icon {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  stroke: currentColor;
+  opacity: 0.85;
+  transition: opacity var(--dur-1) var(--ease-out);
 }
 .topnav-btn:hover {
   color: var(--color-text-strong);
+  background: var(--color-surface-alt);
 }
-.topnav-btn:hover::after {
-  width: calc(100% - var(--space-5));
-}
+.topnav-btn:hover .topnav-icon { opacity: 1; }
 
 .topnav-btn.active {
-  color: var(--color-text-strong);
+  color: var(--color-brand);
+  background: var(--color-brand-soft);
+  border-color: var(--color-brand-border);
   font-weight: 600;
 }
+.topnav-btn.active .topnav-icon { opacity: 1; }
 .topnav-btn.active::after {
-  width: calc(100% - var(--space-5));
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: -1px;
+  height: 2px;
   background: var(--color-brand);
-  height: 3px;
+  border-radius: var(--radius-pill);
 }
 
 .topnav-btn:focus-visible {
   outline: none;
   box-shadow: var(--ring-focus);
-  border-radius: var(--radius-1);
 }
 
-/* Feature variant — for the flagship CSI tab */
+.topnav-btn:active {
+  transform: translateY(1px);
+}
+
+/* ─── Feature variant — the CSI button ────────────────────────────── */
 .topnav-btn-feature {
   color: var(--color-brand);
   font-weight: 600;
 }
-.topnav-btn-feature::before {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 4px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
+.topnav-btn-feature .topnav-icon { opacity: 1; }
+.topnav-btn-feature .topnav-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
   background: var(--color-brand);
-  transform: translateY(-50%);
-  transition: transform var(--dur-1) var(--ease-out),
-              opacity var(--dur-1) var(--ease-out);
-  opacity: 1;
+  color: #fff;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-left: 2px;
+  line-height: 1.4;
 }
-.topnav-btn-feature {
-  padding-left: calc(var(--space-4) + 10px);
+.topnav-btn-feature:hover {
+  background: var(--color-brand-soft);
+  color: var(--color-brand-hover);
 }
-.topnav-btn-feature:hover { color: var(--color-brand-hover); }
-.topnav-btn-feature.active {
-  color: var(--color-brand);
-}
-.topnav-btn-feature.active::after { background: var(--color-brand); }
-.topnav-btn-feature.active::before {
-  transform: translateY(-50%) scale(1.4);
+.topnav-btn-feature.active .topnav-badge {
+  box-shadow: 0 0 0 2px var(--color-brand-soft);
 }
 
-/* Reduced motion */
+/* ─── Reduced motion ──────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
-  .topnav-btn::after { transition: none; }
+  .topnav-btn { transition: none; }
+}
+
+/* ─── Compact label-only mode for narrow screens ─────────────────── */
+@media (max-width: 1080px) {
+  .topnav-btn { padding: var(--space-2); height: 36px; }
+  .topnav-btn span:not(.topnav-badge) { display: none; }
+  .topnav-btn-feature span.topnav-badge { display: inline-flex; }
 }
 
 .header-right {
