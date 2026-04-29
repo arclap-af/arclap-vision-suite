@@ -12,8 +12,137 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <link rel="stylesheet" href="/static/style.css" />
+<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-f-shell" />
 </head>
-<body>
+<body class="shell-v2">
+
+<!-- ═══ Sidebar (v2) ═══ -->
+<aside class="shell-sb" id="shell-sb">
+  <div class="sb-brand">
+    <div class="sb-logo">CSI</div>
+    <div>
+      <div class="sb-name">Arclap Vision</div>
+      <div class="sb-tag">Construction Site Intelligence</div>
+    </div>
+  </div>
+  <nav class="sb-nav">
+    <div class="sb-section">Operations</div>
+    <button class="sb-item active" data-page="swiss" data-stab="overview">
+      <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+      Live Dashboard
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="mission">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="3" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="21"/><line x1="3" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="21" y2="12"/></svg>
+      Mission Control
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="grid">
+      <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+      Camera Grid
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="sites">
+      <svg viewBox="0 0 24 24"><path d="M3 21h18"/><path d="M5 21V8l7-5 7 5v13"/><path d="M9 21v-6h6v6"/></svg>
+      Sites
+    </button>
+    <button class="sb-item" data-page="cameras">
+      <svg viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+      Cameras
+    </button>
+
+    <div class="sb-section">Detection data</div>
+    <button class="sb-item" data-page="swiss" data-stab="events">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      Events
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="review">
+      <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
+      Review queue
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="recordings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>
+      Recordings
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="zones">
+      <svg viewBox="0 0 24 24"><polygon points="3 17 9 11 14 15 21 7"/><circle cx="3" cy="17" r="1.5"/><circle cx="21" cy="7" r="1.5"/></svg>
+      Zones
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="alerts">
+      <svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+      Alerts
+    </button>
+
+    <div class="sb-section">Modeling</div>
+    <button class="sb-item" data-page="swiss" data-stab="classes">
+      <svg viewBox="0 0 24 24"><path d="M20 7L12 3 4 7l8 4 8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 17l8 4 8-4"/></svg>
+      Classes
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="data">
+      <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/></svg>
+      Data
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="train">
+      <svg viewBox="0 0 24 24"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="4"/></svg>
+      Train
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="charts">
+      <svg viewBox="0 0 24 24"><line x1="3" y1="20" x2="21" y2="20"/><polyline points="3 16 8 11 13 14 21 5"/></svg>
+      Charts
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="evaluate">
+      <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+      Evaluate
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="compare">
+      <svg viewBox="0 0 24 24"><path d="M21 6h-7l-2 2-2-2H3"/><path d="M21 18h-7l-2-2-2 2H3"/><line x1="3" y1="12" x2="21" y2="12"/></svg>
+      Compare
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="deploy">
+      <svg viewBox="0 0 24 24"><path d="M5 12l7-9 7 9"/><path d="M12 3v18"/><path d="M5 21h14"/></svg>
+      Deploy
+    </button>
+
+    <div class="sb-section">Tools</div>
+    <button class="sb-item" data-page="dashboard">
+      <svg viewBox="0 0 24 24"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg>
+      Home
+    </button>
+    <button class="sb-item" data-page="wizard">
+      <svg viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+      Timelapse Editor
+    </button>
+    <button class="sb-item" data-page="models">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/></svg>
+      Playground
+    </button>
+    <button class="sb-item" data-page="train">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3 1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8 1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      Train (basic)
+    </button>
+    <button class="sb-item" data-page="live">
+      <svg viewBox="0 0 24 24"><path d="M5 13a8 8 0 0 1 14 0"/><path d="M8.5 16.5a4 4 0 0 1 7 0"/><line x1="12" y1="20" x2="12" y2="20.01"/></svg>
+      Live RTSP
+    </button>
+    <button class="sb-item" data-page="filter">
+      <svg viewBox="0 0 24 24"><polygon points="22 3 2 3 10 12.5 10 19 14 21 14 12.5 22 3"/></svg>
+      Filter
+    </button>
+    <button class="sb-item" data-page="history">
+      <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 10 9 10"/><line x1="12" y1="7" x2="12" y2="12"/><line x1="12" y1="12" x2="15" y2="14"/></svg>
+      History
+    </button>
+    <button class="sb-item" data-page="projects">
+      <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      Projects
+    </button>
+    <button class="sb-item" data-page="swiss" data-stab="help">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12" y2="17.01"/></svg>
+      Help
+    </button>
+  </nav>
+  <div class="sb-foot">
+    <span class="sb-gpu" id="sb-gpu">GPU detecting…</span>
+    <span>Local · v2026.04.30</span>
+  </div>
+</aside>
 
 <header class="topbar">
   <div class="brand">
@@ -35,6 +164,13 @@
     <button class="topnav-btn" data-page="history">History</button>
     <button class="topnav-btn" data-page="projects">Projects</button>
   </nav>
+  <div class="topbar-title" id="topbar-title">
+    <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+    <span>Live Dashboard</span>
+  </div>
+  <button class="sb-mtoggle" id="sb-mtoggle" aria-label="Toggle menu">
+    <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+  </button>
   <div class="header-right">
     <button class="icon-btn" id="bell-btn" title="Recent notifications" aria-label="Notifications">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7">
@@ -57,6 +193,31 @@
 
 <!-- ====== Dashboard / Home Page ====== -->
 <main class="container" id="page-dashboard">
+  <!-- v2 home (rendered when shell-v2 is active) -->
+  <div class="home-v2-mount" id="home-v2-mount">
+    <section class="home-hero-v2">
+      <h1>Construction Site Intelligence</h1>
+      <p class="hero-sub">Local-first computer vision workbench — multi-camera, 24/7, fully on-prem. Pick a workspace below or jump straight to the Live Dashboard.</p>
+      <div class="hero-actions-v2">
+        <button class="hero-btn primary" data-quick-page="swiss" data-quick-stab="overview">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          Open Live Dashboard
+        </button>
+        <button class="hero-btn" data-quick-page="cameras">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+          Manage cameras
+        </button>
+        <button class="hero-btn" data-quick-page="swiss" data-quick-stab="train">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>
+          Train CSI_V2
+        </button>
+      </div>
+    </section>
+    <div class="home-grid-v2" id="home-grid-v2">
+      <!-- populated by JS -->
+    </div>
+  </div>
+
   <section class="hero-card">
     <div class="hero-text">
       <h1 class="hero-title">Welcome to Arclap Vision Suite</h1>
@@ -1652,20 +1813,125 @@
     <button class="swiss-subtab" data-stab="activity">🕒 Activity</button>
   </nav>
 
-  <!-- ===== Overview sub-tab ===== -->
-  <section class="card swiss-stab-pane" data-stab-pane="overview">
-    <div class="card-header">
-      <h3>What's in this Suite right now</h3>
-      <p>The big picture for the Swiss Construction Detector. Drill into a sub-tab for actions.</p>
-    </div>
-    <div id="swiss-overview" class="swiss-overview-grid">
-      <p class="muted small" style="padding:14px">Loading…</p>
-    </div>
+  <!-- ===== Overview sub-tab — Wide Live Dashboard ===== -->
+  <section class="swiss-stab-pane" data-stab-pane="overview" style="padding:0;background:transparent;border:none">
+    <div class="live-dash" id="live-dash">
 
-    <h3 style="margin-top:18px">📊 Versions</h3>
-    <p class="muted small" style="margin:0 0 10px">Every trained Swiss detector. Click <em>Activate</em> to make a version the default. Use action buttons for evaluation, ONNX export, and benchmarking.</p>
-    <div id="swiss-versions" class="swiss-versions">
-      <p class="muted small" style="padding:14px">Loading versions…</p>
+      <!-- Toolbar -->
+      <div class="ld-toolbar">
+        <label style="font-size:12px;color:var(--color-text-muted);font-weight:600">Featured camera</label>
+        <select id="ld-cam-pick"><option value="">— pick —</option></select>
+        <span id="ld-cam-health"></span>
+        <span class="spacer"></span>
+        <span id="ld-last-updated" class="muted small">—</span>
+        <button class="btn btn-small btn-ghost" id="ld-refresh">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 4 21 10 15 10"/></svg>
+          Refresh
+        </button>
+      </div>
+
+      <!-- Hero stats -->
+      <div class="ld-hero" id="ld-hero">
+        <div class="ld-stat accent">
+          <div class="lbl">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+            Active model
+          </div>
+          <div class="val" id="ld-model">—</div>
+          <div class="sub" id="ld-model-sub">—</div>
+        </div>
+        <div class="ld-stat">
+          <div class="lbl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg> Cameras</div>
+          <div class="val" id="ld-cams-online">—</div>
+          <div class="sub" id="ld-cams-sub">— total</div>
+        </div>
+        <div class="ld-stat">
+          <div class="lbl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> Events today</div>
+          <div class="val" id="ld-events-today">—</div>
+          <div class="sub">across all sites</div>
+        </div>
+        <div class="ld-stat">
+          <div class="lbl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg> Review queue</div>
+          <div class="val" id="ld-review-pending">—</div>
+          <div class="sub">awaiting triage</div>
+        </div>
+        <div class="ld-stat">
+          <div class="lbl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/></svg> Disk free</div>
+          <div class="val" id="ld-disk-free">—</div>
+          <div class="sub" id="ld-disk-sub">—</div>
+        </div>
+        <div class="ld-stat">
+          <div class="lbl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg> Watchdog</div>
+          <div class="val" id="ld-watchdog-state" style="font-size:18px">All green</div>
+          <div class="sub" id="ld-watchdog-sub">no recent crashes</div>
+        </div>
+      </div>
+
+      <!-- Cameras strip + featured stream + events -->
+      <div class="ld-row r-2-1">
+        <div class="ld-card">
+          <h4>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="vertical-align:-3px"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg> Featured stream</span>
+            <button class="lk" data-jump-stab="grid">View grid →</button>
+          </h4>
+          <div class="ld-bigstream" id="ld-bigstream">
+            <div>Pick a camera above to preview live</div>
+          </div>
+        </div>
+        <div class="ld-card">
+          <h4>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="vertical-align:-3px"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> Recent events</span>
+            <button class="lk" data-jump-stab="events">All events →</button>
+          </h4>
+          <div class="ld-feed" id="ld-events-feed">
+            <p class="muted small">—</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- All cameras strip -->
+      <div class="ld-card">
+        <h4>
+          <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="vertical-align:-3px"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg> All cameras</span>
+          <button class="lk" data-jump-page="cameras">Manage →</button>
+        </h4>
+        <div class="ld-cams-strip" id="ld-cams-strip">
+          <p class="muted small">No cameras configured.</p>
+        </div>
+      </div>
+
+      <!-- Charts + zones + system -->
+      <div class="ld-row r-3">
+        <div class="ld-card">
+          <h4><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="vertical-align:-3px"><polyline points="3 17 9 11 13 15 21 7"/></svg> Live engineering</span></h4>
+          <div class="ld-charts">
+            <div class="ld-chart-wrap"><canvas id="ld-chart-det"></canvas></div>
+            <div class="ld-chart-wrap"><canvas id="ld-chart-inf"></canvas></div>
+          </div>
+        </div>
+        <div class="ld-card">
+          <h4>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="vertical-align:-3px"><polygon points="3 17 9 11 14 15 21 7"/></svg> Zones</span>
+            <button class="lk" data-jump-stab="zones">Edit →</button>
+          </h4>
+          <div id="ld-zones-list"><p class="muted small">—</p></div>
+        </div>
+        <div class="ld-card">
+          <h4><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="vertical-align:-3px"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> System</span></h4>
+          <div id="ld-system-stats"><p class="muted small">—</p></div>
+        </div>
+      </div>
+
+      <!-- Versions footer -->
+      <div class="ld-card">
+        <h4><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="vertical-align:-3px"><path d="M20 7L12 3 4 7l8 4 8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 17l8 4 8-4"/></svg> Trained versions</span></h4>
+        <div id="swiss-versions" class="swiss-versions">
+          <p class="muted small">Loading versions…</p>
+        </div>
+      </div>
+
+      <!-- Hidden mount for legacy JS that targets #swiss-overview -->
+      <div id="swiss-overview" style="display:none"></div>
     </div>
   </section>
 
@@ -2620,5 +2886,6 @@ _data/alert_history.json  ← last 500 fires</pre>
 <div class="toasts" id="toasts"></div>
 
 <script src="/static/app.js?v=2026-04-30-e-tier4"></script>
+<script src="/static/shell-v2.js?v=2026-04-30-f-shell"></script>
 </body>
 </html>
