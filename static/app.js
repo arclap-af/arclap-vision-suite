@@ -1680,26 +1680,34 @@ if ($('btn-filter-scan')) {
   });
 }
 
-// Poll-based log tailer. SSE sometimes stalls on Windows when the child
-// subprocess buffers stdout; this approach reads the canonical job record
-// every 1 s and shows whatever is in log_text. Always works.
+// Poll the job record every 1s and show its log. Verbose state header
+// at the top so the user can ALWAYS see what state the job is in even
+// before the pipeline produces stdout.
 let filterScanPollTimer = null;
 async function streamFilterScan(jobId) {
   if (filterScanPollTimer) clearInterval(filterScanPollTimer);
   const out = $('filter-log');
-  out.textContent = '';
-  let lastLen = 0;
   let stoppedDom = false;
+  let pollCount = 0;
+  out.textContent = `[ui] starting poll for job ${jobId}\n`;
 
   const poll = async () => {
+    pollCount++;
     try {
-      const j = await (await fetch(`/api/jobs/${jobId}`)).json();
-      const log = j.log || '';
-      if (log.length > lastLen) {
-        out.textContent = log;       // canonical replace, never out of sync
-        out.scrollTop = out.scrollHeight;
-        lastLen = log.length;
+      const r = await fetch(`/api/jobs/${jobId}`);
+      if (!r.ok) {
+        out.textContent = `[ui] /api/jobs/${jobId} returned HTTP ${r.status}\n`;
+        return;
       }
+      const j = await r.json();
+      const log = j.log || '';
+      const elapsed = j.started_at ? Math.round(Date.now()/1000 - j.started_at) : 0;
+      const header =
+        `[ui] poll #${pollCount}  ·  status: ${j.status}  ·  log: ${log.length} chars  ·  elapsed: ${elapsed}s\n` +
+        `─────────────────────────────────────────────────────\n`;
+      out.textContent = header + (log || '(pipeline has not produced any stdout yet — first batch can take 5–30 s while YOLO loads)');
+      out.scrollTop = out.scrollHeight;
+
       if (j.status === 'done' || j.status === 'failed' || j.status === 'stopped') {
         if (stoppedDom) return;
         stoppedDom = true;
@@ -1715,7 +1723,7 @@ async function streamFilterScan(jobId) {
         }
       }
     } catch (e) {
-      out.textContent += '\n[ui] poll error: ' + e + '\n';
+      out.textContent = `[ui] poll #${pollCount} ERROR: ${e}\n` + (out.textContent || '');
     }
   };
   await poll();                        // immediate
