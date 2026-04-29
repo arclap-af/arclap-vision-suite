@@ -3062,6 +3062,33 @@ async function refreshDashboard() {
     }
     $('dash-storage').textContent = (d.storage.outputs_mb || 0) + ' MB';
 
+    // "Today" panel — running jobs + queue indicator
+    try {
+      const tp = $('today-panel');
+      const tj = $('today-jobs');
+      const tm = $('today-meta');
+      if (tp && tj && tm) {
+        const running = (d.recent_outputs || []).filter(o => o.status === 'running');
+        const pendingCount = d.totals.queue_pending || 0;
+        if (running.length || pendingCount) {
+          tp.hidden = false;
+          tm.textContent = `${running.length} running · ${pendingCount} queued · ${d.totals.jobs_24h || 0} done in 24h`;
+          tj.innerHTML = running.length
+            ? running.slice(0, 4).map(j => {
+                const pct = Math.round((j.progress || 0) * 100);
+                return `<div class="today-job">
+                  <span class="name">${escapeHtml(j.mode || 'job')} · <code>${escapeHtml(j.name || '')}</code></span>
+                  <span class="progress"><span style="width:${pct}%"></span></span>
+                  <span class="pct">${pct}%</span>
+                </div>`;
+              }).join('')
+            : `<div class="today-job"><span class="name muted">No jobs running. ${pendingCount} queued.</span></div>`;
+        } else {
+          tp.hidden = true;
+        }
+      }
+    } catch(_e) { /* non-critical */ }
+
     const recent = $('dash-recent');
     if (!d.recent_outputs.length) {
       recent.innerHTML = `
@@ -3700,51 +3727,97 @@ async function loadCameras() {
 }
 
 function renderCameras(cams) {
+  // Populate site filter
+  const sites = Array.from(new Set(cams.map(c => c.site).filter(Boolean))).sort();
+  const siteSel = $('cam-filter-site');
+  if (siteSel && siteSel.options.length <= 1) {
+    sites.forEach(s => {
+      const o = document.createElement('option');
+      o.value = s; o.textContent = s;
+      siteSel.appendChild(o);
+    });
+  }
+  // Apply filters
+  const filterSite = siteSel ? siteSel.value : '';
+  const filterStatus = $('cam-filter-status') ? $('cam-filter-status').value : '';
+  const filterQ = ($('cam-filter-q') ? $('cam-filter-q').value : '').toLowerCase().trim();
+  let filtered = cams;
+  if (filterSite) filtered = filtered.filter(c => c.site === filterSite);
+  if (filterStatus === 'enabled') filtered = filtered.filter(c => c.enabled);
+  if (filterStatus === 'disabled') filtered = filtered.filter(c => !c.enabled);
+  if (filterStatus === 'running') filtered = filtered.filter(c => c.uptime && c.uptime.running);
+  if (filterStatus === 'offline') filtered = filtered.filter(c => !c.uptime || !c.uptime.running);
+  if (filterQ) filtered = filtered.filter(c =>
+    (c.name || '').toLowerCase().includes(filterQ) ||
+    (c.url || '').toLowerCase().includes(filterQ) ||
+    (c.location || '').toLowerCase().includes(filterQ));
+
+  $('cameras-summary').textContent =
+    `${filtered.length} of ${cams.length} camera${cams.length === 1 ? '' : 's'} · ${sites.length} site${sites.length === 1 ? '' : 's'}`;
+
   if (!cams.length) {
-    $('cameras-summary').textContent = '0 cameras registered';
-    $('cameras-list').innerHTML = '<p class="muted small" style="padding:14px">No cameras registered yet. Click + Add camera to register one.</p>';
+    $('cameras-list').innerHTML = `
+      <div class="empty-state" style="grid-column:1/-1">
+        <h3>No cameras yet</h3>
+        <p>Register your first RTSP / IP / file source to start collecting events.</p>
+        <button class="btn btn-primary" id="empty-add-cam">+ Add camera</button>
+      </div>`;
+    const eb = document.getElementById('empty-add-cam');
+    if (eb) eb.addEventListener('click', () => openCameraModal());
     return;
   }
-  // Group by site
-  const bySite = {};
-  for (const c of cams) {
-    const s = c.site || '(no site)';
-    bySite[s] = bySite[s] || [];
-    bySite[s].push(c);
+  if (!filtered.length) {
+    $('cameras-list').innerHTML = `
+      <div class="empty-state" style="grid-column:1/-1">
+        <h3>No cameras match these filters</h3>
+        <p>Try clearing the search or status filter.</p>
+      </div>`;
+    return;
   }
-  $('cameras-summary').textContent =
-    `${cams.length} camera${cams.length === 1 ? '' : 's'} across ${Object.keys(bySite).length} site${Object.keys(bySite).length === 1 ? '' : 's'}`;
-  $('cameras-list').innerHTML = Object.entries(bySite).map(([site, list]) => `
-    <div class="camera-site">
-      <h4>📍 ${escapeHtml(site)} <span class="muted small">(${list.length})</span></h4>
-      <div class="camera-cards">
-        ${list.map(c => {
-          const up = c.uptime || {};
-          const totalHours = up.total_hours || 0;
-          const crashes = up.crashes || 0;
-          const enabled = c.enabled;
-          return `
-            <div class="camera-card ${enabled ? '' : 'disabled'}" data-id="${escapeHtml(c.id)}">
-              <div class="camera-head">
-                <strong>${escapeHtml(c.name)}</strong>
-                <span class="muted small">${escapeHtml(c.location || '')}</span>
-              </div>
-              <code class="camera-url">${escapeHtml(c.url)}</code>
-              <div class="camera-stats">
-                <span>Uptime: <strong>${totalHours} h</strong></span>
-                <span>Sessions: ${up.n_sessions || 0}</span>
-                <span>Crashes: <strong style="color:${crashes ? '#dc2626' : 'inherit'}">${crashes}</strong></span>
-                <span>Total frames: ${(up.total_frames || 0).toLocaleString()}</span>
-              </div>
-              <div class="camera-actions">
-                <button class="btn btn-primary btn-small" data-act="start" data-id="${escapeHtml(c.id)}">▶ Start</button>
-                <button class="btn btn-ghost btn-small" data-act="edit" data-id="${escapeHtml(c.id)}">✏️ Edit</button>
-                <button class="btn btn-ghost btn-small" data-act="delete" data-id="${escapeHtml(c.id)}">🗑️ Delete</button>
-              </div>
-            </div>`;
-        }).join('')}
-      </div>
-    </div>`).join('');
+
+  $('cameras-list').innerHTML = filtered.map(c => {
+    const up = c.uptime || {};
+    const running = !!up.running;
+    const enabled = c.enabled;
+    const totalHours = up.total_hours || 0;
+    const crashes = up.crashes || 0;
+    const statusCls = running ? 'live' : (enabled ? 'enabled' : 'disabled');
+    const statusLbl = running ? 'LIVE' : (enabled ? 'READY' : 'OFF');
+    return `
+      <div class="cam-tile-card ${enabled ? '' : 'is-disabled'} ${running ? 'is-live' : ''}" data-id="${escapeHtml(c.id)}">
+        <div class="cam-tile-frame ${running ? '' : 'cam-tile-empty'}">
+          ${running && up.last_job_id
+            ? `<img src="/api/rtsp/${up.last_job_id}/mjpeg" alt="${escapeHtml(c.name)}" loading="lazy" onerror="this.style.display='none'"/>`
+            : `<div class="cam-tile-fallback">${enabled ? 'Not running' : 'Disabled'}</div>`}
+          <div class="cam-tile-overlay">
+            <span class="cam-tile-pill ${statusCls}">${statusLbl}</span>
+            <span class="cam-tile-loc">${escapeHtml(c.location || '')}</span>
+          </div>
+        </div>
+        <div class="cam-tile-meta">
+          <div class="cam-tile-name">${escapeHtml(c.name)}</div>
+          <div class="cam-tile-site">${escapeHtml(c.site || '')}</div>
+          <code class="cam-tile-url">${escapeHtml(c.url)}</code>
+          <div class="cam-tile-stats">
+            <span title="Total uptime">${totalHours}h</span>
+            <span title="Sessions">${up.n_sessions || 0} runs</span>
+            <span class="${crashes ? 'crash' : ''}" title="Crashes">${crashes} crash${crashes === 1 ? '' : 'es'}</span>
+            <span title="Total frames captured">${(up.total_frames || 0).toLocaleString()} fr</span>
+          </div>
+          <div class="cam-tile-actions">
+            <button class="btn btn-primary btn-sm" data-act="start" data-id="${escapeHtml(c.id)}">${running ? '◼ Stop' : '▶ Start'}</button>
+            <button class="btn btn-ghost btn-sm" data-act="edit" data-id="${escapeHtml(c.id)}">Edit</button>
+            <button class="btn btn-ghost btn-sm" data-act="delete" data-id="${escapeHtml(c.id)}">Delete</button>
+          </div>
+        </div>
+      </div>`;
+  }).join('') + `
+    <button class="cam-tile-card cam-tile-add" id="cam-tile-add" type="button" aria-label="Add camera">
+      <div class="cam-tile-add-icon">+</div>
+      <div class="cam-tile-add-label">Add camera</div>
+    </button>`;
+  const ad = $('cam-tile-add');
+  if (ad) ad.addEventListener('click', () => openCameraModal());
   $('cameras-list').querySelectorAll('button[data-act]').forEach(b => {
     b.addEventListener('click', () => {
       const cid = b.dataset.id;
@@ -3843,6 +3916,13 @@ async function startCameraJob(camId) {
 
 if ($('btn-add-camera')) $('btn-add-camera').addEventListener('click', () => openCameraModal(null));
 if ($('btn-cameras-refresh')) $('btn-cameras-refresh').addEventListener('click', loadCameras);
+['cam-filter-site', 'cam-filter-status', 'cam-filter-q'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) {
+    const evt = el.tagName === 'INPUT' ? 'input' : 'change';
+    el.addEventListener(evt, () => loadCameras());
+  }
+});
 if ($('camera-modal-close')) $('camera-modal-close').addEventListener('click', closeCameraModal);
 if ($('camera-cancel')) $('camera-cancel').addEventListener('click', closeCameraModal);
 if ($('camera-save')) $('camera-save').addEventListener('click', saveCamera);

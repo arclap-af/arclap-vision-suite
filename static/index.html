@@ -136,10 +136,12 @@
     <div class="home-grid-v2" id="home-grid-v2"></div>
   </div>
 
-  <section class="hero-card">
+  <!-- Hero — compact: eyebrow + title + lede + 4 CTA -->
+  <section class="hero-card hero-card-v2">
     <div class="hero-text">
-      <h1 class="hero-title">Welcome to Arclap Vision Suite</h1>
-      <p class="hero-sub">Local computer-vision workbench — pick a tool below, or jump straight into the Timelapse Editor.</p>
+      <span class="hero-eyebrow">Vision Suite · v1</span>
+      <h1 class="hero-title">Construction Site Intelligence</h1>
+      <p class="hero-sub">Local-first computer-vision workbench. Multi-camera, 24/7, fully on-prem. Pick a workspace below, or jump straight to a tool.</p>
     </div>
     <div class="hero-actions">
       <button class="btn btn-primary btn-lg" data-quick-page="wizard">Process a video</button>
@@ -149,72 +151,100 @@
     </div>
   </section>
 
-  <section class="dash-grid">
-    <div class="stat-tile" data-quick-page="history">
-      <div class="stat-value" id="dash-jobs">—</div>
+  <!-- "Today" panel — running jobs + queue indicator -->
+  <section class="today-panel" id="today-panel" hidden>
+    <div class="today-head">
+      <span class="today-eyebrow">Today</span>
+      <span class="today-meta" id="today-meta">—</span>
+    </div>
+    <div class="today-jobs" id="today-jobs"></div>
+  </section>
+
+  <!-- Stats — 4 large primary + 2 small secondary -->
+  <section class="dash-grid dash-grid-v2">
+    <div class="stat-tile stat-tile-primary" data-quick-page="history">
       <div class="stat-label">Total jobs</div>
+      <div class="stat-value" id="dash-jobs">—</div>
       <div class="stat-sub" id="dash-jobs-24h">—</div>
     </div>
-    <div class="stat-tile" data-quick-page="models">
+    <div class="stat-tile stat-tile-primary" data-quick-page="models">
+      <div class="stat-label">Models</div>
       <div class="stat-value" id="dash-models">—</div>
-      <div class="stat-label">Models registered</div>
       <div class="stat-sub">YOLO weights ready</div>
     </div>
-    <div class="stat-tile" data-quick-page="projects">
-      <div class="stat-value" id="dash-projects">—</div>
+    <div class="stat-tile stat-tile-primary" data-quick-page="projects">
       <div class="stat-label">Projects</div>
+      <div class="stat-value" id="dash-projects">—</div>
       <div class="stat-sub">Workspaces</div>
     </div>
-    <div class="stat-tile">
-      <div class="stat-value" id="dash-queue">—</div>
+    <div class="stat-tile stat-tile-primary">
       <div class="stat-label">Queue</div>
+      <div class="stat-value" id="dash-queue">—</div>
       <div class="stat-sub" id="dash-running">—</div>
     </div>
-    <div class="stat-tile">
-      <div class="stat-value" id="dash-gpu">—</div>
-      <div class="stat-label">GPU memory</div>
+    <div class="stat-tile stat-tile-secondary">
+      <div class="stat-label">GPU</div>
+      <div class="stat-value stat-value-sm" id="dash-gpu">—</div>
       <div class="stat-sub" id="dash-gpu-name">—</div>
     </div>
-    <div class="stat-tile">
-      <div class="stat-value" id="dash-storage">—</div>
-      <div class="stat-label">Outputs on disk</div>
-      <div class="stat-sub">Free space in <code>_outputs/</code></div>
+    <div class="stat-tile stat-tile-secondary">
+      <div class="stat-label">Outputs</div>
+      <div class="stat-value stat-value-sm" id="dash-storage">—</div>
+      <div class="stat-sub">in <code>_outputs/</code></div>
     </div>
   </section>
 
-  <section class="card">
-    <div class="card-header">
-      <h2>Recent outputs</h2>
-      <p>Latest finished jobs across all projects.</p>
+  <!-- Two-column lower row: Recent outputs (2/3) + Tools (1/3) -->
+  <section class="home-lower">
+    <div class="card home-recent-card">
+      <div class="card-header card-header-row">
+        <div>
+          <h2>Recent outputs</h2>
+          <p>Latest finished jobs across all projects.</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" data-quick-page="history">View all →</button>
+      </div>
+      <div id="dash-recent" class="recent-grid">
+        <p class="muted">Loading…</p>
+      </div>
     </div>
-    <div id="dash-recent" class="recent-grid">
-      <p class="muted">Loading…</p>
-    </div>
-  </section>
 
-  <section class="card">
-    <div class="card-header">
-      <h2>Tools in the suite</h2>
-      <p>Each one is a standalone capability — pick whichever matches what you're doing today.</p>
-    </div>
-    <div class="tool-grid">
-      <div class="tool-tile" data-quick-page="wizard">
-        <h3>Timelapse Editor</h3><p>Step-by-step: upload → choose goal → preview → run.</p>
+    <div class="card home-tools-card">
+      <div class="card-header">
+        <h2>Tools in the suite</h2>
+        <p>Each one is a standalone capability.</p>
       </div>
-      <div class="tool-tile" data-quick-page="models">
-        <h3>Model Playground</h3><p>Drop any YOLO <code>.pt</code>, test it on an image.</p>
-      </div>
-      <div class="tool-tile" data-quick-page="train">
-        <h3>Train Custom</h3><p>Fine-tune YOLO on a CVAT export.</p>
-      </div>
-      <div class="tool-tile" data-quick-page="live">
-        <h3>Live RTSP</h3><p>Stream from any IP camera, blur in real time.</p>
-      </div>
-      <div class="tool-tile" data-quick-page="history">
-        <h3>History</h3><p>Every past job, with rerun &amp; audit-export.</p>
-      </div>
-      <div class="tool-tile" data-quick-page="projects">
-        <h3>Projects</h3><p>Workspaces, recipes, retention cleanup.</p>
+      <div class="tool-grid tool-grid-v2">
+        <button class="tool-tile" data-quick-page="wizard" type="button">
+          <span class="tool-tile-pill">READY</span>
+          <h3>Timelapse Editor</h3>
+          <p>Upload → choose goal → preview → run.</p>
+        </button>
+        <button class="tool-tile" data-quick-page="models" type="button">
+          <span class="tool-tile-pill">READY</span>
+          <h3>Model Playground</h3>
+          <p>Drop any YOLO <code>.pt</code>, test it on an image.</p>
+        </button>
+        <button class="tool-tile" data-quick-page="train" type="button">
+          <span class="tool-tile-pill tool-tile-pill-gpu">GPU</span>
+          <h3>Train Custom</h3>
+          <p>Fine-tune YOLO on a CVAT export.</p>
+        </button>
+        <button class="tool-tile" data-quick-page="live" type="button">
+          <span class="tool-tile-pill">RTSP</span>
+          <h3>Live RTSP</h3>
+          <p>Stream from any IP camera, blur in real time.</p>
+        </button>
+        <button class="tool-tile" data-quick-page="history" type="button">
+          <span class="tool-tile-pill tool-tile-pill-muted">LOG</span>
+          <h3>History</h3>
+          <p>Every past job, with rerun &amp; audit-export.</p>
+        </button>
+        <button class="tool-tile" data-quick-page="projects" type="button">
+          <span class="tool-tile-pill tool-tile-pill-muted">ORG</span>
+          <h3>Projects</h3>
+          <p>Workspaces, recipes, retention cleanup.</p>
+        </button>
       </div>
     </div>
   </section>
@@ -1759,17 +1789,46 @@
      ============================================================ -->
 <main class="container hidden" id="page-cameras">
   <section class="card">
-    <div class="card-header">
-      <h2>Cameras — multi-site, multi-camera registry</h2>
-      <p>Register every camera across every construction site. Each camera runs in its own background process; sessions auto-restart on crash; discovery + zones are tagged per camera so collected data tracks back to its source. Designed for days/months of continuous operation.</p>
-    </div>
-    <div class="actions">
-      <button class="btn btn-primary btn-small" id="btn-add-camera">+ Add camera</button>
-      <button class="btn btn-ghost btn-small" id="btn-cameras-refresh" aria-label="Refresh cameras"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 4 21 10 15 10"/></svg> Refresh</button>
+    <div class="card-header card-header-row">
+      <div>
+        <h2>Cameras</h2>
+        <p>Multi-site, multi-camera registry. Each camera runs in its own background process; sessions auto-restart on crash; discovery + zones are tagged per camera. Designed for 24/7 operation.</p>
+      </div>
       <span class="muted small" id="cameras-summary">—</span>
     </div>
-    <div id="cameras-list" class="cameras-list">
-      <p class="muted small" style="padding:14px">Loading…</p>
+
+    <!-- Sticky filter bar -->
+    <div class="cam-filterbar">
+      <label class="cam-filterbar-field">
+        <span>Site</span>
+        <select id="cam-filter-site" class="input">
+          <option value="">All sites</option>
+        </select>
+      </label>
+      <label class="cam-filterbar-field">
+        <span>Status</span>
+        <select id="cam-filter-status" class="input">
+          <option value="">All</option>
+          <option value="enabled">Enabled</option>
+          <option value="disabled">Disabled</option>
+          <option value="running">Running</option>
+          <option value="offline">Offline</option>
+        </select>
+      </label>
+      <label class="cam-filterbar-field">
+        <span>Search</span>
+        <input id="cam-filter-q" class="input" type="search" placeholder="Name or URL…" />
+      </label>
+      <span class="cam-filterbar-spacer"></span>
+      <button class="btn btn-ghost btn-sm" id="btn-cameras-refresh" aria-label="Refresh cameras">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 4 21 10 15 10"/></svg>
+        Refresh
+      </button>
+      <button class="btn btn-primary btn-sm" id="btn-add-camera">+ Add camera</button>
+    </div>
+
+    <div id="cameras-list" class="cameras-list cam-tile-grid">
+      <p class="muted small" style="padding:var(--space-5);grid-column:1/-1">Loading…</p>
     </div>
   </section>
 </main>
