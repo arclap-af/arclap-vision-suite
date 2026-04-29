@@ -743,3 +743,6 @@ body:not(.shell-v2) main.container {
 .text-row { display: flex; flex-direction: column; gap: 3px; }
 .text-row > span { font-size: 11px; font-weight: 600; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .text-row input { padding: 6px 8px; border: 1px solid var(--color-border); border-radius: 6px; font-size: 13px; font-family: inherit; background: var(--color-surface); color: var(--color-text-strong); }
+
+.pp-card.focused { box-shadow: 0 0 0 3px rgba(47,111,237,0.45); }
+.pp-card:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(47,111,237,0.45); }

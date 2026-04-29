@@ -2653,7 +2653,7 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
           </div>
           <span id="pp-curator-counts" class="muted small">—</span>
         </div>
-        <div class="pp-curator-toolbar" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <div class="pp-curator-toolbar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
           <select id="pp-curator-class" class="input" style="min-width:200px"><option value="">All classes</option></select>
           <select id="pp-curator-status" class="input" style="width:140px">
             <option value="pending" selected>Pending</option>
@@ -2662,8 +2662,21 @@ trtexec --onnx=swiss_detector_v2.onnx --saveEngine=v2.engine --fp16</pre>
             <option value="holdout">Holdout</option>
           </select>
           <button class="btn btn-secondary btn-small" id="pp-curator-load">Load picks</button>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px">
+            <input id="pp-blur-faces" type="checkbox" checked/> Blur faces in export
+          </label>
+          <span id="pp-blur-backend" class="muted small"></span>
           <span class="spacer"></span>
           <button class="btn btn-primary btn-small" id="pp-export">Export approved + holdout zips</button>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px">
+            <input id="pp-sched-enabled" type="checkbox"/> Auto-refresh every
+          </label>
+          <input id="pp-sched-days" type="number" value="7" min="1" max="30" style="width:60px;padding:4px 6px;border:1px solid var(--color-border);border-radius:5px"/>
+          <span class="muted small">days · re-runs Stage 5 with current weights</span>
+          <button class="btn btn-secondary btn-small" id="pp-sched-save">Save schedule</button>
+          <span id="pp-sched-status" class="muted small"></span>
         </div>
         <div id="pp-curator-grid" class="pp-grid" style="margin-top:10px">
           <p class="muted small" style="padding:14px;text-align:center">Run the picker first, then load picks here.</p>

@@ -673,8 +673,11 @@
     // Stage 6: curator
     if ($('pp-curator-load')) $('pp-curator-load').onclick = loadCuratorPicks;
     if ($('pp-export')) $('pp-export').onclick = exportRun;
+    if ($('pp-sched-save')) $('pp-sched-save').onclick = _ppSaveSchedule;
 
     populateClassPicker();
+    _ppLoadFaceBlurInfo();
+    _ppLoadSchedule();
   }
 
   async function populateClassPicker() {
@@ -686,6 +689,58 @@
         (t.taxonomy || []).map(c => `<option value="${c.id}">${c.id} · ${c.en} (${c.de})${c.trained?' ✓':''}</option>`).join('');
     } catch(e){}
   }
+
+  // ── Keyboard shortcuts for the curator grid ────────────────────────
+  // A=approve  R=reject  H=holdout  P=pending  J=next  K=prev
+  // Active only when a Pinterest tile is focused (tabindex=0) or when
+  // hovering inside #pp-curator-grid.
+  let _ppFocusIdx = -1;
+  function _ppFocusCard(idx) {
+    const grid = $('pp-curator-grid'); if (!grid) return;
+    const cards = grid.querySelectorAll('.pp-card');
+    if (!cards.length) return;
+    _ppFocusIdx = Math.max(0, Math.min(idx, cards.length - 1));
+    cards.forEach(c => c.classList.remove('focused'));
+    const target = cards[_ppFocusIdx];
+    target.classList.add('focused');
+    target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  async function _ppKeyAction(status) {
+    const grid = $('pp-curator-grid'); if (!grid) return;
+    const cards = grid.querySelectorAll('.pp-card');
+    if (_ppFocusIdx < 0 || _ppFocusIdx >= cards.length) return;
+    const card = cards[_ppFocusIdx];
+    const path = decodeURIComponent(card.dataset.path);
+    if (!_ppActiveScan || !_ppActiveRun) return;
+    await fetch(`/api/picker/${_ppActiveScan}/runs/${_ppActiveRun}/curator`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ path, status }),
+    });
+    card.classList.remove('approved', 'rejected', 'holdout', 'pending');
+    card.classList.add(status);
+    updateCuratorCounts();
+    // Auto-advance
+    _ppFocusCard(_ppFocusIdx + 1);
+  }
+  document.addEventListener('keydown', (e) => {
+    // Only when the pipeline pane is visible and curator grid has focus
+    const pane = document.querySelector('[data-stab-pane="pipeline"]');
+    if (!pane || pane.classList.contains('hidden')) return;
+    const grid = $('pp-curator-grid');
+    if (!grid || !grid.querySelector('.pp-card')) return;
+    // Don't hijack keys while user is typing in an input
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    const k = e.key.toLowerCase();
+    if (k === 'j' || k === 'arrowright' || k === 'arrowdown') {
+      e.preventDefault(); _ppFocusCard(_ppFocusIdx + 1);
+    } else if (k === 'k' || k === 'arrowleft' || k === 'arrowup') {
+      e.preventDefault(); _ppFocusCard(_ppFocusIdx - 1);
+    } else if (k === 'a') { e.preventDefault(); _ppKeyAction('approved'); }
+    else if (k === 'r')   { e.preventDefault(); _ppKeyAction('rejected'); }
+    else if (k === 'h')   { e.preventDefault(); _ppKeyAction('holdout'); }
+    else if (k === 'p')   { e.preventDefault(); _ppKeyAction('pending'); }
+  });
 
   async function loadCuratorPicks() {
     if (!_ppActiveScan || !_ppActiveRun) return;
@@ -704,8 +759,7 @@
     }
     grid.innerHTML = picks.map((p, i) => {
       const fname = (p.path.split(/[\\/]/).pop() || p.path);
-      // Use the events-frame endpoint as a generic image fetcher? No — these are scan source images. Use a generic file-serve.
-      return `<div class="pp-card ${p.status||'pending'}" data-idx="${i}" data-path="${encodeURIComponent(p.path)}">
+      return `<div class="pp-card ${p.status||'pending'}" data-idx="${i}" data-path="${encodeURIComponent(p.path)}" tabindex="0">
         <img src="/api/picker/image?path=${encodeURIComponent(p.path)}" loading="lazy" alt="${fname}"/>
         <div class="pp-card-meta">
           <b>cls ${p.class_id}</b>
@@ -718,6 +772,14 @@
         </div>
       </div>`;
     }).join('');
+    _ppFocusIdx = -1;
+    // Click-to-focus
+    grid.querySelectorAll('.pp-card').forEach(card => {
+      card.addEventListener('click', () => {
+        const idx = parseInt(card.dataset.idx);
+        _ppFocusCard(idx);
+      });
+    });
     grid.querySelectorAll('.pp-card-actions button').forEach(b => {
       b.onclick = async (e) => {
         e.stopPropagation();
@@ -751,21 +813,94 @@
   async function exportRun() {
     if (!_ppActiveScan || !_ppActiveRun) { alert('No active run to export.'); return; }
     const r = $('pp-export-result');
-    r.textContent = 'building zips…';
+    const blur = $('pp-blur-faces') ? $('pp-blur-faces').checked : true;
+    r.textContent = 'building zips…' + (blur ? ' (blurring faces — may take a moment)' : '');
     try {
       const res = await fetch(`/api/picker/${_ppActiveScan}/runs/${_ppActiveRun}/export`,
-                               { method: 'POST' });
+                               { method: 'POST',
+                                 headers: {'Content-Type':'application/json'},
+                                 body: JSON.stringify({ blur_faces: blur }) });
       const data = await res.json();
       const lines = [];
+      if (data.face_blur_backend) {
+        lines.push(`face-blur backend: <code>${data.face_blur_backend.backend}</code>${data.face_blur_backend.available ? '' : ' <span style="color:#b45309">(unavailable — install mediapipe for best results)</span>'}`);
+      }
       if (data.labeling_batch) {
-        lines.push(`Labeling batch: ${data.labeling_batch.n_images} imgs · ${data.labeling_batch.size_mb} MB · <a href="${data.labeling_batch.download_url}" download>Download</a>`);
+        lines.push(`Labeling batch: ${data.labeling_batch.n_images} imgs · ${data.labeling_batch.size_mb} MB · <a href="${data.labeling_batch.download_url}" download>Download zip</a> · <a href="${data.labeling_batch.manifest_url}" download>manifest.json</a>`);
       }
       if (data.benchmark_holdout) {
-        lines.push(`Benchmark holdout: ${data.benchmark_holdout.n_images} imgs · ${data.benchmark_holdout.size_mb} MB · <a href="${data.benchmark_holdout.download_url}" download>Download</a>`);
+        lines.push(`Benchmark holdout: ${data.benchmark_holdout.n_images} imgs · ${data.benchmark_holdout.size_mb} MB · <a href="${data.benchmark_holdout.download_url}" download>Download zip</a> · <a href="${data.benchmark_holdout.manifest_url}" download>manifest.json</a>`);
       }
       if (data.warning) lines.push(`<b>${data.warning}</b>`);
       r.innerHTML = lines.join('<br>');
     } catch(e){ r.textContent = 'ERROR: ' + e; }
+  }
+
+  async function _ppLoadFaceBlurInfo() {
+    try {
+      const r = await (await fetch('/api/picker/face-blur-backend')).json();
+      const el = $('pp-blur-backend');
+      if (el) el.textContent = `(backend: ${r.backend}${r.available ? '' : ' — install mediapipe for best results'})`;
+    } catch(e){}
+  }
+  // Schedule controls
+  async function _ppLoadSchedule() {
+    if (!_ppActiveScan) return;
+    try {
+      const r = await (await fetch('/api/picker/schedules')).json();
+      const mine = (r.schedules || []).find(s => s.job_id === _ppActiveScan);
+      const cb = $('pp-sched-enabled'), days = $('pp-sched-days'), st = $('pp-sched-status');
+      if (mine) {
+        if (cb) cb.checked = !!mine.enabled;
+        if (days) days.value = mine.every_days;
+        if (st) {
+          const last = mine.last_fired_at ? new Date(mine.last_fired_at*1000).toLocaleString() : 'never';
+          st.textContent = `schedule active · last run: ${last} (${mine.last_status || '—'})`;
+        }
+      } else {
+        if (st) st.textContent = 'no schedule set';
+      }
+    } catch(e){}
+  }
+  async function _ppSaveSchedule() {
+    if (!_ppActiveScan) { alert('Pick a scan first.'); return; }
+    const enabled = $('pp-sched-enabled').checked;
+    const days = parseInt($('pp-sched-days').value) || 7;
+    // First remove any existing schedule for this scan
+    try {
+      const r = await (await fetch('/api/picker/schedules')).json();
+      for (const s of (r.schedules || [])) {
+        if (s.job_id === _ppActiveScan) {
+          await fetch(`/api/picker/schedules/${s.schedule_id}`, { method: 'DELETE' });
+        }
+      }
+    } catch(e){}
+    if (!enabled) {
+      $('pp-sched-status').textContent = 'schedule cleared';
+      return;
+    }
+    const body = {
+      job_id: _ppActiveScan,
+      every_days: days,
+      weights: {
+        need: (parseFloat($('pp-w-need').value)||0)/100,
+        diversity: (parseFloat($('pp-w-div').value)||0)/100,
+        difficulty: (parseFloat($('pp-w-diff').value)||0)/100,
+        quality: 0.0,
+      },
+      per_class_target: parseInt($('pp-target').value) || 250,
+      need_threshold: parseFloat($('pp-need-thr').value) || 0.18,
+      enabled: true,
+    };
+    try {
+      const res = await fetch('/api/picker/schedules', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(body) });
+      const data = await res.json();
+      $('pp-sched-status').textContent = `saved · id ${data.schedule_id}`;
+    } catch(e) {
+      $('pp-sched-status').textContent = 'ERROR: ' + e;
+    }
   }
 
   // ── Registry page (Tier A reproducibility) ─────────────────────────

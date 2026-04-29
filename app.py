@@ -49,6 +49,8 @@ from core import alerts as alerts_core
 from core import registry as registry_core
 from core import annotation_picker as picker_core
 from core import taxonomy as taxonomy_core
+from core import picker_scheduler as picker_sched
+from core import face_blur as face_blur_core
 
 PYTHON = sys.executable
 ROOT = Path(__file__).parent.resolve()
@@ -272,6 +274,39 @@ def _startup() -> None:
         alerts_core.start_dispatcher(ROOT, interval_sec=5)
     except Exception as e:
         print(f"Alerts dispatcher failed to start: {e}")
+
+    # Picker scheduler — auto-refresh annotation pipeline per saved schedules
+    def _run_picker_for_schedule(*, job_id, weights, per_class_target,
+                                  need_threshold):
+        # Resolve scan DB for the job, ensure taxonomy, run pick_per_class
+        j = db.get_job(job_id)
+        if not j:
+            raise RuntimeError(f"job {job_id} not found")
+        scan_db_path = Path(j.output_path)
+        if not scan_db_path.is_file():
+            raise RuntimeError(f"scan DB missing: {scan_db_path}")
+        taxonomy_core.ensure_taxonomy(scan_db_path)
+        tax = taxonomy_core.get_taxonomy(scan_db_path)
+        run_id = picker_core.start_pick_run(
+            scan_db_path,
+            weights=weights or {},
+            config={"per_class_target": per_class_target,
+                    "need_threshold": need_threshold,
+                    "scheduled": True},
+        )
+        picks = picker_core.pick_per_class(
+            scan_db_path, taxonomy=tax,
+            per_class_target=per_class_target,
+            weights=weights or {},
+            need_threshold=need_threshold,
+        )
+        picker_core.store_pick_decisions(scan_db_path, run_id, picks)
+        return run_id
+
+    try:
+        picker_sched.start(ROOT, _run_picker_for_schedule, check_every=3600)
+    except Exception as e:
+        print(f"Picker scheduler failed to start: {e}")
 
     # Auto-register any .pt files already on disk so the user doesn't have
     # to re-upload models that were downloaded in earlier runs.
@@ -2335,6 +2370,44 @@ def download_export(filename: str):
 
 # ───── Annotation Pipeline v2 (40-class CSI-Annotation-v3) ─────────────
 
+# ─── Picker scheduler ─────────────────────────────────────────────────
+@app.get("/api/picker/schedules")
+def picker_schedules_list():
+    return {"schedules": picker_sched.list_schedules(ROOT)}
+
+
+class PickerScheduleAddReq(BaseModel):
+    job_id: str
+    every_days: int = 7
+    weights: dict | None = None
+    per_class_target: int = 250
+    need_threshold: float = 0.18
+    enabled: bool = True
+    label: str | None = None
+
+
+@app.post("/api/picker/schedules")
+def picker_schedules_add(req: PickerScheduleAddReq):
+    return picker_sched.add_schedule(
+        ROOT, job_id=req.job_id, every_days=req.every_days,
+        weights=req.weights, per_class_target=req.per_class_target,
+        need_threshold=req.need_threshold, enabled=req.enabled,
+        label=req.label)
+
+
+@app.delete("/api/picker/schedules/{schedule_id}")
+def picker_schedules_remove(schedule_id: str):
+    ok = picker_sched.remove_schedule(ROOT, schedule_id)
+    return {"ok": ok}
+
+
+@app.get("/api/picker/face-blur-backend")
+def picker_face_blur_backend():
+    """Tells the UI which face-blur backend is available so it can show
+    a clear status (mediapipe / haar / none)."""
+    return face_blur_core.backend_info()
+
+
 @app.get("/api/picker/image")
 def picker_image(path: str):
     """Serve a thumbnail of a source image. Path is the absolute filesystem
@@ -2477,10 +2550,17 @@ def picker_curator_action(job_id: str, run_id: str, req: CuratorActionReq):
     return {"ok": True}
 
 
+class PickerExportReq(BaseModel):
+    blur_faces: bool = True
+
+
 @app.post("/api/picker/{job_id}/runs/{run_id}/export")
-def picker_export_run(job_id: str, run_id: str):
+def picker_export_run(job_id: str, run_id: str, req: PickerExportReq | None = None):
     """Export the curator's APPROVED picks as a labeling-batch zip and
-    HOLDOUT picks as a benchmark zip."""
+    HOLDOUT picks as a benchmark zip. Includes manifest.json (full
+    provenance) and optionally blurs faces before any image leaves the box."""
+    if req is None:
+        req = PickerExportReq()
     db_path = _scan_db_for_job(job_id)
     conn = picker_core._open_v2(db_path)
     approved = [r[0] for r in conn.execute(
@@ -2489,28 +2569,86 @@ def picker_export_run(job_id: str, run_id: str):
     holdout = [r[0] for r in conn.execute(
         "SELECT path FROM pick_decision WHERE run_id = ? AND status = 'holdout'",
         (run_id,)).fetchall()]
+    # Pull every decision row + run metadata for the manifest
+    pick_rows = conn.execute(
+        "SELECT path, class_id, score, reason, status, curator, decided_at "
+        "FROM pick_decision WHERE run_id = ?", (run_id,)).fetchall()
+    run_meta = conn.execute(
+        "SELECT run_id, started_at, finished_at, weights_json, config_json, "
+        "n_picked, n_approved, n_rejected, n_holdout, dataset_hash, model_path "
+        "FROM pick_run WHERE run_id = ?", (run_id,)).fetchone()
     conn.close()
+    cols = ["run_id", "started_at", "finished_at", "weights_json",
+            "config_json", "n_picked", "n_approved", "n_rejected",
+            "n_holdout", "dataset_hash", "model_path"]
+    run_dict = dict(zip(cols, run_meta)) if run_meta else {}
+    if run_dict.get("weights_json"):
+        try: run_dict["weights"] = json.loads(run_dict.pop("weights_json"))
+        except: pass
+    if run_dict.get("config_json"):
+        try: run_dict["config"] = json.loads(run_dict.pop("config_json"))
+        except: pass
+    base_manifest = {
+        "manifest_version": 1,
+        "exported_at": time.time(),
+        "run": run_dict,
+        "scan_db": str(db_path),
+    }
+
+    # Try to load face-blur backend info
+    try:
+        from core import face_blur as _fb
+        face_backend = _fb.backend_info()
+    except Exception:
+        face_backend = {"backend": "none", "available": False}
+
     out_dir = OUTPUTS / "annotation_exports"
-    result = {"run_id": run_id}
+    result = {"run_id": run_id, "face_blur_backend": face_backend}
+
+    def _build_manifest(image_subset: list[str], kind: str) -> dict:
+        m = dict(base_manifest)
+        m["kind"] = kind
+        m["n_images"] = len(image_subset)
+        m["face_blur_requested"] = req.blur_faces
+        m["face_blur_backend"] = face_backend
+        m["picks"] = [
+            {"path": r[0], "class_id": r[1], "score": r[2], "reason": r[3],
+             "status": r[4], "curator": r[5], "decided_at": r[6]}
+            for r in pick_rows if r[0] in image_subset
+        ]
+        return m
+
     if approved:
-        zp = picker_core.export_cvat_zip(db_path, approved, out_dir=out_dir)
+        manifest = _build_manifest(approved, "labeling_batch")
+        zp = picker_core.export_cvat_zip(
+            db_path, approved, out_dir=out_dir,
+            blur_faces=req.blur_faces, manifest=manifest)
+        # Save sidecar manifest.json next to the zip
+        sidecar = zp.with_suffix(".manifest.json")
+        sidecar.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         result["labeling_batch"] = {
             "zip_path": str(zp), "filename": zp.name,
             "n_images": len(approved),
             "size_mb": round(zp.stat().st_size / 1024 / 1024, 2),
             "download_url": f"/api/filter/download-export/{zp.name}",
+            "manifest_url": f"/api/filter/download-export/{sidecar.name}",
         }
     if holdout:
-        zp = picker_core.export_cvat_zip(db_path, holdout, out_dir=out_dir)
-        # Rename so the holdout zip is recognisable
+        manifest = _build_manifest(holdout, "benchmark_holdout")
+        zp = picker_core.export_cvat_zip(
+            db_path, holdout, out_dir=out_dir,
+            blur_faces=req.blur_faces, manifest=manifest)
         new_name = zp.name.replace("annotation_pick_", "benchmark_holdout_")
         new_path = zp.with_name(new_name)
         zp.rename(new_path)
+        sidecar = new_path.with_suffix(".manifest.json")
+        sidecar.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         result["benchmark_holdout"] = {
             "zip_path": str(new_path), "filename": new_path.name,
             "n_images": len(holdout),
             "size_mb": round(new_path.stat().st_size / 1024 / 1024, 2),
             "download_url": f"/api/filter/download-export/{new_path.name}",
+            "manifest_url": f"/api/filter/download-export/{sidecar.name}",
         }
     if not approved and not holdout:
         result["warning"] = "Nothing to export — curator has not approved any picks yet."

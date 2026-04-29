@@ -406,13 +406,32 @@ def export_cvat_zip(scan_db_path: str | Path,
                     image_paths: list[str],
                     *, out_dir: str | Path,
                     include_pre_labels: bool = True,
-                    label_format: str = "yolo") -> Path:
+                    label_format: str = "yolo",
+                    blur_faces: bool = False,
+                    manifest: dict | None = None) -> Path:
     """Build a zip containing the picked images + their existing detections
     as YOLO-format labels (so CVAT loads them as pre-annotations and the
-    annotator only verifies/corrects)."""
+    annotator only verifies/corrects).
+
+    blur_faces=True runs core/face_blur on every image before adding to the
+    zip; original files on disk are untouched.
+    manifest=dict gets written to the zip as manifest.json for full
+    provenance (run_id, weights, dataset hash, etc.)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"annotation_pick_{int(time.time())}.zip"
+
+    # Lazy import — only spin up face blur if requested
+    _blur_fn = None
+    _blur_backend = "none"
+    if blur_faces:
+        try:
+            from core import face_blur as _fb
+            _blur_fn = _fb.blur_faces
+            _blur_backend = _fb.backend_info().get("backend", "none")
+        except Exception:
+            _blur_fn = None
+            _blur_backend = "import_failed"
 
     conn = _open(scan_db_path)
     # Class names (from any image's detections — assumes consistent class_id → name)
@@ -442,7 +461,8 @@ def export_cvat_zip(scan_db_path: str | Path,
         zf.writestr("README.txt",
             "Annotation pick from Arclap Vision Suite\n"
             f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"Images: {len(image_paths)}\n\n"
+            f"Images: {len(image_paths)}\n"
+            f"Face blur: {_blur_backend if blur_faces else 'off'}\n\n"
             "Workflow:\n"
             "  1. Open CVAT (https://app.cvat.ai or self-hosted).\n"
             "  2. Create a new project; pick the class list from data.yaml.\n"
@@ -451,6 +471,12 @@ def export_cvat_zip(scan_db_path: str | Path,
             "  5. Export as Ultralytics YOLO Detection 1.0 → drop into\n"
             "     Arclap's Train tab to retrain.\n"
         )
+        # Provenance manifest — what was picked, why, with what config
+        if manifest is not None:
+            try:
+                zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+            except Exception:
+                pass
 
         # Each image + its label
         for src_path in image_paths:
@@ -458,7 +484,25 @@ def export_cvat_zip(scan_db_path: str | Path,
             if not src.is_file():
                 continue
             arcname_img = f"images/{src.name}"
-            zf.write(str(src), arcname_img)
+            if _blur_fn is not None:
+                # Read, blur, encode JPEG in-memory, write directly to zip
+                try:
+                    import cv2
+                    img = cv2.imread(str(src))
+                    if img is not None:
+                        blurred = _blur_fn(img)
+                        ok, buf = cv2.imencode(".jpg", blurred,
+                                                [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                        if ok:
+                            zf.writestr(arcname_img, buf.tobytes())
+                        else:
+                            zf.write(str(src), arcname_img)
+                    else:
+                        zf.write(str(src), arcname_img)
+                except Exception:
+                    zf.write(str(src), arcname_img)
+            else:
+                zf.write(str(src), arcname_img)
 
             if include_pre_labels:
                 # Look up image dims for normalisation
