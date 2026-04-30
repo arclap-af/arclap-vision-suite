@@ -2715,6 +2715,7 @@ function bumpRangeLabel(id) {
   }
 }
 
+window.currentRule = currentRule;
 function currentRule() {
   const classes = Array.from(document.querySelectorAll('#rule-class-checks input:checked'))
     .map(el => parseInt(el.dataset.ruleClass));

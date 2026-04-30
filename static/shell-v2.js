@@ -994,20 +994,25 @@
     if (!jobId) return null;
     const useSurvivors = ($('pp-use-survivors') || {}).checked;
     if (useSurvivors === false) return null;
+
+    // The rule built in Step 4 ("What to keep") is owned by app.js.
+    // It exposes window.currentRule(). If the user hasn't built any rule
+    // yet, currentRule() returns an empty-ish object that matches all
+    // images server-side — which IS the right semantic ("no filter →
+    // everything survives").
+    let rule = {};
+    try { if (typeof window.currentRule === 'function') rule = window.currentRule(); }
+    catch(_e) { rule = {}; }
+
     try {
-      // Existing endpoint: /api/filter/{job_id}/match-preview returns the
-      // current rule's matching paths. If the user hasn't built rules yet,
-      // it returns all images, which is also fine.
-      const res = await fetch(`/api/filter/${jobId}/match-preview`, {
+      const res = await fetch(`/api/filter/${jobId}/match-paths?limit=100000`, {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ limit: 100000 })
+        body: JSON.stringify(rule)
       });
       if (!res.ok) return null;
       const data = await res.json();
-      const paths = (data.paths || data.matches || data.images || []).map(
-        x => typeof x === 'string' ? x : (x.path || x)
-      );
+      const paths = data.paths || [];
       return paths.length ? paths : null;
     } catch(e) { return null; }
   }

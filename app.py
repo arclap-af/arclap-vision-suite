@@ -2377,6 +2377,31 @@ def _hour_dow_filter(rule: FilterRule, paths: list[str]) -> list[str]:
     return out
 
 
+@app.post("/api/filter/{job_id}/match-paths")
+def filter_match_paths(job_id: str, rule: FilterRule, limit: int = 100000):
+    """Return the FULL path list of images matching the rule (up to `limit`).
+
+    Lean variant of match-preview — no thumbs, no per-image class metadata,
+    no random ordering. Used by the Smart Annotation Picker to restrict
+    every stage to the exact set the user kept in step 4 (\"What to keep\").
+    """
+    _, db_path = _filter_db(job_id)
+    sql_from, params = _build_match_sql(rule)
+    conn = _sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT i.path {sql_from} ORDER BY i.path LIMIT {int(limit)}",
+            params,
+        ).fetchall()
+        paths = [r[0] for r in rows]
+        # Hour-of-day + day-of-week filtering happens in Python (see match-count)
+        if rule.hours or rule.dow:
+            paths = _hour_dow_filter(rule, paths)
+        return {"paths": paths, "count": len(paths)}
+    finally:
+        conn.close()
+
+
 @app.post("/api/filter/{job_id}/match-count")
 def filter_match_count(job_id: str, rule: FilterRule):
     """Live count: how many images match the given rule. Hour-of-day and
