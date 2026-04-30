@@ -1947,6 +1947,64 @@ class FilterScanRequest(BaseModel):
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 
 
+def _resolve_video_start_time(video_path: Path, total_frames: int, fps: float):
+    """Return a datetime for the FIRST frame of the video.
+
+    Order of preference:
+      1. ffprobe's container-level creation_time tag (ISO 8601, often
+         present on phone / DSLR / drone clips).
+      2. The file's mtime minus the video's duration (treats mtime as
+         "recording finished" — typical when files are written by a
+         camera or by ffmpeg).
+      3. The file's mtime as-is (if duration can't be computed).
+      4. now() as a last resort.
+    """
+    import datetime as _dt
+    import json as _json
+    import subprocess as _sp
+
+    # 1. Try ffprobe container metadata.
+    try:
+        result = _sp.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_format", str(video_path)],
+            capture_output=True, text=True, timeout=8,
+        )
+        if result.returncode == 0:
+            data = _json.loads(result.stdout or "{}")
+            tags = data.get("format", {}).get("tags", {}) or {}
+            for key in ("creation_time", "date",
+                        "com.apple.quicktime.creationdate"):
+                raw = tags.get(key)
+                if raw:
+                    try:
+                        # Normalise common ISO variants
+                        iso = raw.rstrip("Z")
+                        # Strip fractional sub-seconds beyond microsecond
+                        iso = iso.replace("Z", "")
+                        dt = _dt.datetime.fromisoformat(iso)
+                        if dt.tzinfo:
+                            dt = dt.replace(tzinfo=None)
+                        return dt
+                    except ValueError:
+                        continue
+    except (FileNotFoundError, _sp.TimeoutExpired, Exception):
+        pass
+
+    # 2/3. Fall back to file mtime (minus duration if known).
+    try:
+        mtime = _dt.datetime.fromtimestamp(video_path.stat().st_mtime)
+        if total_frames > 0 and fps and fps > 0:
+            duration_s = total_frames / fps
+            return mtime - _dt.timedelta(seconds=duration_s)
+        return mtime
+    except Exception:
+        pass
+
+    # 4. Hard fallback.
+    return _dt.datetime.now().replace(microsecond=0)
+
+
 @app.post("/api/filter/scan")
 def filter_scan(req: FilterScanRequest):
     src = Path(req.source_path).expanduser().resolve()
@@ -1957,6 +2015,7 @@ def filter_scan(req: FilterScanRequest):
     # to the existing "Sample every Nth" knob) into a frames folder
     # under _outputs/, then run the scan against that folder.
     if src.is_file() and src.suffix.lower() in _VIDEO_EXTS:
+        import datetime as _dt
         every = max(1, int(req.every or 1))
         frames_dir = OUTPUTS / f"filter_frames_{scan_id}"
         frames_dir.mkdir(parents=True, exist_ok=True)
@@ -1966,16 +2025,23 @@ def filter_scan(req: FilterScanRequest):
         if total <= 0:
             cap.release()
             raise HTTPException(400, f"Video has no readable frames: {src}")
+        # Resolve a wall-clock start time so each extracted frame can
+        # carry a YYYY-MM-DD_HH-MM-SS timestamp in its filename — the
+        # filter scanner parses that and feeds the date-range filter.
+        video_start = _resolve_video_start_time(src, total, fps)
         # Walk the stream sequentially — far faster than per-frame seek
         # for full extraction. Honour `every` to optionally skip frames.
         written = 0
         idx = 0
+        eff_fps = fps if fps > 0 else 30.0
         while True:
             ok, frame = cap.read()
             if not ok or frame is None:
                 break
             if idx % every == 0:
-                dst = frames_dir / f"{src.stem}_f{written:06d}.jpg"
+                ts = video_start + _dt.timedelta(seconds=idx / eff_fps)
+                ts_str = ts.strftime("%Y-%m-%d_%H-%M-%S")
+                dst = frames_dir / f"{ts_str}_{src.stem}_f{written:06d}.jpg"
                 cv2.imwrite(str(dst), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
                 written += 1
             idx += 1
@@ -1988,6 +2054,7 @@ def filter_scan(req: FilterScanRequest):
             "frames_dir": str(frames_dir),
             "video_total_frames": total,
             "video_fps": fps,
+            "video_start": video_start.isoformat(),
             "every_used": every,
         }
         # Hand off the frame folder as the actual scan source.
