@@ -1674,9 +1674,10 @@
             <option value="rejected">Rejected</option>
             <option value="holdout">Holdout</option>
           </select>
-          <select id="pp-curator-sort" class="input" style="width:160px" title="How to order picks in the grid">
+          <select id="pp-curator-sort" class="input" style="width:180px" title="How to order picks in the grid">
             <option value="class_score" selected>Sort: class · score ↓</option>
             <option value="score">Sort: score (any class) ↓</option>
+            <option value="density">Sort: density ↓ (busiest first)</option>
             <option value="class">Sort: class · path</option>
             <option value="path">Sort: file path</option>
           </select>
@@ -1704,6 +1705,102 @@
           <button class="btn btn-secondary btn-small" id="pp-sched-save">Save schedule</button>
           <span id="pp-sched-status" class="muted small"></span>
         </div>
+        <!-- ════════════════════════════════════════════════════════════
+             Curator filter panel — slice the picks by phase cluster,
+             object density, pick reason, or class-need score. Pure
+             client-side on _ppPicksMaster; no backend round-trip.
+             ════════════════════════════════════════════════════════════ -->
+        <details class="pp-filter-panel" id="pp-filter-panel">
+          <summary class="pp-filter-summary">
+            <span class="pp-filter-summary-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+              </svg>
+            </span>
+            <strong>Filters</strong>
+            <span class="pp-filter-summary-count" id="pp-filter-active-count" hidden>0</span>
+            <span class="pp-filter-summary-meta muted small" id="pp-filter-visible-count">—</span>
+            <span class="spacer"></span>
+            <button class="btn btn-ghost btn-small" id="pp-filter-reset" type="button" hidden>Reset filters</button>
+          </summary>
+          <div class="pp-filter-body">
+
+            <!-- Card 1: Phase clusters -->
+            <div class="pp-filter-card">
+              <header class="pp-filter-card-head">
+                <span class="pp-filter-eyebrow">Phase clusters</span>
+                <h5 class="pp-filter-title">Construction phase / weather tags</h5>
+                <p class="muted small pp-filter-help">Auto-named at Stage 4. Tick the slices you want — ANY logic.</p>
+              </header>
+              <div class="pp-filter-chips" id="pp-filter-clusters">
+                <span class="muted small">Load picks first.</span>
+              </div>
+            </div>
+
+            <!-- Card 2: Object density -->
+            <div class="pp-filter-card">
+              <header class="pp-filter-card-head">
+                <span class="pp-filter-eyebrow">Object density</span>
+                <h5 class="pp-filter-title">Class-agnostic box count per frame</h5>
+                <p class="muted small pp-filter-help">Stage 3 boxes. High = busy machine site, low = empty frame.</p>
+              </header>
+              <div class="pp-filter-density-histogram" id="pp-filter-density-histogram"></div>
+              <div class="pp-filter-row">
+                <label class="text-row" style="flex:1">
+                  <span>Min objects</span>
+                  <div class="slider-with-value">
+                    <input type="range" id="pp-filter-density-min" min="0" max="30" step="1" value="0" />
+                    <span class="slider-value" id="pp-filter-density-min-v">0</span>
+                  </div>
+                </label>
+                <label class="text-row" style="flex:1">
+                  <span>Max objects</span>
+                  <div class="slider-with-value">
+                    <input type="range" id="pp-filter-density-max" min="0" max="30" step="1" value="30" />
+                    <span class="slider-value" id="pp-filter-density-max-v">30+</span>
+                  </div>
+                </label>
+              </div>
+              <div class="pp-filter-shortcuts">
+                <button type="button" class="btn btn-ghost btn-small" data-pp-density="0,1">Empty (0–1)</button>
+                <button type="button" class="btn btn-ghost btn-small" data-pp-density="2,5">Sparse (2–5)</button>
+                <button type="button" class="btn btn-ghost btn-small" data-pp-density="6,12">Moderate (6–12)</button>
+                <button type="button" class="btn btn-ghost btn-small" data-pp-density="13,999">Busy (13+)</button>
+                <button type="button" class="btn btn-ghost btn-small" data-pp-density="0,999">Any density</button>
+              </div>
+            </div>
+
+            <!-- Card 3: Pick reason -->
+            <div class="pp-filter-card">
+              <header class="pp-filter-card-head">
+                <span class="pp-filter-eyebrow">Pick reason</span>
+                <h5 class="pp-filter-title">Why the picker chose this frame</h5>
+                <p class="muted small pp-filter-help">Diversity / uncertainty / hard-negative / class-target. Tick to keep only those.</p>
+              </header>
+              <div class="pp-filter-chips" id="pp-filter-reasons">
+                <span class="muted small">Load picks first.</span>
+              </div>
+            </div>
+
+            <!-- Card 4: Class-need score -->
+            <div class="pp-filter-card">
+              <header class="pp-filter-card-head">
+                <span class="pp-filter-eyebrow">Class-need score</span>
+                <h5 class="pp-filter-title">CLIP confidence for the suggested class</h5>
+                <p class="muted small pp-filter-help">Filter for strong candidates by raising the floor.</p>
+              </header>
+              <label class="text-row">
+                <span>Min score</span>
+                <div class="slider-with-value">
+                  <input type="range" id="pp-filter-min-score" min="0" max="100" step="1" value="0" />
+                  <span class="slider-value" id="pp-filter-min-score-v">0.00</span>
+                </div>
+              </label>
+            </div>
+
+          </div>
+        </details>
+
         <!-- Per-class quota tracker (Tier 2 #4) -->
         <div class="pp-quota-bar" id="pp-quota-bar" hidden>
           <div class="pp-quota-summary">
@@ -3559,7 +3656,7 @@ _data/util_report_schedules.json       ← weekly PDF schedules</pre>
   </div>
 </div>
 
-<script src="/static/app.js?v=2026-04-30-f-preview"></script>
-<script src="/static/shell-v2.js?v=2026-04-30-f-preview"></script>
+<script src="/static/app.js?v=2026-04-30-g-curatorf"></script>
+<script src="/static/shell-v2.js?v=2026-04-30-g-curatorf"></script>
 </body>
 </html>

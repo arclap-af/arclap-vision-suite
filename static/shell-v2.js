@@ -1263,8 +1263,9 @@
       };
     }
 
-    // Stage 6: curator
-    if ($('pp-curator-load')) $('pp-curator-load').onclick = loadCuratorPicks;
+    // Stage 6: curator — "Load picks" is the only action that resets the
+    // operator's client-side filters (status-tab and sort changes don't).
+    if ($('pp-curator-load')) $('pp-curator-load').onclick = () => loadCuratorPicks({ resetFilters: true });
     if ($('pp-export')) $('pp-export').onclick = exportRun;
     if ($('pp-sched-save')) $('pp-sched-save').onclick = _ppSaveSchedule;
 
@@ -1770,11 +1771,101 @@
   // Wire the new toolbar bits (sort, bbox toggle, blur preview, undo)
   if ($('pp-curator-sort') && !$('pp-curator-sort').dataset.wired) {
     $('pp-curator-sort').dataset.wired = '1';
-    $('pp-curator-sort').addEventListener('change', loadCuratorPicks);
+    $('pp-curator-sort').addEventListener('change', (e) => {
+      // Density sort is purely client-side (server doesn't expose it),
+      // so just re-rank the visible set without a roundtrip. Other
+      // sorts need fresh server-ordered data.
+      const v = e.target.value;
+      if (v === 'density' && _ppPicksMaster.length) {
+        _ppRebuildVisible();
+      } else {
+        loadCuratorPicks();
+      }
+    });
   }
   if ($('pp-show-bboxes') && !$('pp-show-bboxes').dataset.wired) {
     $('pp-show-bboxes').dataset.wired = '1';
     $('pp-show-bboxes').addEventListener('change', loadCuratorPicks);
+  }
+
+  // ─── Curator filter wiring (chips / sliders / shortcuts / reset) ──
+  if ($('pp-filter-panel') && !$('pp-filter-panel').dataset.wired) {
+    $('pp-filter-panel').dataset.wired = '1';
+    // Cluster + reason chips — event-delegated on the panel
+    $('pp-filter-panel').addEventListener('change', (e) => {
+      const t = e.target;
+      if (t.matches('[data-pp-filter-cluster]')) {
+        const lbl = t.dataset.ppFilterCluster;
+        if (t.checked) _ppFilters.clusters.add(lbl);
+        else _ppFilters.clusters.delete(lbl);
+        // Toggle chip's `.active` class so the visual matches
+        const chip = t.closest('.pp-filter-chip');
+        if (chip) chip.classList.toggle('active', t.checked);
+        _ppRebuildVisible();
+      } else if (t.matches('[data-pp-filter-reason]')) {
+        const rs = t.dataset.ppFilterReason;
+        if (t.checked) _ppFilters.reasons.add(rs);
+        else _ppFilters.reasons.delete(rs);
+        const chip = t.closest('.pp-filter-chip');
+        if (chip) chip.classList.toggle('active', t.checked);
+        _ppRebuildVisible();
+      }
+    });
+    // Density min/max sliders — keep min<=max + paint the histogram
+    const _onDensitySlider = () => {
+      let mn = parseInt($('pp-filter-density-min').value || '0');
+      let mx = parseInt($('pp-filter-density-max').value || '30');
+      if (mn > mx) {
+        // Snap the other slider so they don't cross
+        if (document.activeElement === $('pp-filter-density-min')) mx = mn;
+        else mn = mx;
+      }
+      $('pp-filter-density-min').value = String(mn);
+      $('pp-filter-density-max').value = String(mx);
+      $('pp-filter-density-min-v').textContent = String(mn);
+      $('pp-filter-density-max-v').textContent = mx >= 30 ? '30+' : String(mx);
+      _ppFilters.minDensity = mn;
+      // 30 means "30+", so use 999 to keep the upper end open
+      _ppFilters.maxDensity = mx >= 30 ? 999 : mx;
+      // Re-paint histogram with new in-window highlight
+      _ppRenderFilterPanel();
+      _ppRebuildVisible();
+    };
+    if ($('pp-filter-density-min')) $('pp-filter-density-min').addEventListener('input', _onDensitySlider);
+    if ($('pp-filter-density-max')) $('pp-filter-density-max').addEventListener('input', _onDensitySlider);
+    // Density quick buckets
+    document.querySelectorAll('[data-pp-density]').forEach(b => {
+      b.addEventListener('click', () => {
+        const [lo, hi] = b.dataset.ppDensity.split(',').map(Number);
+        const minSl = $('pp-filter-density-min');
+        const maxSl = $('pp-filter-density-max');
+        if (minSl) minSl.value = String(lo);
+        if (maxSl) maxSl.value = String(Math.min(hi, 30));
+        _onDensitySlider();
+      });
+    });
+    // Min-score slider (0..100 → 0.00..1.00)
+    if ($('pp-filter-min-score')) {
+      $('pp-filter-min-score').addEventListener('input', (e) => {
+        const v = parseInt(e.target.value || '0');
+        const f = v / 100;
+        _ppFilters.minScore = f;
+        const lbl = $('pp-filter-min-score-v');
+        if (lbl) lbl.textContent = f.toFixed(2);
+        _ppRebuildVisible();
+      });
+    }
+    // Reset button
+    if ($('pp-filter-reset')) {
+      $('pp-filter-reset').addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        _ppResetFilters();
+        // Repaint chips so the .active classes drop too
+        _ppRenderFilterPanel();
+        _ppRebuildVisible();
+      });
+    }
   }
   if ($('pp-preview-blur') && !$('pp-preview-blur').dataset.wired) {
     $('pp-preview-blur').dataset.wired = '1';
@@ -1888,11 +1979,232 @@
   });
 
   // ─── Tier 1+2+3 curator state ───────────────────────────────────
-  let _ppPicksCache = [];          // current pick rows (with bboxes etc.)
+  let _ppPicksMaster = [];         // ALL picks from /picks (post status+class filter)
+  let _ppPicksCache = [];          // VISIBLE picks (after Section-E client-side filters)
+                                    // — what's rendered, what the lightbox indexes into,
+                                    //   what bulk-select operates on. Same object refs as
+                                    //   _ppPicksMaster, so mutating .status updates both.
   let _ppTaxonomy = [];            // [{id, en, de}] for re-classify lookup
   let _ppClassNames = {};          // {class_id: en} cached per session
   let _ppUndoStack = [];           // last actions: {path, prev_status}
   const _PP_UNDO_MAX = 50;
+
+  // ─── Curator filter state (cluster / density / reason / score) ───
+  // Module-level so filters persist across status-tab and sort changes,
+  // but are reset when the operator clicks "Load picks" (a fresh load).
+  const _ppFilters = {
+    clusters: new Set(),       // empty = match-all
+    reasons: new Set(),        // empty = match-all
+    minDensity: 0,             // bboxes.length >= this
+    maxDensity: 999,           // bboxes.length <= this
+    minScore: 0.0,             // pick.score >= this
+  };
+
+  function _ppResetFilters() {
+    _ppFilters.clusters.clear();
+    _ppFilters.reasons.clear();
+    _ppFilters.minDensity = 0;
+    _ppFilters.maxDensity = 999;
+    _ppFilters.minScore = 0.0;
+    // Reflect into UI controls (if mounted)
+    const minD = $('pp-filter-density-min'); if (minD) { minD.value = '0'; const v = $('pp-filter-density-min-v'); if (v) v.textContent = '0'; }
+    const maxD = $('pp-filter-density-max'); if (maxD) { maxD.value = '30'; const v = $('pp-filter-density-max-v'); if (v) v.textContent = '30+'; }
+    const minS = $('pp-filter-min-score'); if (minS) { minS.value = '0'; const v = $('pp-filter-min-score-v'); if (v) v.textContent = '0.00'; }
+  }
+
+  function _ppActiveFilterCount() {
+    let n = 0;
+    if (_ppFilters.clusters.size) n++;
+    if (_ppFilters.reasons.size) n++;
+    if (_ppFilters.minDensity > 0 || _ppFilters.maxDensity < 999) n++;
+    if (_ppFilters.minScore > 0) n++;
+    return n;
+  }
+
+  function _ppApplyFilters(picks) {
+    return picks.filter(p => {
+      const density = (p.bboxes || []).length;
+      if (_ppFilters.clusters.size) {
+        const lbl = p.cluster_label || '(no cluster)';
+        if (!_ppFilters.clusters.has(lbl)) return false;
+      }
+      if (_ppFilters.reasons.size) {
+        const rs = p.reason || '(no reason)';
+        if (!_ppFilters.reasons.has(rs)) return false;
+      }
+      if (density < _ppFilters.minDensity) return false;
+      if (density > _ppFilters.maxDensity) return false;
+      if ((p.score || 0) < _ppFilters.minScore) return false;
+      return true;
+    });
+  }
+
+  function _ppSortPicks(picks, sort) {
+    if (sort === 'density') {
+      // Client-side sort by bbox count desc (server doesn't expose this)
+      return picks.slice().sort((a, b) =>
+        ((b.bboxes || []).length) - ((a.bboxes || []).length));
+    }
+    return picks;  // server already ordered for the other modes
+  }
+
+  function _ppRebuildVisible() {
+    const sort = $('pp-curator-sort') ? $('pp-curator-sort').value : 'class_score';
+    _ppPicksCache = _ppSortPicks(_ppApplyFilters(_ppPicksMaster), sort);
+    _ppRenderGrid();
+    _ppRefreshFilterCounter();
+    _ppRefreshBulkBar();
+  }
+
+  function _ppRenderGrid() {
+    const grid = $('pp-curator-grid');
+    if (!grid) return;
+    _ppSelected.clear();
+    _ppSelectAnchor = -1;
+    if (!_ppPicksCache.length) {
+      const msg = _ppPicksMaster.length
+        ? `No picks match the current filters. ${_ppActiveFilterCount() ? 'Try loosening the filter or click Reset filters.' : ''}`
+        : 'No picks match the current filter.';
+      grid.innerHTML = `<p class="muted small" style="padding:14px;text-align:center">${msg}</p>`;
+      return;
+    }
+    grid.innerHTML = _ppPicksCache.map((p, i) => _ppCardHTML(p, i)).join('');
+    _ppFocusIdx = -1;
+    _ppWireGridHandlers();
+  }
+
+  function _ppWireGridHandlers() {
+    const grid = $('pp-curator-grid');
+    if (!grid) return;
+    grid.querySelectorAll('.pp-card').forEach((card, i) => {
+      const p = _ppPicksCache[i];
+      if (!p) return;
+      _ppBboxOverlay(card, p.bboxes);
+      const cb = card.querySelector('.pp-card-select');
+      if (cb) cb.addEventListener('click', (e) => {
+        e.stopPropagation();
+        _ppToggleSelect(card, { shift: e.shiftKey });
+      });
+      card.addEventListener('click', (e) => {
+        if (e.target.closest('.pp-card-actions') || e.target.closest('.pp-card-select') || e.target.closest('.pp-card-zoom')) return;
+        if (e.shiftKey) { e.preventDefault(); _ppToggleSelect(card, { shift: true }); return; }
+        const idx = parseInt(card.dataset.idx);
+        _ppFocusCard(idx);
+        _ppLoadSimilar(p.path);
+      });
+      card.addEventListener('dblclick', () => _ppOpenLightbox(parseInt(card.dataset.idx)));
+      const zb = card.querySelector('.pp-card-zoom');
+      if (zb) zb.addEventListener('click', (e) => {
+        e.stopPropagation();
+        _ppOpenLightbox(parseInt(card.dataset.idx));
+      });
+    });
+    grid.querySelectorAll('.pp-card-actions button').forEach(b => {
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        const card = b.closest('.pp-card');
+        const path = decodeURIComponent(card.dataset.path);
+        const act = b.dataset.act;
+        if (act === 'reclass') { _ppOpenReclass(card); return; }
+        if (act === 'rejected') {
+          _ppPromptRejectReason(card, async (reason) => {
+            await _ppApply([{path, status: 'rejected', reject_reason: reason}]);
+          });
+          return;
+        }
+        await _ppApply([{path, status: act}]);
+      };
+    });
+  }
+
+  function _ppRefreshFilterCounter() {
+    const total = _ppPicksMaster.length;
+    const visible = _ppPicksCache.length;
+    const meta = $('pp-filter-visible-count');
+    if (meta) {
+      if (total === 0) meta.textContent = 'no picks loaded';
+      else if (visible === total) meta.textContent = `${total.toLocaleString()} picks`;
+      else meta.textContent = `${visible.toLocaleString()} of ${total.toLocaleString()} picks`;
+    }
+    const n = _ppActiveFilterCount();
+    const badge = $('pp-filter-active-count');
+    const reset = $('pp-filter-reset');
+    if (badge) {
+      badge.hidden = n === 0;
+      badge.textContent = String(n);
+    }
+    if (reset) reset.hidden = n === 0;
+  }
+
+  // Build chip lists + density histogram from _ppPicksMaster
+  function _ppRenderFilterPanel() {
+    const clustersEl = $('pp-filter-clusters');
+    const reasonsEl = $('pp-filter-reasons');
+    const histEl = $('pp-filter-density-histogram');
+    if (!clustersEl || !reasonsEl || !histEl) return;
+    if (!_ppPicksMaster.length) {
+      clustersEl.innerHTML = '<span class="muted small" style="padding:6px">Load picks first.</span>';
+      reasonsEl.innerHTML = '<span class="muted small" style="padding:6px">Load picks first.</span>';
+      histEl.innerHTML = '';
+      return;
+    }
+    // Aggregate
+    const clusterCounts = {};
+    const reasonCounts = {};
+    let densityMax = 0;
+    const histBuckets = new Array(31).fill(0);  // 0..30, last is 30+
+    let scoreMax = 0;
+    for (const p of _ppPicksMaster) {
+      const cl = p.cluster_label || '(no cluster)';
+      clusterCounts[cl] = (clusterCounts[cl] || 0) + 1;
+      const rs = p.reason ? _ppShortenReason(p.reason) : '(no reason)';
+      reasonCounts[rs] = (reasonCounts[rs] || 0) + 1;
+      const d = (p.bboxes || []).length;
+      if (d > densityMax) densityMax = d;
+      histBuckets[Math.min(30, d)] += 1;
+      if ((p.score || 0) > scoreMax) scoreMax = p.score || 0;
+    }
+    // Cluster chips — sorted desc by count
+    clustersEl.innerHTML = Object.entries(clusterCounts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([lbl, n]) => {
+        const isOn = _ppFilters.clusters.has(lbl);
+        return `<label class="pp-filter-chip${isOn ? ' active' : ''}" title="${escapeAttr(lbl)} — ${n} pick${n === 1 ? '' : 's'}">
+          <input type="checkbox" data-pp-filter-cluster="${escapeAttr(lbl)}" ${isOn ? 'checked' : ''} />
+          <span class="pp-filter-chip-label">${escapeText(lbl)}</span>
+          <span class="pp-filter-chip-count">${n}</span>
+        </label>`;
+      }).join('');
+    // Reason chips
+    reasonsEl.innerHTML = Object.entries(reasonCounts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([rs, n]) => {
+        const isOn = _ppFilters.reasons.has(rs);
+        return `<label class="pp-filter-chip${isOn ? ' active' : ''}" title="${escapeAttr(rs)} — ${n} pick${n === 1 ? '' : 's'}">
+          <input type="checkbox" data-pp-filter-reason="${escapeAttr(rs)}" ${isOn ? 'checked' : ''} />
+          <span class="pp-filter-chip-label">${escapeText(rs)}</span>
+          <span class="pp-filter-chip-count">${n}</span>
+        </label>`;
+      }).join('');
+    // Density histogram (linear bars 0..30)
+    const maxN = Math.max(1, ...histBuckets);
+    histEl.innerHTML = histBuckets.map((n, i) => {
+      const h = Math.max(2, Math.round(50 * n / maxN));
+      const lbl = i === 30 ? '30+' : String(i);
+      // Highlight the bar if it's INSIDE the current min/max window
+      const inWindow = i >= _ppFilters.minDensity && i <= _ppFilters.maxDensity;
+      return `<div class="pp-filter-density-bar${inWindow ? ' in' : ''}" style="height:${h}px"
+        title="${n} pick${n === 1 ? '' : 's'} with ${lbl} object${i === 1 ? '' : 's'}">
+        <span class="pp-filter-density-tip">${n}</span>
+        <span class="pp-filter-density-x">${lbl}</span>
+      </div>`;
+    }).join('');
+    // Sync slider max with actual density max (so the operator can dial up to 30+)
+    const minSl = $('pp-filter-density-min');
+    const maxSl = $('pp-filter-density-max');
+    if (minSl) minSl.max = '30';
+    if (maxSl) maxSl.max = '30';
+  }
 
   function _ppRecordUndo(entries) {
     // entries: [{path, prev_status, prev_reject, prev_reclass}]
@@ -1992,9 +2304,19 @@
     const detTip = (p.top_detections || []).length
       ? p.top_detections.map(d => `${d.class_name || ('cls ' + d.class_id)} ${(d.max_conf||0).toFixed(2)}`).join(' · ')
       : 'no scan detections';
+    // Density badge — class-agnostic box count. Colour-graded so the
+    // operator can scan the grid and instantly find dense / busy frames.
+    const density = (p.bboxes || []).length;
+    const densityClass = density === 0 ? 'empty'
+      : density <= 5 ? 'sparse'
+      : density <= 12 ? 'moderate'
+      : 'busy';
+    const densityBadge = `<span class="pp-card-density pp-density-${densityClass}"
+      title="Object density: ${density} class-agnostic box${density === 1 ? '' : 'es'} (Stage 3) · ${p.top_detections ? p.top_detections.length : 0} YOLO detection${(p.top_detections ? p.top_detections.length : 0) === 1 ? '' : 's'}">★${density}</span>`;
     return `<div class="pp-card ${p.status||'pending'}" data-idx="${i}" data-path="${safePath}" data-classid="${p.class_id}" tabindex="0">
       <input type="checkbox" class="pp-card-select" aria-label="Select pick" />
       <button class="pp-card-zoom" data-act="zoom" title="Open lightbox (Enter)" type="button">⤢</button>
+      ${densityBadge}
       <div class="pp-card-thumb">
         <img src="/api/picker/image?path=${safePath}" loading="lazy" alt="${escapeAttr(fname)}"/>
       </div>
@@ -2030,9 +2352,14 @@
     return escapeText(s).replace(/"/g, '&quot;');
   }
 
-  async function loadCuratorPicks() {
+  async function loadCuratorPicks(opts) {
+    opts = opts || {};
     if (!_ppActiveScan || !_ppActiveRun) return;
     await _ppEnsureTaxonomy();
+    // The "Load picks" button passes resetFilters:true so the operator
+    // gets a clean view. Status-tab and sort-dropdown changes don't
+    // pass it, so client-side filters survive those.
+    if (opts.resetFilters) _ppResetFilters();
     const status = $('pp-curator-status').value || 'pending';
     const cls = $('pp-curator-class').value;
     const sort = $('pp-curator-sort') ? $('pp-curator-sort').value : 'class_score';
@@ -2041,69 +2368,19 @@
                         window.location.origin);
     url.searchParams.set('status', status);
     url.searchParams.set('limit', '500');
-    url.searchParams.set('sort', sort);
+    // Density sort isn't supported server-side; use client sort, request
+    // server's default ordering instead.
+    url.searchParams.set('sort', sort === 'density' ? 'class_score' : sort);
     url.searchParams.set('bboxes', String(showBboxes));
     let picks = (await (await fetch(url.toString())).json()).picks || [];
     if (cls !== '') picks = picks.filter(p => String(p.class_id) === String(cls));
-    _ppPicksCache = picks;
-    const grid = $('pp-curator-grid');
-    _ppSelected.clear();
-    _ppSelectAnchor = -1;
-    if (!picks.length) {
-      grid.innerHTML = '<p class="muted small" style="padding:14px;text-align:center">No picks match the current filter.</p>';
-      _ppRefreshBulkBar();
-      _ppRefreshQuota();
-      return;
-    }
-    grid.innerHTML = picks.map((p, i) => _ppCardHTML(p, i)).join('');
-    _ppFocusIdx = -1;
-
-    grid.querySelectorAll('.pp-card').forEach((card, i) => {
-      const p = picks[i];
-      _ppBboxOverlay(card, p.bboxes);
-
-      const cb = card.querySelector('.pp-card-select');
-      if (cb) cb.addEventListener('click', (e) => {
-        e.stopPropagation();
-        _ppToggleSelect(card, { shift: e.shiftKey });
-      });
-      card.addEventListener('click', (e) => {
-        if (e.target.closest('.pp-card-actions') || e.target.closest('.pp-card-select') || e.target.closest('.pp-card-zoom')) return;
-        if (e.shiftKey) { e.preventDefault(); _ppToggleSelect(card, { shift: true }); return; }
-        const idx = parseInt(card.dataset.idx);
-        _ppFocusCard(idx);
-        _ppLoadSimilar(p.path);
-      });
-      card.addEventListener('dblclick', () => _ppOpenLightbox(parseInt(card.dataset.idx)));
-      const zb = card.querySelector('.pp-card-zoom');
-      if (zb) zb.addEventListener('click', (e) => {
-        e.stopPropagation();
-        _ppOpenLightbox(parseInt(card.dataset.idx));
-      });
-    });
-
-    grid.querySelectorAll('.pp-card-actions button').forEach(b => {
-      b.onclick = async (e) => {
-        e.stopPropagation();
-        const card = b.closest('.pp-card');
-        const idx = parseInt(card.dataset.idx);
-        const path = decodeURIComponent(card.dataset.path);
-        const act = b.dataset.act;
-        if (act === 'reclass') { _ppOpenReclass(card); return; }
-        if (act === 'rejected') {
-          // Open the reject-reason mini-modal anchored to this card
-          _ppPromptRejectReason(card, async (reason) => {
-            await _ppApply([{path, status: 'rejected', reject_reason: reason}]);
-          });
-          return;
-        }
-        await _ppApply([{path, status: act}]);
-      };
-    });
-
-    _ppRefreshBulkBar();
-    _ppRefreshQuota();
-    _ppCheckDiversity();
+    _ppPicksMaster = picks;
+    // Render the filter panel (chip lists / histogram / score range).
+    _ppRenderFilterPanel();
+    // Apply current filters → render visible set + wire handlers.
+    _ppRebuildVisible();
+    _ppRefreshQuota();        // whole-run quota — does NOT respect filters
+    _ppCheckDiversity();      // diversity nudge reads master, not filtered
     await _ppRefreshReference();
   }
 

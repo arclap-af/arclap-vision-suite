@@ -2325,3 +2325,271 @@ body.lb-open { overflow: hidden; }
 }
 .site-machine-pill b { color: var(--color-text-strong); font-weight: 600; }
 .site-machine-pill .cost { color: var(--color-brand); font-weight: 600; }
+
+/* ════════════════════════════════════════════════════════════════════
+   Curator filter panel (Smart Picker · Stage 6)
+   Phase clusters · density · reason · score — pure client-side filter
+   ════════════════════════════════════════════════════════════════════ */
+.pp-filter-panel {
+  margin-top: 10px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  overflow: hidden;
+}
+.pp-filter-panel[open] { box-shadow: var(--shadow-1); }
+
+.pp-filter-summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--color-surface-alt);
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--dur-1) var(--ease-out),
+              background var(--dur-1) var(--ease-out);
+  user-select: none;
+}
+.pp-filter-summary::-webkit-details-marker { display: none; }
+.pp-filter-summary::after {
+  content: "▾";
+  margin-left: 4px;
+  color: var(--color-text-subtle);
+  transition: transform var(--dur-1) var(--ease-out);
+}
+.pp-filter-panel[open] > .pp-filter-summary {
+  border-bottom-color: var(--color-border);
+}
+.pp-filter-panel[open] > .pp-filter-summary::after {
+  transform: rotate(180deg);
+}
+.pp-filter-summary:hover { background: var(--color-surface); }
+.pp-filter-summary strong {
+  font-family: var(--font-brand);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--color-text-strong);
+}
+.pp-filter-summary-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-1);
+  background: var(--color-brand-soft);
+  color: var(--color-brand);
+}
+.pp-filter-summary-count {
+  display: inline-block;
+  min-width: 18px;
+  text-align: center;
+  background: var(--color-brand);
+  color: var(--color-text-onbrand);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+}
+.pp-filter-summary-meta {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.pp-filter-summary .spacer { flex: 1; }
+
+.pp-filter-body {
+  padding: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  background: var(--color-surface);
+}
+
+.pp-filter-card {
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-2);
+  padding: 12px 14px;
+}
+.pp-filter-card-head { margin-bottom: 8px; }
+.pp-filter-eyebrow {
+  display: inline-block;
+  font-family: var(--font-brand);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-brand);
+  background: var(--color-brand-soft);
+  border: 1px solid var(--color-brand-border);
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  margin-bottom: 4px;
+}
+.pp-filter-title {
+  font-family: var(--font-brand);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--color-text-strong);
+  margin: 2px 0 0;
+  letter-spacing: -0.005em;
+}
+.pp-filter-help {
+  margin: 4px 0 0;
+}
+.pp-filter-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+.pp-filter-shortcuts {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+/* Chip lists (clusters + reasons) */
+.pp-filter-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.pp-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease-out),
+              background var(--dur-1) var(--ease-out),
+              color var(--dur-1) var(--ease-out);
+  user-select: none;
+}
+.pp-filter-chip input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.pp-filter-chip:hover {
+  border-color: var(--arc-ink-300);
+  background: var(--color-surface-alt);
+}
+.pp-filter-chip.active {
+  background: var(--color-brand);
+  color: var(--color-text-onbrand);
+  border-color: var(--color-brand);
+}
+.pp-filter-chip-label {
+  font-family: var(--font-ui);
+  font-weight: 500;
+}
+.pp-filter-chip.active .pp-filter-chip-label { font-weight: 600; }
+.pp-filter-chip-count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  background: var(--color-surface-alt);
+  color: var(--color-text-subtle);
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border-soft);
+}
+.pp-filter-chip.active .pp-filter-chip-count {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+/* Density histogram (mini bars 0..30) */
+.pp-filter-density-histogram {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 60px;
+  padding: 6px 8px 18px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-1);
+  margin-bottom: 8px;
+  overflow-x: auto;
+}
+.pp-filter-density-bar {
+  position: relative;
+  flex: 1 1 8px;
+  min-width: 8px;
+  background: linear-gradient(180deg, var(--arc-ink-300), var(--arc-ink-500));
+  border-radius: 1.5px 1.5px 0 0;
+  cursor: default;
+  opacity: 0.5;
+  transition: opacity var(--dur-1) var(--ease-out),
+              background var(--dur-1) var(--ease-out);
+}
+.pp-filter-density-bar.in {
+  opacity: 1;
+  background: linear-gradient(180deg, var(--color-brand), var(--arc-red-700));
+}
+.pp-filter-density-bar:hover { filter: brightness(1.15); }
+.pp-filter-density-bar:hover .pp-filter-density-tip { opacity: 1; }
+.pp-filter-density-tip {
+  position: absolute;
+  bottom: calc(100% + 3px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--arc-ink-900);
+  color: #fff;
+  padding: 1px 5px;
+  border-radius: var(--radius-1);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+.pp-filter-density-x {
+  position: absolute;
+  top: calc(100% + 1px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-text-subtle);
+  font-weight: 500;
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Density badge on each pick card (top-left corner, below select).
+   Colour-grades empty → busy so the operator can spot dense frames
+   at a glance without filtering.
+   ──────────────────────────────────────────────────────────────────── */
+.pp-card-density {
+  position: absolute;
+  top: var(--space-2);
+  left: 36px;     /* sits just to the right of .pp-card-select */
+  z-index: 3;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+  letter-spacing: -0.01em;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
+  pointer-events: auto;
+  cursor: help;
+}
+.pp-density-empty    { background: var(--arc-ink-200); color: var(--arc-ink-700); }
+.pp-density-sparse   { background: var(--arc-blue-100); color: var(--arc-blue-700); }
+.pp-density-moderate { background: var(--arc-amber-100); color: var(--arc-amber-700); }
+.pp-density-busy     { background: var(--color-brand); color: #fff;
+                       box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85),
+                                   0 0 8px -2px rgba(229, 33, 60, 0.55); }
+
