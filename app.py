@@ -3465,9 +3465,16 @@ def picker_export_run(job_id: str, run_id: str, req: PickerExportReq | None = No
     holdout = [r[0] for r in conn.execute(
         "SELECT path FROM pick_decision WHERE run_id = ? AND status = 'holdout'",
         (run_id,)).fetchall()]
-    # Pull every decision row + run metadata for the manifest
+    # Pull every decision row + run metadata for the manifest.
+    # COALESCE reclass_id over class_id so the export reflects the
+    # curator's cross-class re-classification when present.
+    _ensure_pick_decision_columns(db_path)
     pick_rows = conn.execute(
-        "SELECT path, class_id, score, reason, status, curator, decided_at "
+        "SELECT path, "
+        "       COALESCE(reclass_id, class_id) AS effective_class, "
+        "       class_id AS original_class, "
+        "       score, reason, status, curator, decided_at, "
+        "       COALESCE(reject_reason, '') AS reject_reason "
         "FROM pick_decision WHERE run_id = ?", (run_id,)).fetchall()
     run_meta = conn.execute(
         "SELECT run_id, started_at, finished_at, weights_json, config_json, "
@@ -3508,10 +3515,19 @@ def picker_export_run(job_id: str, run_id: str, req: PickerExportReq | None = No
         m["face_blur_requested"] = req.blur_faces
         m["face_blur_backend"] = face_backend
         m["picks"] = [
-            {"path": r[0], "class_id": r[1], "score": r[2], "reason": r[3],
-             "status": r[4], "curator": r[5], "decided_at": r[6]}
+            {
+                "path": r[0],
+                "class_id": r[1],          # effective class (after re-classify)
+                "original_class_id": r[2], # what the picker originally suggested
+                "reclassified": r[1] != r[2],
+                "score": r[3], "reason": r[4],
+                "status": r[5], "curator": r[6], "decided_at": r[7],
+                "reject_reason": r[8] or None,
+            }
             for r in pick_rows if r[0] in image_subset
         ]
+        m["n_reclassified"] = sum(
+            1 for p in m["picks"] if p.get("reclassified"))
         return m
 
     if approved:
