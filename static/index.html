@@ -1009,13 +1009,8 @@
         <button class="btn btn-secondary" id="btn-browse-source" type="button">📁 Folder…</button>
         <button class="btn btn-secondary" id="btn-browse-video" type="button">🎬 Video…</button>
       </div>
-      <span class="muted small">The Suite reads from this path directly — no upload. For a <strong>video</strong>, evenly-spaced frames are extracted first, then detection runs on those frames. Supported: <code>.mp4 .mov .avi .mkv .webm</code>.
+      <span class="muted small">The Suite reads from this path directly — no upload. For a <strong>video</strong>, every frame is extracted first, then detection runs on each frame. Use <em>Sample every Nth image</em> below to skip frames if needed (1&nbsp;=&nbsp;all). Supported: <code>.mp4 .mov .avi .mkv .webm</code>.
         Recent: <span id="recent-source-paths"></span></span>
-    </label>
-    <label class="text-row hidden" id="filter-video-options-row">
-      <span>Frames to extract from the video</span>
-      <input type="number" id="filter-video-n-frames" value="240" min="10" max="5000" />
-      <span class="muted small">Evenly distributed across the video duration. <strong>240</strong> = ~1 frame every 2.5 s for a 10-min clip. Bigger = more thorough scan but slower.</span>
     </label>
     <div class="filter-grid" style="margin-top:12px">
       <label class="text-row">

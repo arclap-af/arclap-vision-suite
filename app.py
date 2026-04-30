@@ -1942,7 +1942,6 @@ class FilterScanRequest(BaseModel):
     recurse: bool = True
     classes: str | None = None  # comma-separated class IDs
     label: str | None = None    # human label for the scan
-    video_n_frames: int | None = None  # how many frames to sample if source is a video
 
 
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
@@ -1954,10 +1953,11 @@ def filter_scan(req: FilterScanRequest):
     scan_id = uuid.uuid4().hex[:12]
     video_meta = None
 
-    # If the user pointed at a video file, sample evenly-spaced frames
-    # into a temp folder under _outputs/, then run the scan against that.
+    # If the user pointed at a video file, decode every frame (subject
+    # to the existing "Sample every Nth" knob) into a frames folder
+    # under _outputs/, then run the scan against that folder.
     if src.is_file() and src.suffix.lower() in _VIDEO_EXTS:
-        n_frames = max(10, int(req.video_n_frames or 240))
+        every = max(1, int(req.every or 1))
         frames_dir = OUTPUTS / f"filter_frames_{scan_id}"
         frames_dir.mkdir(parents=True, exist_ok=True)
         cap = cv2.VideoCapture(str(src))
@@ -1966,17 +1966,19 @@ def filter_scan(req: FilterScanRequest):
         if total <= 0:
             cap.release()
             raise HTTPException(400, f"Video has no readable frames: {src}")
-        n = min(n_frames, total)
-        indices = [int(i * (total - 1) / max(1, n - 1)) for i in range(n)]
+        # Walk the stream sequentially — far faster than per-frame seek
+        # for full extraction. Honour `every` to optionally skip frames.
         written = 0
-        for idx in indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        idx = 0
+        while True:
             ok, frame = cap.read()
             if not ok or frame is None:
-                continue
-            dst = frames_dir / f"{src.stem}_f{written:05d}.jpg"
-            cv2.imwrite(str(dst), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
-            written += 1
+                break
+            if idx % every == 0:
+                dst = frames_dir / f"{src.stem}_f{written:06d}.jpg"
+                cv2.imwrite(str(dst), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                written += 1
+            idx += 1
         cap.release()
         if written == 0:
             raise HTTPException(400, "Could not extract any frames from the video")
@@ -1986,9 +1988,12 @@ def filter_scan(req: FilterScanRequest):
             "frames_dir": str(frames_dir),
             "video_total_frames": total,
             "video_fps": fps,
+            "every_used": every,
         }
-        # Hand off the frame folder as the actual scan source
+        # Hand off the frame folder as the actual scan source.
+        # Reset `every` since the frame folder already reflects the sampling.
         src = frames_dir
+        req.every = 1
 
     elif not src.is_dir():
         raise HTTPException(400,
