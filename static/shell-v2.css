@@ -1185,9 +1185,96 @@ body:not(.shell-v2) main.container {
 }
 
 .pp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; max-height: 720px; overflow-y: auto; padding: 4px; }
-.pp-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; overflow: hidden; cursor: pointer; transition: border-color 0.15s, transform 0.15s; position: relative; }
+/* ════════════════════════════════════════════════════════════════════
+   Curator bulk-action toolbar
+   ════════════════════════════════════════════════════════════════════ */
+.pp-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  margin-top: var(--space-3);
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  flex-wrap: wrap;
+}
+.pp-bulk-bar[hidden] { display: none; }
+.pp-bulk-checkall {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-strong);
+  cursor: pointer;
+  user-select: none;
+}
+.pp-bulk-checkall input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-brand);
+}
+.pp-bulk-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--color-border);
+}
+.pp-bulk-bar .spacer { flex: 1; }
+.pp-bulk-bar kbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-1);
+  padding: 0 5px;
+  color: var(--color-text-strong);
+}
+
+.pp-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease-out),
+              transform var(--dur-1) var(--ease-out),
+              box-shadow var(--dur-1) var(--ease-out);
+  position: relative;
+}
 .pp-card:hover { border-color: var(--color-brand); transform: translateY(-1px); }
 .pp-card.selected { border-color: var(--color-brand); box-shadow: 0 0 0 2px var(--color-brand-soft); }
+/* Multi-select state — distinct from .selected (which is the focus highlight) */
+.pp-card.is-selected {
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 2px var(--color-brand-soft), var(--shadow-2);
+}
+.pp-card.is-selected::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(229, 33, 60, 0.05);
+  pointer-events: none;
+  z-index: 1;
+}
+/* Per-card selection checkbox — top-left corner */
+.pp-card-select {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  width: 18px;
+  height: 18px;
+  z-index: 3;
+  accent-color: var(--color-brand);
+  cursor: pointer;
+  background: var(--color-surface);
+  border-radius: var(--radius-1);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
+}
 .pp-card.approved { border-color: #22C55E; }
 .pp-card.approved::after { content: "✓"; position: absolute; top: 4px; right: 6px; background: #22C55E; color: #fff; font-weight: 700; padding: 1px 6px; border-radius: 999px; font-size: 11px; }
 .pp-card.rejected { border-color: #E5213C; opacity: 0.55; }

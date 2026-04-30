@@ -1653,6 +1653,20 @@
           <button class="btn btn-secondary btn-small" id="pp-sched-save">Save schedule</button>
           <span id="pp-sched-status" class="muted small"></span>
         </div>
+        <!-- Bulk-action toolbar — appears whenever the grid has at least one card. -->
+        <div class="pp-bulk-bar" id="pp-bulk-bar" hidden>
+          <label class="pp-bulk-checkall">
+            <input type="checkbox" id="pp-select-all" />
+            <span id="pp-select-summary">Select all visible</span>
+          </label>
+          <span class="pp-bulk-divider"></span>
+          <button class="btn btn-secondary btn-small" id="pp-bulk-approve" disabled>Approve selected</button>
+          <button class="btn btn-secondary btn-small" id="pp-bulk-holdout" disabled>Holdout selected</button>
+          <button class="btn btn-secondary btn-small" id="pp-bulk-reject" disabled>Reject selected</button>
+          <span class="spacer"></span>
+          <span class="muted small" id="pp-bulk-hint">Tip: <kbd>Shift</kbd>-click for range, <kbd>Ctrl</kbd>+<kbd>A</kbd> to select all visible.</span>
+        </div>
+
         <div id="pp-curator-grid" class="pp-grid" style="margin-top:10px">
           <p class="muted small" style="padding:14px;text-align:center">Run the picker first, then load picks here.</p>
         </div>

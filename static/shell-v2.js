@@ -1335,6 +1335,135 @@
     else if (k === 'p')   { e.preventDefault(); _ppKeyAction('pending'); }
   });
 
+  // ─── Curator bulk-selection state ──────────────────────────────
+  // Tracks which card indices are currently selected (multi-select).
+  // Anchor index is used for shift-click range select.
+  let _ppSelected = new Set();
+  let _ppSelectAnchor = -1;
+
+  function _ppRefreshBulkBar() {
+    const bar = $('pp-bulk-bar');
+    const grid = $('pp-curator-grid');
+    if (!bar || !grid) return;
+    const cards = grid.querySelectorAll('.pp-card');
+    if (!cards.length) {
+      bar.hidden = true;
+      return;
+    }
+    bar.hidden = false;
+    const total = cards.length;
+    const sel = _ppSelected.size;
+    const summary = $('pp-select-summary');
+    const checkAll = $('pp-select-all');
+    if (summary) summary.textContent = sel
+      ? `${sel.toLocaleString()} of ${total.toLocaleString()} selected`
+      : `Select all ${total.toLocaleString()} visible`;
+    if (checkAll) {
+      checkAll.checked = sel > 0 && sel === total;
+      checkAll.indeterminate = sel > 0 && sel < total;
+    }
+    ['pp-bulk-approve', 'pp-bulk-holdout', 'pp-bulk-reject'].forEach(id => {
+      const b = $(id);
+      if (b) b.disabled = sel === 0;
+    });
+  }
+
+  function _ppSetCardSelected(card, on) {
+    if (!card) return;
+    const idx = parseInt(card.dataset.idx);
+    if (on) _ppSelected.add(idx); else _ppSelected.delete(idx);
+    card.classList.toggle('is-selected', on);
+    const cb = card.querySelector('.pp-card-select');
+    if (cb) cb.checked = on;
+  }
+
+  function _ppToggleSelect(card, opts = {}) {
+    const grid = $('pp-curator-grid'); if (!grid) return;
+    const idx = parseInt(card.dataset.idx);
+    if (opts.shift && _ppSelectAnchor >= 0) {
+      const lo = Math.min(_ppSelectAnchor, idx);
+      const hi = Math.max(_ppSelectAnchor, idx);
+      const cards = grid.querySelectorAll('.pp-card');
+      for (let i = lo; i <= hi; i++) _ppSetCardSelected(cards[i], true);
+    } else {
+      const willBeOn = !_ppSelected.has(idx);
+      _ppSetCardSelected(card, willBeOn);
+      if (willBeOn) _ppSelectAnchor = idx;
+    }
+    _ppRefreshBulkBar();
+  }
+
+  async function _ppBulkApply(status) {
+    if (_ppSelected.size === 0) return;
+    const grid = $('pp-curator-grid'); if (!grid) return;
+    const cards = grid.querySelectorAll('.pp-card');
+    const indices = Array.from(_ppSelected).sort((a, b) => a - b);
+    // Show a non-blocking progress hint via the bulk-hint span
+    const hint = $('pp-bulk-hint');
+    const total = indices.length;
+    let done = 0;
+    if (hint) hint.textContent = `Applying ${status} to ${total} picks…`;
+    // Sequential to avoid hammering the server; small concurrency would be
+    // possible but keeps the UI deterministic.
+    for (const idx of indices) {
+      const card = cards[idx];
+      if (!card) continue;
+      const path = decodeURIComponent(card.dataset.path);
+      try {
+        await fetch(`/api/picker/${_ppActiveScan}/runs/${_ppActiveRun}/curator`, {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ path, status }),
+        });
+        card.classList.remove('approved','rejected','holdout','pending');
+        card.classList.add(status);
+      } catch(_e) { /* continue on individual failures */ }
+      done++;
+      if (hint && done % 10 === 0) hint.textContent = `Applying ${status}… ${done} / ${total}`;
+    }
+    if (hint) hint.textContent = `Applied ${status} to ${total} picks.`;
+    _ppSelected.clear();
+    _ppRefreshBulkBar();
+    updateCuratorCounts();
+  }
+
+  function _ppSelectAllVisible(on) {
+    const grid = $('pp-curator-grid'); if (!grid) return;
+    grid.querySelectorAll('.pp-card').forEach(c => _ppSetCardSelected(c, on));
+    if (!on) _ppSelectAnchor = -1;
+    _ppRefreshBulkBar();
+  }
+
+  // Wire the toolbar buttons (once)
+  if ($('pp-select-all') && !$('pp-select-all').dataset.wired) {
+    $('pp-select-all').dataset.wired = '1';
+    $('pp-select-all').addEventListener('change', (e) => _ppSelectAllVisible(e.target.checked));
+  }
+  if ($('pp-bulk-approve') && !$('pp-bulk-approve').dataset.wired) {
+    $('pp-bulk-approve').dataset.wired = '1';
+    $('pp-bulk-approve').onclick = () => _ppBulkApply('approved');
+  }
+  if ($('pp-bulk-holdout') && !$('pp-bulk-holdout').dataset.wired) {
+    $('pp-bulk-holdout').dataset.wired = '1';
+    $('pp-bulk-holdout').onclick = () => _ppBulkApply('holdout');
+  }
+  if ($('pp-bulk-reject') && !$('pp-bulk-reject').dataset.wired) {
+    $('pp-bulk-reject').dataset.wired = '1';
+    $('pp-bulk-reject').onclick = () => _ppBulkApply('rejected');
+  }
+  // Ctrl+A / Cmd+A — select all visible while curator pane is visible
+  document.addEventListener('keydown', (e) => {
+    const grid = $('pp-curator-grid');
+    if (!grid || !grid.querySelector('.pp-card')) return;
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      _ppSelectAllVisible(true);
+    } else if (e.key === 'Escape' && _ppSelected.size) {
+      _ppSelectAllVisible(false);
+    }
+  });
+
   async function loadCuratorPicks() {
     if (!_ppActiveScan || !_ppActiveRun) return;
     const status = $('pp-curator-status').value || 'pending';
@@ -1346,29 +1475,46 @@
     let picks = (await (await fetch(url.toString())).json()).picks || [];
     if (cls !== '') picks = picks.filter(p => String(p.class_id) === String(cls));
     const grid = $('pp-curator-grid');
+    // Reset selection state on every reload
+    _ppSelected.clear();
+    _ppSelectAnchor = -1;
     if (!picks.length) {
       grid.innerHTML = '<p class="muted small" style="padding:14px;text-align:center">No picks match the current filter.</p>';
+      _ppRefreshBulkBar();
       return;
     }
     grid.innerHTML = picks.map((p, i) => {
       const fname = (p.path.split(/[\\/]/).pop() || p.path);
       return `<div class="pp-card ${p.status||'pending'}" data-idx="${i}" data-path="${encodeURIComponent(p.path)}" tabindex="0">
+        <input type="checkbox" class="pp-card-select" aria-label="Select pick" />
         <img src="/api/picker/image?path=${encodeURIComponent(p.path)}" loading="lazy" alt="${fname}"/>
         <div class="pp-card-meta">
           <b>cls ${p.class_id}</b>
           <span class="pp-card-conf">${(p.score||0).toFixed(2)}</span>
         </div>
         <div class="pp-card-actions">
-          <button data-act="approved">A</button>
-          <button data-act="holdout">H</button>
-          <button data-act="rejected">R</button>
+          <button data-act="approved" title="Approve (A)">A</button>
+          <button data-act="holdout" title="Holdout (H)">H</button>
+          <button data-act="rejected" title="Reject (R)">R</button>
         </div>
       </div>`;
     }).join('');
     _ppFocusIdx = -1;
-    // Click-to-focus
     grid.querySelectorAll('.pp-card').forEach(card => {
-      card.addEventListener('click', () => {
+      const cb = card.querySelector('.pp-card-select');
+      if (cb) {
+        cb.addEventListener('click', (e) => {
+          e.stopPropagation();
+          _ppToggleSelect(card, { shift: e.shiftKey });
+        });
+      }
+      card.addEventListener('click', (e) => {
+        // Shift-click on the body acts like a checkbox-driven range select
+        if (e.shiftKey) {
+          e.preventDefault();
+          _ppToggleSelect(card, { shift: true });
+          return;
+        }
         const idx = parseInt(card.dataset.idx);
         _ppFocusCard(idx);
       });
@@ -1388,6 +1534,7 @@
         updateCuratorCounts();
       };
     });
+    _ppRefreshBulkBar();
     updateCuratorCounts();
   }
 
