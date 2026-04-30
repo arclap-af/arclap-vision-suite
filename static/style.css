@@ -3403,6 +3403,239 @@ input[type="number"].input::-webkit-outer-spin-button {
 
 /* Per-step explainer card — sits under each step's card-header */
 /* ════════════════════════════════════════════════════════════════════
+   Filter wizard · Section D — Weather & lens conditions
+   Sticky live counter · per-row delta preview · 3 sub-cards · status
+   dots instead of emoji · flash-on-change feedback.
+   ════════════════════════════════════════════════════════════════════ */
+
+/* B + F · Sticky live counter at the top of Section D */
+.cond-livebar {
+  position: sticky;
+  top: 60px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  margin: var(--space-3) 0;
+  background: color-mix(in oklab, var(--color-surface) 92%, transparent);
+  -webkit-backdrop-filter: saturate(160%) blur(8px);
+          backdrop-filter: saturate(160%) blur(8px);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  box-shadow: var(--shadow-1);
+  transition: box-shadow var(--dur-2) var(--ease-out),
+              border-color var(--dur-2) var(--ease-out);
+}
+.cond-livebar.flash {
+  box-shadow: 0 0 0 4px var(--color-brand-soft), var(--shadow-2);
+  border-color: var(--color-brand);
+}
+.cond-livebar-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+}
+.cond-livebar-text strong {
+  font-family: var(--font-brand);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--color-text-strong);
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+.cond-livebar-text strong.flash-up   { color: var(--color-success); }
+.cond-livebar-text strong.flash-down { color: var(--color-brand); }
+.cond-livebar-track {
+  flex: 1;
+  height: 8px;
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+.cond-livebar-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, var(--color-brand), var(--arc-red-700));
+  border-radius: var(--radius-pill);
+  transition: width var(--dur-2) var(--ease-out);
+  box-shadow: 0 0 8px -2px rgba(229, 33, 60, 0.55);
+}
+.cond-livebar-delta {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  min-width: 60px;
+  text-align: center;
+}
+.cond-livebar-delta.up   { background: var(--arc-green-50); color: var(--arc-green-700); border: 1px solid var(--arc-green-100); }
+.cond-livebar-delta.down { background: var(--color-brand-soft); color: var(--color-brand); border: 1px solid var(--color-brand-border); }
+
+/* D · Sub-cards inside Section D */
+.cond-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-3);
+  padding: var(--space-4) var(--space-5);
+  margin-top: var(--space-4);
+  box-shadow: var(--shadow-1);
+}
+.cond-card-head {
+  margin-bottom: var(--space-3);
+}
+.cond-card-eyebrow {
+  display: inline-block;
+  font-family: var(--font-brand);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-brand);
+  background: var(--color-brand-soft);
+  border: 1px solid var(--color-brand-border);
+  padding: 3px var(--space-3);
+  border-radius: var(--radius-pill);
+  margin-bottom: var(--space-2);
+}
+.cond-card-title {
+  font-family: var(--font-brand);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-text-strong);
+  margin: 0;
+}
+
+.cond-shortcuts-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.cond-clip-controls {
+  display: flex;
+  gap: var(--space-3);
+  align-items: stretch;
+  flex-wrap: wrap;
+  margin: var(--space-3) 0 var(--space-2);
+}
+.cond-clip-controls .checkbox-row-card { min-width: 280px; }
+
+/* E · Tag list — status dots instead of emoji */
+.cond-tag-list {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cond-row {
+  display: grid !important;
+  grid-template-columns: 24px 1fr auto;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-2);
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease-out),
+              background var(--dur-1) var(--ease-out);
+}
+.cond-row:hover {
+  border-color: var(--arc-ink-300);
+  background: var(--color-surface-alt);
+}
+.cond-row:has(input:checked) {
+  border-color: var(--color-brand);
+  background: var(--color-brand-soft);
+}
+.cond-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-brand);
+  cursor: pointer;
+}
+.cond-row-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  color: var(--color-text);
+  flex-wrap: wrap;
+}
+.cond-row-label {
+  font-weight: 500;
+  color: var(--color-text-strong);
+}
+.cond-row-n {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.cond-row-count {
+  font-weight: 700;
+  color: var(--color-text-strong);
+}
+.cond-row-delta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border-soft);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  min-width: 64px;
+  text-align: center;
+}
+.cond-row-delta.up   { background: var(--arc-green-50); color: var(--arc-green-700); border-color: var(--arc-green-100); }
+.cond-row-delta.down { background: var(--color-brand-soft); color: var(--color-brand); border-color: var(--color-brand-border); }
+.cond-row-delta.zero { color: var(--color-text-subtle); }
+
+.cond-conf {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border-soft);
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+}
+
+/* E · Status-colour dots — replaces per-row emoji icons */
+.cond-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--color-text-subtle);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
+}
+.cond-dot-good  { background: var(--arc-green-500); }
+.cond-dot-fog   { background: #94A3B8; }
+.cond-dot-rain  { background: var(--arc-blue-500); }
+.cond-dot-cloud { background: #64748B; }
+.cond-dot-night { background: var(--arc-ink-700); }
+.cond-dot-dusk  { background: #F97316; }
+.cond-dot-snow  { background: #E2E8F0; box-shadow: 0 0 0 2px rgba(0,0,0,0.1); }
+.cond-dot-blur  { background: var(--arc-amber-500); }
+.cond-dot-sun   { background: #FACC15; }
+.cond-dot-other { background: var(--color-text-subtle); }
+
+/* ════════════════════════════════════════════════════════════════════
    CLIP refinement live progress (Filter wizard step 4 · section D)
    ════════════════════════════════════════════════════════════════════ */
 .clip-refine-progress {

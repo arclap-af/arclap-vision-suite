@@ -2311,18 +2311,20 @@ function setDow(days) {
   scheduleRuleRecount();
 }
 
+// Status-colour dot per tag instead of emoji icons (per design system).
+// Token names map to CSS classes .cond-dot-<token>.
 const CONDITION_LABELS = {
-  good: { emoji: '✅', label: 'Good (no issues)' },
-  night: { emoji: '🌙', label: 'Night' },
-  dusk_dawn: { emoji: '🌆', label: 'Dusk / Dawn' },
-  fog: { emoji: '🌫️', label: 'Fog' },
-  overcast: { emoji: '☁️', label: 'Overcast' },
-  rain: { emoji: '🌧️', label: 'Rain / wet lens' },
-  snow: { emoji: '❄️', label: 'Snow / glare' },
-  blur: { emoji: '🌀', label: 'Blurry / out of focus' },
-  lens_drops: { emoji: '💧', label: 'Lens drops' },
-  lens_smudge: { emoji: '🫥', label: 'Lens smudge' },
-  overexposed: { emoji: '☀️', label: 'Overexposed' },
+  good:        { tone: 'good',  label: 'Good (no issues)' },
+  night:       { tone: 'night', label: 'Night' },
+  dusk_dawn:   { tone: 'dusk',  label: 'Dusk / Dawn' },
+  fog:         { tone: 'fog',   label: 'Fog' },
+  overcast:    { tone: 'cloud', label: 'Overcast' },
+  rain:        { tone: 'rain',  label: 'Rain / wet lens' },
+  snow:        { tone: 'snow',  label: 'Snow / glare' },
+  blur:        { tone: 'blur',  label: 'Blurry / out of focus' },
+  lens_drops:  { tone: 'rain',  label: 'Lens drops' },
+  lens_smudge: { tone: 'blur',  label: 'Lens smudge' },
+  overexposed: { tone: 'sun',   label: 'Overexposed' },
 };
 
 async function loadConditionMeta(jobId) {
@@ -2343,17 +2345,31 @@ function renderConditionList(totalImages) {
     el.innerHTML = '<p class="muted small" style="padding:14px">No condition tags in this scan. Re-scan with the latest version to populate this section.</p>';
     return;
   }
-  const max = Math.max(1, ...filterConditionMeta.map(r => r.n_images));
-  el.innerHTML = filterConditionMeta.map(r => {
-    const meta = CONDITION_LABELS[r.tag] || { emoji: '❓', label: r.tag };
+  // Sort: pin "good" first, then most-prevalent descending.
+  const rows = filterConditionMeta.slice().sort((a, b) => {
+    if (a.tag === 'good') return -1;
+    if (b.tag === 'good') return 1;
+    return b.n_images - a.n_images;
+  });
+  el.innerHTML = rows.map(r => {
+    const meta = CONDITION_LABELS[r.tag] || { tone: 'other', label: r.tag };
     const pct = (100 * r.n_images / Math.max(1, totalImages)).toFixed(1);
+    const sources = r.by_source || {};
+    const sourceTip = Object.entries(sources)
+      .map(([s, n]) => `${s} ${n}`).join(' · ') || '';
     return `
-      <label class="rule-class-row">
+      <label class="rule-class-row cond-row" data-cond-tag="${escapeHtml(r.tag)}">
         <input type="checkbox" data-cond-tag="${escapeHtml(r.tag)}" />
-        <span>${meta.emoji} ${escapeHtml(meta.label)}
-          <span class="cond-conf">conf ${r.avg_confidence.toFixed(2)}</span>
+        <span class="cond-row-name">
+          <span class="cond-dot cond-dot-${meta.tone}" aria-hidden="true"></span>
+          <span class="cond-row-label">${escapeHtml(meta.label)}</span>
+          <span class="cond-conf" title="Average heuristic confidence">conf ${r.avg_confidence.toFixed(2)}</span>
         </span>
-        <span class="n">${r.n_images.toLocaleString()} (${pct}%)</span>
+        <span class="n cond-row-n">
+          <span class="cond-row-count">${r.n_images.toLocaleString()}</span>
+          <span class="muted small">(${pct}%)</span>
+          <span class="cond-row-delta" data-tag="${escapeHtml(r.tag)}" title="${escapeHtml(sourceTip)}">→ ?</span>
+        </span>
       </label>`;
   }).join('');
 }
@@ -2861,10 +2877,16 @@ function scheduleRuleRecount() {
   ruleMatchTimer = setTimeout(runRuleRecount, 200);
 }
 
+// Last-known match count, used to compute the live counter delta + flash.
+let _lastMatchCount = null;
+
 async function runRuleRecount() {
   if (!activeFilterScanId) return;
   const rule = currentRule();
   $('rule-match-count').textContent = '…';
+  // Top-of-Section-D mirror — instantly clear the chip while loading
+  const lbCount = $('cond-livebar-count');
+  if (lbCount) lbCount.classList.remove('flash-up', 'flash-down');
   try {
     const r = await fetch(`/api/filter/${activeFilterScanId}/match-count`, {
       method: 'POST',
@@ -2873,13 +2895,120 @@ async function runRuleRecount() {
     });
     if (!r.ok) throw new Error('count failed');
     const d = await r.json();
-    $('rule-match-count').textContent = d.matches.toLocaleString();
     const pct = d.total > 0 ? (100 * d.matches / d.total) : 0;
+    $('rule-match-count').textContent = d.matches.toLocaleString();
     $('rule-match-bar').style.width = pct.toFixed(1) + '%';
     $('rule-match-meta').textContent = `${pct.toFixed(1)}% of ${d.total.toLocaleString()}`;
+
+    // B + F · sticky live counter at top of Section D + flash on change
+    const lbMeta  = $('cond-livebar-meta');
+    const lbFill  = $('cond-livebar-fill');
+    const lbDelta = $('cond-livebar-delta');
+    const lbBar   = $('cond-livebar');
+    if (lbCount) lbCount.textContent = `${d.matches.toLocaleString()} / ${d.total.toLocaleString()} match`;
+    if (lbMeta)  lbMeta.textContent = `${pct.toFixed(1)}% of scan kept`;
+    if (lbFill)  lbFill.style.width = pct.toFixed(1) + '%';
+    if (lbDelta) {
+      if (_lastMatchCount == null || _lastMatchCount === d.matches) {
+        lbDelta.textContent = '';
+        lbDelta.classList.remove('up', 'down');
+      } else {
+        const diff = d.matches - _lastMatchCount;
+        lbDelta.textContent = `${diff > 0 ? '+' : ''}${diff.toLocaleString()}`;
+        lbDelta.classList.toggle('up', diff > 0);
+        lbDelta.classList.toggle('down', diff < 0);
+      }
+    }
+    if (lbBar && _lastMatchCount != null && _lastMatchCount !== d.matches) {
+      lbBar.classList.add('flash');
+      setTimeout(() => lbBar.classList.remove('flash'), 380);
+    }
+    _lastMatchCount = d.matches;
+
+    // C · Per-row delta preview — for each condition tag, what would happen
+    // if the user toggled JUST that tag? Computed in parallel with a small
+    // concurrency cap so we don't hammer the server.
+    _scheduleDeltaPreview(rule, d.total);
   } catch (e) {
     $('rule-match-count').textContent = '?';
   }
+}
+
+// C · Per-row delta preview cache (debounced + concurrency-limited)
+let _deltaTimer = null;
+let _deltaSeq = 0;
+function _scheduleDeltaPreview(baseRule, total) {
+  clearTimeout(_deltaTimer);
+  _deltaTimer = setTimeout(() => _runDeltaPreview(baseRule, total), 250);
+}
+async function _runDeltaPreview(baseRule, total) {
+  if (!activeFilterScanId) return;
+  const seq = ++_deltaSeq;
+  const rows = document.querySelectorAll('.cond-row');
+  if (!rows.length) return;
+  // Snapshot which tags are currently checked
+  const ticked = new Set(
+    Array.from(document.querySelectorAll('#cond-class-checks input:checked'))
+      .map(el => el.dataset.condTag)
+  );
+  // Helper — build a hypothetical rule with `tag` toggled, run match-count.
+  const hypothetical = async (tag) => {
+    const r = JSON.parse(JSON.stringify(baseRule));
+    const conds = new Set(r.conditions || []);
+    if (conds.has(tag)) conds.delete(tag);
+    else conds.add(tag);
+    r.conditions = Array.from(conds);
+    try {
+      const res = await fetch(`/api/filter/${activeFilterScanId}/match-count`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(r),
+      });
+      if (!res.ok) return null;
+      const d = await res.json();
+      return d.matches;
+    } catch (_e) { return null; }
+  };
+  // Limit to 4 concurrent for responsiveness on big scans
+  const tags = Array.from(rows).map(row => row.dataset.condTag).filter(Boolean);
+  const queue = tags.slice();
+  let active = 0;
+  const baseMatches = _lastMatchCount;
+  return new Promise((resolve) => {
+    const next = () => {
+      if (seq !== _deltaSeq) { resolve(); return; } // newer run started
+      if (queue.length === 0 && active === 0) { resolve(); return; }
+      while (active < 4 && queue.length) {
+        const tag = queue.shift();
+        active++;
+        hypothetical(tag).then(n => {
+          if (seq !== _deltaSeq) { active--; next(); return; }
+          const span = document.querySelector(`.cond-row-delta[data-tag="${CSS.escape(tag)}"]`);
+          if (span) {
+            if (n == null || baseMatches == null) {
+              span.textContent = '';
+            } else {
+              const diff = n - baseMatches;
+              span.classList.remove('up', 'down', 'zero');
+              if (diff === 0) {
+                span.textContent = '→ no change';
+                span.classList.add('zero');
+              } else if (diff > 0) {
+                span.textContent = `→ +${diff.toLocaleString()}`;
+                span.classList.add('up');
+              } else {
+                span.textContent = `→ ${diff.toLocaleString()}`;
+                span.classList.add('down');
+              }
+            }
+          }
+          active--;
+          next();
+        });
+      }
+    };
+    next();
+  });
 }
 
 if ($('btn-rule-preview')) {

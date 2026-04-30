@@ -1293,50 +1293,87 @@
     <details class="rule-section" open>
       <summary><span class="rule-num">D</span> Weather &amp; lens conditions</summary>
       <div class="rule-section-body">
-        <p class="muted small">During the scan, every picture is auto-tagged for these conditions (night, fog, rain, blur, lens drops, etc.) using the heuristic detector. Tick the conditions you want to keep — or use the logic dropdown to <em>exclude</em> bad ones.</p>
-        <div class="rule-grid">
-          <label class="text-row">
-            <span>Logic</span>
-            <select id="cond-logic">
-              <option value="any" selected>ANY of the ticked conditions — keep frames with at least one</option>
-              <option value="all">ALL of the ticked conditions — frame must have every one</option>
-              <option value="none">NONE of the ticked conditions — exclude these (best for "no fog, no rain, no night")</option>
-            </select>
-          </label>
-          <label class="text-row">
-            <span>Min tag confidence</span>
-            <input type="range" id="cond-min-confidence" min="0" max="100" step="5" value="0" />
-            <span id="cond-min-confidence-value" class="muted small">0.00</span>
-            <span class="muted small">Higher = only trust strong heuristic verdicts. 0 = include every tag.</span>
-          </label>
-        </div>
-        <div id="cond-class-checks" class="rule-class-checks">
-          <p class="muted small" style="padding:14px">No conditions detected yet — re-scan with the latest version to populate this section.</p>
-        </div>
-        <div class="cond-shortcuts">
-          <button type="button" class="btn btn-ghost btn-small" id="cond-quick-clean">Clean only (NONE of: night, fog, rain, blur, lens_drops, lens_smudge, overexposed)</button>
-          <button type="button" class="btn btn-ghost btn-small" id="cond-quick-good">Tag = "good" only</button>
-          <button type="button" class="btn btn-ghost btn-small" id="cond-quick-clear">Clear ticks</button>
+        <p class="muted small">Each frame's <strong>effective</strong> tag set is determined by source priority:
+        <code>manual</code> → <code>clip</code> → <code>heuristic_smoothed</code> → <code>heuristic</code>. Counts and the live filter use the same priority resolution, so what you see is what survives.</p>
+
+        <!-- B · Sticky live counter (mirrors the bottom one, in-view while you tick) -->
+        <div class="cond-livebar" id="cond-livebar">
+          <div class="cond-livebar-text">
+            <strong id="cond-livebar-count">—</strong>
+            <span class="muted small" id="cond-livebar-meta">match no rules yet</span>
+          </div>
+          <div class="cond-livebar-track"><span class="cond-livebar-fill" id="cond-livebar-fill"></span></div>
+          <span class="cond-livebar-delta" id="cond-livebar-delta"></span>
         </div>
 
-        <div class="cond-clip">
-          <h5 style="margin:14px 0 4px">Refine tags with CLIP (optional, for max accuracy)</h5>
-          <p class="muted small" style="margin:0 0 8px">Heuristics get the easy ~85% right. CLIP zero-shot re-checks ambiguous frames using a vision-language model — usually +10-15 pp accuracy on borderline cases. ~3-5 min per 50k frames on your GPU. <em>First run downloads ~890MB.</em></p>
-          <div class="folder-input-row" style="align-items:center">
-            <label class="checkbox-row" style="margin:0">
-              <input type="checkbox" id="clip-only-uncertain" checked />
-              Only re-check uncertain frames (heuristic confidence &lt; 0.85) — faster
+        <!-- D · Sub-card 1 of 3: Conditions to keep -->
+        <div class="cond-card cond-card-tags">
+          <header class="cond-card-head">
+            <span class="cond-card-eyebrow">Conditions</span>
+            <h5 class="cond-card-title">Keep frames matching</h5>
+          </header>
+
+          <div class="cond-shortcuts cond-shortcuts-row">
+            <button type="button" class="btn btn-ghost btn-small" id="cond-quick-good"
+              title="Keep only frames where the effective tag is 'good' (no issues)">Good only</button>
+            <button type="button" class="btn btn-ghost btn-small" id="cond-quick-clean"
+              title="Exclude any frame tagged night / fog / rain / blur / lens_drops / lens_smudge / overexposed">Clean only · exclude bad</button>
+            <button type="button" class="btn btn-ghost btn-small" id="cond-quick-clear">Clear ticks</button>
+          </div>
+
+          <div class="rule-grid">
+            <label class="text-row">
+              <span>Logic</span>
+              <select id="cond-logic" class="input">
+                <option value="any" selected>ANY · keep frames matching at least one ticked tag</option>
+                <option value="all">ALL · frame must have every ticked tag</option>
+                <option value="none">NONE · exclude any frame with these tags</option>
+              </select>
             </label>
-            <button class="btn btn-secondary" id="btn-refine-clip" type="button">Run CLIP refinement</button>
+            <label class="text-row">
+              <span>Min tag confidence</span>
+              <div class="slider-with-value">
+                <input type="range" id="cond-min-confidence" min="0" max="100" step="5" value="0" />
+                <span id="cond-min-confidence-value" class="slider-value">0.00</span>
+              </div>
+              <span class="muted small">Higher = only trust strong heuristic verdicts. 0 = include every tag.</span>
+            </label>
+          </div>
+
+          <div id="cond-class-checks" class="rule-class-checks cond-tag-list">
+            <p class="muted small" style="padding:14px">No conditions detected yet — re-scan with the latest version to populate this section.</p>
+          </div>
+        </div>
+
+        <!-- D · Sub-card 2 of 3: CLIP refinement (Tier 3 #9 progress widget already wires here) -->
+        <div class="cond-card cond-card-clip">
+          <header class="cond-card-head">
+            <span class="cond-card-eyebrow">Refine accuracy</span>
+            <h5 class="cond-card-title">CLIP zero-shot re-check</h5>
+          </header>
+          <p class="muted small">Heuristics get the easy ~85% right. CLIP re-checks ambiguous frames using a vision-language model — typically +10–15 pp accuracy on borderline cases. ~3–5 min per 50k frames on your GPU. <em>First run downloads ~890&nbsp;MB.</em></p>
+          <div class="cond-clip-controls">
+            <label class="checkbox-row checkbox-row-card" style="flex:1">
+              <input type="checkbox" id="clip-only-uncertain" checked />
+              <div>
+                <strong>Only re-check uncertain frames</strong>
+                <span class="muted small">heuristic confidence &lt; 0.85 — faster</span>
+              </div>
+            </label>
+            <button class="btn btn-primary" id="btn-refine-clip" type="button">Run CLIP refinement</button>
           </div>
           <span class="muted small" id="clip-refine-status"></span>
         </div>
 
-        <div class="cond-import">
-          <h5 style="margin:14px 0 4px">Import hand-labelled ground truth (optional)</h5>
-          <p class="muted small" style="margin:0 0 8px">Have a <code>labels.json</code> mapping <em>filename → good/bad</em> (or named tags)? Import it to override the heuristic for those exact frames. Manual labels win — heuristic and CLIP can't override them.</p>
+        <!-- D · Sub-card 3 of 3: Manual labels override -->
+        <div class="cond-card cond-card-import">
+          <header class="cond-card-head">
+            <span class="cond-card-eyebrow">Manual override</span>
+            <h5 class="cond-card-title">Import labels.json (optional)</h5>
+          </header>
+          <p class="muted small">Map of <em>filename → good/bad</em> (or named tags). Manual labels win the priority resolution — heuristic and CLIP cannot override.</p>
           <div class="folder-input-row">
-            <input type="text" id="labels-import-path" placeholder="C:\path\to\labels.json" />
+            <input type="text" id="labels-import-path" class="input mono" placeholder="C:\path\to\labels.json" />
             <button class="btn btn-secondary" id="btn-labels-import" type="button">Import labels</button>
           </div>
           <span class="muted small" id="labels-import-status"></span>

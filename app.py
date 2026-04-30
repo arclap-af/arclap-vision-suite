@@ -2330,33 +2330,58 @@ def _build_match_sql(rule: FilterRule) -> tuple[str, list]:
         )
         params += [*cls, rule.min_conf]
 
-    # Condition-tag filtering (Section D) — mirrors class logic but on the
-    # `conditions` table. Conditions table may be absent on legacy scans;
-    # guarded by EXISTS-clause coalesce.
+    # Condition-tag filtering (Section D) — uses SOURCE PRIORITY RESOLUTION
+    # so a frame's effective tag set is determined by the highest-priority
+    # source that tagged it: manual > clip > heuristic_smoothed > heuristic.
+    # Without this, a frame that the heuristic tagged "good" but CLIP
+    # later refined to "fog" would match BOTH ticks — silently inflating
+    # match counts and contradicting the UI.
     cond = rule.conditions
-    if cond and rule.cond_logic == "any":
+    if cond:
         placeholders = ",".join("?" * len(cond))
-        where.append(
+        # Build the EXISTS subquery that picks ONLY rows from the
+        # highest-priority source available for that path.
+        prio_exists = (
             f"EXISTS (SELECT 1 FROM conditions c WHERE c.path = i.path "
-            f"AND c.tag IN ({placeholders}) AND c.confidence >= ?)"
+            f"AND c.tag IN ({placeholders}) "
+            f"AND c.confidence >= ? "
+            f"AND NOT EXISTS ("
+            f"  SELECT 1 FROM conditions c2 WHERE c2.path = c.path "
+            f"  AND {_SOURCE_PRIORITY_SQL('c2.source')} > {_SOURCE_PRIORITY_SQL('c.source')}"
+            f"))"
         )
-        params += [*cond, rule.cond_min_confidence]
-    elif cond and rule.cond_logic == "all":
-        for t in cond:
-            where.append(
-                "EXISTS (SELECT 1 FROM conditions c WHERE c.path = i.path "
-                "AND c.tag = ? AND c.confidence >= ?)"
-            )
-            params += [t, rule.cond_min_confidence]
-    elif cond and rule.cond_logic == "none":
-        placeholders = ",".join("?" * len(cond))
-        where.append(
-            f"NOT EXISTS (SELECT 1 FROM conditions c WHERE c.path = i.path "
-            f"AND c.tag IN ({placeholders}) AND c.confidence >= ?)"
-        )
-        params += [*cond, rule.cond_min_confidence]
+        if rule.cond_logic == "any":
+            where.append(prio_exists)
+            params += [*cond, rule.cond_min_confidence]
+        elif rule.cond_logic == "all":
+            for t in cond:
+                where.append(
+                    f"EXISTS (SELECT 1 FROM conditions c WHERE c.path = i.path "
+                    f"AND c.tag = ? AND c.confidence >= ? "
+                    f"AND NOT EXISTS ("
+                    f"  SELECT 1 FROM conditions c2 WHERE c2.path = c.path "
+                    f"  AND {_SOURCE_PRIORITY_SQL('c2.source')} > {_SOURCE_PRIORITY_SQL('c.source')}"
+                    f"))"
+                )
+                params += [t, rule.cond_min_confidence]
+        elif rule.cond_logic == "none":
+            where.append("NOT " + prio_exists)
+            params += [*cond, rule.cond_min_confidence]
 
     return f"FROM images i WHERE {' AND '.join(where)}", params
+
+
+def _SOURCE_PRIORITY_SQL(col_expr: str) -> str:
+    """Inline CASE expression that maps source name to numeric priority.
+    Higher = more authoritative. Used inside EXISTS NOT-EXISTS clauses
+    to pick the winning source per path when filtering conditions."""
+    return (
+        f"CASE {col_expr} "
+        f"WHEN 'manual' THEN 4 "
+        f"WHEN 'clip' THEN 3 "
+        f"WHEN 'heuristic_smoothed' THEN 2 "
+        f"ELSE 1 END"
+    )
 
 
 def _hour_dow_filter(rule: FilterRule, paths: list[str]) -> list[str]:
@@ -3831,28 +3856,54 @@ def filter_refine_clip_progress(job_id: str):
 
 @app.get("/api/filter/{job_id}/conditions")
 def filter_conditions_summary(job_id: str):
-    """Per-tag counts of frame-conditions detected by the scan's heuristics.
-    Powers Section D (Weather & lens) checkbox list with image counts."""
+    """Per-tag effective counts using SOURCE PRIORITY RESOLUTION.
+
+    A frame's effective tag set is determined by the highest-priority
+    source that tagged it: manual > clip > heuristic_smoothed > heuristic.
+    This makes the displayed count IDENTICAL to what the filter SQL
+    will match — fixing the bug where clicking \"fog\" returned far
+    more matches than the displayed prevalence suggested.
+
+    Also returns raw per-source counts so the UI can show
+    \"114 heuristic · 263 CLIP · 339 effective\" if it wants to.
+    """
     _, db_path = _filter_db(job_id)
     conn = _sqlite3.connect(db_path)
     try:
         # Guard against legacy scans (no conditions table)
         try:
-            rows = conn.execute(
-                "SELECT tag, COUNT(DISTINCT path) AS n_images, "
-                "       AVG(confidence) AS avg_conf "
-                "FROM conditions GROUP BY tag ORDER BY n_images DESC"
+            # Effective per-tag counts via priority resolution.
+            eff_rows = conn.execute(
+                f"SELECT c.tag, COUNT(DISTINCT c.path) AS n_eff, "
+                f"       AVG(c.confidence) AS avg_conf "
+                f"FROM conditions c "
+                f"WHERE NOT EXISTS ("
+                f"  SELECT 1 FROM conditions c2 WHERE c2.path = c.path "
+                f"  AND {_SOURCE_PRIORITY_SQL('c2.source')} > {_SOURCE_PRIORITY_SQL('c.source')}"
+                f") "
+                f"GROUP BY c.tag ORDER BY n_eff DESC"
+            ).fetchall()
+            # Raw per-source counts for transparency.
+            raw_rows = conn.execute(
+                "SELECT tag, source, COUNT(DISTINCT path) AS n "
+                "FROM conditions GROUP BY tag, source"
             ).fetchall()
         except _sqlite3.OperationalError:
             return {"available": False, "rows": [], "total_images": 0}
         total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+        # Pivot raw rows into per-tag dicts
+        raw_by_tag: dict[str, dict] = {}
+        for tag, src, n in raw_rows:
+            raw_by_tag.setdefault(tag, {})[src] = int(n)
         return {
             "available": True,
             "total_images": int(total),
+            "source_priority": ["manual", "clip", "heuristic_smoothed", "heuristic"],
             "rows": [
                 {"tag": r[0], "n_images": int(r[1]),
-                 "avg_confidence": round(float(r[2] or 0), 3)}
-                for r in rows
+                 "avg_confidence": round(float(r[2] or 0), 3),
+                 "by_source": raw_by_tag.get(r[0], {})}
+                for r in eff_rows
             ],
         }
     finally:
