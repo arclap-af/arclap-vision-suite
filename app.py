@@ -3152,7 +3152,10 @@ def picker_progress(job_id: str):
     silent spinner.
     """
     db_path = _scan_db_for_job(job_id)
-    conn = sqlite3.connect(str(db_path))
+    # Use the module-level alias (`sqlite3 as _sqlite3`) — the bare
+    # `sqlite3` name is not imported in this module. Audit caught
+    # the NameError 2026-04-30.
+    conn = _sqlite3.connect(str(db_path))
     try:
         def _count(sql: str) -> int:
             try:
