@@ -914,9 +914,16 @@ _PHASE_PROMPTS = [
 def cluster_v2(scan_db_path, *, n_clusters: int = 200,
                model_name: str = "ViT-L-14",
                pretrained: str = "openai",
-               device: str | None = None) -> dict:
-    """Re-cluster all CLIP embeddings into N clusters and auto-name each
-    by matching its centroid against a small set of phase prompts."""
+               device: str | None = None,
+               path_filter: list[str] | None = None) -> dict:
+    """Re-cluster CLIP embeddings into N clusters and auto-name each
+    by matching its centroid against a small set of phase prompts.
+
+    If ``path_filter`` is given, only the embeddings for those paths are
+    clustered; existing rows for non-survivor paths in image_cluster_v2
+    are preserved (older runs' cluster IDs stay valid for unrelated
+    paths). This keeps stage-5 diversity-bonus consistent with the
+    operator's currently-restricted survivor set."""
     try:
         import numpy as np
         from sklearn.cluster import MiniBatchKMeans
@@ -925,12 +932,21 @@ def cluster_v2(scan_db_path, *, n_clusters: int = 200,
         return {"error": f"missing dependency: {e}"}
 
     conn = _open_v2(scan_db_path)
-    rows = conn.execute(
-        "SELECT path, embedding, dim FROM image_clip"
-    ).fetchall()
+    if path_filter:
+        ph = ",".join("?" * len(path_filter))
+        rows = conn.execute(
+            f"SELECT path, embedding, dim FROM image_clip "
+            f"WHERE path IN ({ph})",
+            path_filter,
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT path, embedding, dim FROM image_clip"
+        ).fetchall()
     if not rows:
         conn.close()
-        return {"error": "no image_clip rows"}
+        return {"error": "no image_clip rows for the selected scope — "
+                          "run stage 2 (CLIP embed) first"}
     paths = [r[0] for r in rows]
     X = np.stack([
         np.frombuffer(r[1], dtype=np.float32).reshape(r[2]) for r in rows
@@ -958,14 +974,24 @@ def cluster_v2(scan_db_path, *, n_clusters: int = 200,
     best_idx = sims.argmax(axis=1)
     cluster_label = [_PHASE_PROMPTS[i][1] for i in best_idx]
 
-    # Insert
-    conn.execute("DELETE FROM image_cluster_v2")
+    # Insert — surgical when path_filter is set so we don't blow away
+    # cluster_id assignments for paths outside this run's scope.
+    if path_filter:
+        ph = ",".join("?" * len(path_filter))
+        conn.execute(
+            f"DELETE FROM image_cluster_v2 WHERE path IN ({ph})",
+            path_filter,
+        )
+    else:
+        conn.execute("DELETE FROM image_cluster_v2")
     data = [(p, int(l), cluster_label[int(l)]) for p, l in zip(paths, labels)]
     conn.executemany(
         "INSERT INTO image_cluster_v2 VALUES (?, ?, ?)", data)
     conn.commit()
     conn.close()
-    return {"n_clusters": int(n_clusters), "n_images": len(paths),
+    return {"n_clusters": int(n_clusters),
+            "n_images": len(paths),
+            "scoped": bool(path_filter),
             "label_distribution": dict(zip(*np.unique(cluster_label,
                                                       return_counts=True)))}
 

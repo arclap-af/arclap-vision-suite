@@ -3120,7 +3120,8 @@ def picker_stage4(job_id: str, req: PickerStageReq):
 def picker_stage4_cluster(job_id: str, req: PickerStageReq):
     db_path = _scan_db_for_job(job_id)
     return picker_core.cluster_v2(db_path, n_clusters=req.n_clusters,
-                                   model_name=req.clip_model)
+                                   model_name=req.clip_model,
+                                   path_filter=req.path_filter)
 
 
 class PickerRunReq(BaseModel):

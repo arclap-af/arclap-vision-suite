@@ -990,16 +990,17 @@
 
   // Pull the filter survivor list (after What-to-keep rules + sample check)
   // so the picker only operates on the filtered subset, not the full scan.
+  //
+  // Returns:
+  //   Array<string>  - the survivor path list (length >= 1)
+  //   null           - the user explicitly turned restriction off
+  //   {empty: true}  - the rule matches ZERO images. Caller MUST refuse
+  //                    rather than silently fall back to all images.
   async function _ppGetSurvivors(jobId) {
     if (!jobId) return null;
     const useSurvivors = ($('pp-use-survivors') || {}).checked;
     if (useSurvivors === false) return null;
 
-    // The rule built in Step 4 ("What to keep") is owned by app.js.
-    // It exposes window.currentRule(). If the user hasn't built any rule
-    // yet, currentRule() returns an empty-ish object that matches all
-    // images server-side — which IS the right semantic ("no filter →
-    // everything survives").
     let rule = {};
     try { if (typeof window.currentRule === 'function') rule = window.currentRule(); }
     catch(_e) { rule = {}; }
@@ -1013,7 +1014,8 @@
       if (!res.ok) return null;
       const data = await res.json();
       const paths = data.paths || [];
-      return paths.length ? paths : null;
+      if (paths.length === 0) return { empty: true };
+      return paths;
     } catch(e) { return null; }
   }
 
@@ -1033,6 +1035,54 @@
       }
     } catch(e){}
     if ($('pp-refresh-scans')) $('pp-refresh-scans').onclick = () => loadPipelinePage(_ppActiveScan);
+
+    // Live "X / Y survivors" indicator in the header so the operator
+    // knows exactly what scope every stage will use.
+    async function _refreshScopeSummary() {
+      const el = $('pp-scope-summary');
+      if (!el || !_ppActiveScan) return;
+      const useSurvivors = ($('pp-use-survivors') || {}).checked;
+      let totalImages = 0;
+      try {
+        const p = await (await fetch(`/api/picker/${_ppActiveScan}/progress`)).json();
+        totalImages = p.total || 0;
+      } catch(_e) {}
+      if (!useSurvivors) {
+        el.textContent = `Scope: all ${totalImages.toLocaleString()} scanned images`;
+        el.classList.remove('warn'); el.classList.remove('ok');
+        return;
+      }
+      const surv = await _ppGetSurvivors(_ppActiveScan);
+      if (surv && surv.empty) {
+        el.textContent = `Scope: 0 / ${totalImages.toLocaleString()} survivors — your filter matches no images`;
+        el.classList.remove('ok'); el.classList.add('warn');
+      } else if (Array.isArray(surv) && surv.length) {
+        el.textContent = `Scope: ${surv.length.toLocaleString()} / ${totalImages.toLocaleString()} survivors`;
+        el.classList.remove('warn'); el.classList.add('ok');
+      } else {
+        el.textContent = `Scope: all ${totalImages.toLocaleString()} images (no rule yet)`;
+        el.classList.remove('warn'); el.classList.remove('ok');
+      }
+    }
+    if ($('pp-use-survivors')) {
+      $('pp-use-survivors').addEventListener('change', _refreshScopeSummary);
+    }
+    // Refresh after the scan-pick or rule changes — small debounce for typing.
+    let _scopeTimer = null;
+    document.addEventListener('input', (e) => {
+      if (e.target.closest && e.target.closest('#rule-class-checks, #filter-conf, .filter-grid')) {
+        clearTimeout(_scopeTimer);
+        _scopeTimer = setTimeout(_refreshScopeSummary, 350);
+      }
+    });
+    document.addEventListener('change', (e) => {
+      if (e.target.closest && e.target.closest('#rule-class-checks, .filter-grid, #filter-conf')) {
+        clearTimeout(_scopeTimer);
+        _scopeTimer = setTimeout(_refreshScopeSummary, 200);
+      }
+    });
+    // Initial paint
+    setTimeout(_refreshScopeSummary, 50);
 
     // ─── Live progress polling helper ──────────────────────────────
     // While a stage is running, poll /api/picker/<job>/progress every
@@ -1075,6 +1125,24 @@
       if (txt && finalPct === 100) txt.textContent = 'done';
     }
 
+    // Helper: normalise the survivor result + reject the empty case.
+    // Returns either:
+    //   {pathFilter: [...] | null, suffix: string}
+    //   throws Error if survivors is the empty-match sentinel
+    function _resolveScope(survivors) {
+      if (survivors && survivors.empty) {
+        throw new Error(
+          'Your "What to keep" rule matches 0 images. Go back to step 4 ' +
+          'and loosen the filter, or uncheck "Restrict to filtered ' +
+          'survivors" to run on the full scan.');
+      }
+      const pathFilter = (survivors && survivors.length) ? survivors : null;
+      const suffix = pathFilter
+        ? ` · restricted to ${pathFilter.length} survivors`
+        : ' · all images (no filter)';
+      return { pathFilter, suffix };
+    }
+
     const stage = (n, ep) => {
       const btn = $(`pp-s${n}-run`);
       if (!btn) return;
@@ -1086,11 +1154,12 @@
         startProgress(n);
         try {
           const survivors = await _ppGetSurvivors(_ppActiveScan);
+          const scope = _resolveScope(survivors);
           const body = {
             model_path: $('pp-cag-model').value || 'yolov8n.pt',
             clip_model: $('pp-clip').value || 'ViT-L-14',
             n_clusters: 200,
-            path_filter: survivors,
+            path_filter: scope.pathFilter,
           };
           const res = await fetch(`/api/picker/${_ppActiveScan}/${ep}`, {
             method: 'POST', headers: {'Content-Type':'application/json'},
@@ -1098,8 +1167,7 @@
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
-          const survSuffix = survivors ? ` · restricted to ${survivors.length} survivors` : ' · all images';
-          r.textContent = JSON.stringify(data) + survSuffix;
+          r.textContent = JSON.stringify(data) + scope.suffix;
         } catch(err) { r.textContent = 'ERROR: ' + err.message; }
         finally { stopProgress(n); btn.disabled = false; }
       };
@@ -1118,7 +1186,13 @@
         startProgress(4);
         try {
           const survivors = await _ppGetSurvivors(_ppActiveScan);
-          const body = { model_path: $('pp-cag-model').value, clip_model: $('pp-clip').value, n_clusters: 200, path_filter: survivors };
+          const scope = _resolveScope(survivors);
+          const body = {
+            model_path: $('pp-cag-model').value,
+            clip_model: $('pp-clip').value,
+            n_clusters: 200,
+            path_filter: scope.pathFilter,
+          };
           const a = await (await fetch(`/api/picker/${_ppActiveScan}/stage4-need`, {
             method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
           })).json();
@@ -1126,9 +1200,10 @@
           const b = await (await fetch(`/api/picker/${_ppActiveScan}/stage4-cluster`, {
             method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
           })).json();
-          const survSuffix = survivors ? ` · restricted to ${survivors.length} survivors` : ' · all images';
-          r.textContent = 'need: ' + JSON.stringify(a) + ' · cluster: ' + JSON.stringify(b) + survSuffix;
-        } catch(e){ r.textContent = 'ERROR: ' + e; }
+          r.textContent = 'need: ' + JSON.stringify(a)
+                         + ' · cluster: ' + JSON.stringify(b)
+                         + scope.suffix;
+        } catch(e){ r.textContent = 'ERROR: ' + (e.message || e); }
         finally { stopProgress(4); btn.disabled = false; }
       };
     }
@@ -1158,6 +1233,7 @@
         r.textContent = 'running per-class quota picker…';
         try {
           const survivors = await _ppGetSurvivors(_ppActiveScan);
+          const scope = _resolveScope(survivors);
           const body = {
             per_class_target: parseInt($('pp-target').value) || 250,
             weights: {
@@ -1168,7 +1244,7 @@
             },
             need_threshold: parseFloat($('pp-need-thr').value) || 0.18,
             uncertainty_lo: 0.20, uncertainty_hi: 0.60,
-            path_filter: survivors,
+            path_filter: scope.pathFilter,
           };
           const res = await fetch(`/api/picker/${_ppActiveScan}/run`, {
             method: 'POST', headers: {'Content-Type':'application/json'},
@@ -1179,10 +1255,10 @@
           _ppActiveRun = data.run_id;
           _ppPicks = data.picks || [];
           const counts = data.per_class_counts || {};
-          r.textContent = `picked ${data.n_picked} · run_id ${data.run_id} · classes covered ${Object.keys(counts).length}/40`;
+          r.textContent = `picked ${data.n_picked} · run_id ${data.run_id} · classes covered ${Object.keys(counts).length}/40${scope.suffix}`;
           // Pre-load curator with first 100
           await loadCuratorPicks();
-        } catch(e){ r.textContent = 'ERROR: ' + e.message; }
+        } catch(e){ r.textContent = 'ERROR: ' + (e.message || e); }
         finally { btn.disabled = false; }
       };
     }
