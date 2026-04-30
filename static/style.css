@@ -3402,6 +3402,73 @@ input[type="number"].input::-webkit-outer-spin-button {
    ============================================================================= */
 
 /* Per-step explainer card — sits under each step's card-header */
+/* ════════════════════════════════════════════════════════════════════
+   CLIP refinement live progress (Filter wizard step 4 · section D)
+   ════════════════════════════════════════════════════════════════════ */
+.clip-refine-progress {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-brand);
+  border-radius: var(--radius-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.clip-refine-headline {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.clip-refine-headline strong {
+  font-size: 13.5px;
+  color: var(--color-text-strong);
+  font-weight: 600;
+}
+.clip-refine-bar {
+  height: 8px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  position: relative;
+}
+.clip-refine-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-brand), var(--arc-red-700));
+  border-radius: var(--radius-pill);
+  transition: width var(--dur-2) var(--ease-out);
+  box-shadow: 0 0 8px -2px rgba(229, 33, 60, 0.55);
+  width: 0;
+}
+.clip-refine-meta {
+  display: flex;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+}
+.clip-refine-meta .mono { color: var(--color-text-strong); }
+.clip-refine-meta .mono.muted { color: var(--color-text-muted); }
+.clip-refine-log {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-1);
+  padding: var(--space-2) var(--space-3);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 60px;
+  overflow-y: auto;
+}
+
 /* Legacy step-explainer — kept for back-compat, restyled to spec
    info-banner pattern. New panes should use .info-banner directly. */
 .step-explainer {

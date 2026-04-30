@@ -3431,17 +3431,52 @@ def filter_render_video(job_id: str, req: VideoRenderRequest):
     }
 
 
+# Track active CLIP refinement subprocesses so the UI can poll progress.
+# Keyed by job_id; values: {pid, target, baseline, started_at, only_uncertain,
+# done, finished_at, last_log}.
+_clip_refine_jobs: dict[str, dict] = {}
+
+
 @app.post("/api/filter/{job_id}/refine-clip")
 def filter_refine_clip(job_id: str, only_uncertain: bool = True):
     """Launch the CLIP refinement pass in the background. Returns once
-    the subprocess is started; the user polls the conditions endpoint to
-    see refined tags appear (`source` = 'clip')."""
+    the subprocess is started; the UI polls /refine-clip/progress to
+    render a real progress bar."""
     j = db.get_job(job_id)
     if not j:
         raise HTTPException(404, "Filter job not found")
     db_path = j.output_path
     if not Path(db_path).is_file():
         raise HTTPException(400, "Scan DB missing — run the scan first.")
+
+    # Pre-compute the target count + current baseline so the progress
+    # endpoint can report meaningful numbers from the very first poll.
+    target = 0
+    baseline = 0
+    try:
+        conn = _sqlite3.connect(db_path)
+        try:
+            if only_uncertain:
+                # Same logic as filter_index.py refine_with_clip:
+                # frames whose heuristic max-confidence < 0.85 (or have
+                # no heuristic verdict at all) get re-checked.
+                target = conn.execute(
+                    "SELECT COUNT(*) FROM images i "
+                    "WHERE i.path NOT IN ("
+                    "  SELECT path FROM conditions "
+                    "  WHERE source = 'heuristic' "
+                    "  GROUP BY path HAVING MAX(confidence) >= 0.85)"
+                ).fetchone()[0]
+            else:
+                target = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+            baseline = conn.execute(
+                "SELECT COUNT(DISTINCT path) FROM conditions WHERE source='clip'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
     cmd = [
         PYTHON, "filter_index.py", "refine-clip",
         "--db", db_path,
@@ -3454,15 +3489,91 @@ def filter_refine_clip(job_id: str, only_uncertain: bool = True):
         text=True,
     )
 
+    job_state = {
+        "pid": proc.pid,
+        "db_path": db_path,
+        "target": int(target),
+        "baseline": int(baseline),
+        "started_at": time.time(),
+        "finished_at": None,
+        "only_uncertain": only_uncertain,
+        "last_log": "starting…",
+        "exit_code": None,
+    }
+    _clip_refine_jobs[job_id] = job_state
+
     def _drain():
+        last_line = ""
         try:
-            for _ in proc.stdout:
-                pass
+            for raw in proc.stdout:
+                line = (raw or "").rstrip()
+                if line:
+                    last_line = line
+                    job_state["last_log"] = line[-180:]
         finally:
             proc.wait()
+            job_state["finished_at"] = time.time()
+            job_state["exit_code"] = proc.returncode
+            if last_line:
+                job_state["last_log"] = last_line[-180:]
     threading.Thread(target=_drain, daemon=True).start()
 
-    return {"ok": True, "pid": proc.pid, "command_argv": cmd}
+    return {
+        "ok": True, "pid": proc.pid,
+        "target": int(target),
+        "baseline": int(baseline),
+        "command_argv": cmd,
+    }
+
+
+@app.get("/api/filter/{job_id}/refine-clip/progress")
+def filter_refine_clip_progress(job_id: str):
+    """Live progress for an in-flight CLIP refinement run. Returns
+    either {running: false} when nothing is tracked, or a full progress
+    dict with done / target / percent / rate / ETA."""
+    info = _clip_refine_jobs.get(job_id)
+    if not info:
+        return {"running": False, "done": 0, "target": 0, "percent": 0,
+                "started": False}
+
+    # Live count of CLIP rows in the conditions table.
+    current = 0
+    try:
+        conn = _sqlite3.connect(info["db_path"])
+        try:
+            current = conn.execute(
+                "SELECT COUNT(DISTINCT path) FROM conditions WHERE source='clip'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+    done = max(0, int(current) - int(info["baseline"]))
+    target = max(1, int(info["target"]))
+    pct = round(100.0 * done / target, 1)
+    elapsed = max(0.0, time.time() - info["started_at"])
+    rate = done / max(0.5, elapsed)  # img/s, smoothed by 0.5s floor
+    eta = ((target - done) / rate) if rate > 0 else None
+
+    finished = info.get("finished_at") is not None
+    running = (not finished) and (done < target)
+
+    return {
+        "started": True,
+        "running": bool(running),
+        "finished": bool(finished),
+        "exit_code": info.get("exit_code"),
+        "done": int(done),
+        "target": int(info["target"]),
+        "percent": float(pct),
+        "elapsed_seconds": int(elapsed),
+        "rate_per_sec": round(float(rate), 2),
+        "eta_seconds": int(eta) if eta is not None else None,
+        "pid": info["pid"],
+        "only_uncertain": info["only_uncertain"],
+        "last_log": info.get("last_log", ""),
+    }
 
 
 @app.get("/api/filter/{job_id}/conditions")

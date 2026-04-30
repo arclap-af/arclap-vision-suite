@@ -2572,6 +2572,17 @@ async function submitFrameFeedback(path, verdict, btn) {
   }
 }
 
+function _fmtETA(sec) {
+  if (sec == null) return '—';
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60), mm = m % 60;
+  return `${h}h ${mm}m`;
+}
+
+let _clipRefinePoll = null;
+
 async function triggerClipRefinement() {
   if (!activeFilterScanId) { toast('Open a scan first', 'error'); return; }
   const onlyUncertain = $('clip-only-uncertain') ? $('clip-only-uncertain').checked : true;
@@ -2579,7 +2590,25 @@ async function triggerClipRefinement() {
   const status = $('clip-refine-status');
   btn.disabled = true;
   btn.classList.add('loading');
-  status.textContent = 'Starting CLIP refinement (first run downloads ~890 MB)…';
+
+  // Render the progress shell
+  status.innerHTML = `
+    <div class="clip-refine-progress">
+      <div class="clip-refine-headline">
+        <strong id="cr-headline">Starting CLIP refinement…</strong>
+        <span class="muted small" id="cr-eta">first run downloads ~890 MB · be patient</span>
+      </div>
+      <div class="clip-refine-bar"><span class="clip-refine-fill" style="width:0%"></span></div>
+      <div class="clip-refine-meta">
+        <span id="cr-counts" class="mono">0 / 0</span>
+        <span id="cr-rate" class="mono muted">— img/s</span>
+        <span id="cr-elapsed" class="mono muted">elapsed —</span>
+      </div>
+      <div class="clip-refine-log mono small" id="cr-log">starting…</div>
+    </div>`;
+
+  if (_clipRefinePoll) { clearInterval(_clipRefinePoll); _clipRefinePoll = null; }
+
   try {
     const r = await fetch(`/api/filter/${activeFilterScanId}/refine-clip?only_uncertain=${onlyUncertain}`, {
       method: 'POST',
@@ -2588,19 +2617,70 @@ async function triggerClipRefinement() {
       const err = await r.json().catch(() => ({}));
       throw new Error(err.detail || `HTTP ${r.status}`);
     }
-    status.textContent = 'CLIP refinement running in the background. Reload Section D in a few minutes to see refined tags.';
+    const startData = await r.json().catch(() => ({}));
+    const targetGuess = startData.target || 0;
+
+    const headlineEl = document.getElementById('cr-headline');
+    const etaEl = document.getElementById('cr-eta');
+    const countsEl = document.getElementById('cr-counts');
+    const rateEl = document.getElementById('cr-rate');
+    const elapsedEl = document.getElementById('cr-elapsed');
+    const logEl = document.getElementById('cr-log');
+    const fillEl = status.querySelector('.clip-refine-fill');
+
+    if (countsEl && targetGuess) countsEl.textContent = `0 / ${targetGuess.toLocaleString()}`;
+
     toast('CLIP refinement started', 'success');
-    // Periodically refresh the conditions list so the user sees CLIP rows arrive
-    let polls = 0;
-    const interval = setInterval(async () => {
-      polls++;
-      await loadConditionMeta(activeFilterScanId);
-      if (polls > 60) clearInterval(interval);  // give up after ~10 min of polling
-    }, 10000);
+
+    let stableTicks = 0;
+    let lastDone = 0;
+    _clipRefinePoll = setInterval(async () => {
+      let p;
+      try {
+        p = await (await fetch(`/api/filter/${activeFilterScanId}/refine-clip/progress`)).json();
+      } catch(_e) { return; }
+      if (!p || !p.started) return;
+      // Update bar
+      if (fillEl) fillEl.style.width = `${Math.min(100, p.percent || 0)}%`;
+      if (countsEl) countsEl.textContent = `${(p.done || 0).toLocaleString()} / ${(p.target || 0).toLocaleString()} (${p.percent || 0}%)`;
+      if (rateEl) rateEl.textContent = `${p.rate_per_sec || 0} img/s`;
+      if (elapsedEl) elapsedEl.textContent = `elapsed ${_fmtETA(p.elapsed_seconds)}${p.eta_seconds != null ? ' · ETA ' + _fmtETA(p.eta_seconds) : ''}`;
+      if (logEl && p.last_log) logEl.textContent = p.last_log;
+
+      if (p.running) {
+        if (p.done > 0) {
+          if (headlineEl) headlineEl.textContent = `Refining frames with CLIP (ViT-L-14 on GPU)…`;
+        } else {
+          if (headlineEl) headlineEl.textContent = `Loading CLIP weights (one-time ~890 MB download on first run)…`;
+        }
+      }
+
+      // Detect natural completion
+      if (p.finished || (!p.running && p.done >= p.target && p.target > 0)) {
+        clearInterval(_clipRefinePoll); _clipRefinePoll = null;
+        if (fillEl) fillEl.style.width = '100%';
+        if (headlineEl) headlineEl.textContent = `Done — ${p.done.toLocaleString()} frames refined.`;
+        toast('CLIP refinement complete', 'success');
+        // Refresh the conditions section so the new tags surface
+        await loadConditionMeta(activeFilterScanId);
+        btn.disabled = false; btn.classList.remove('loading');
+        return;
+      }
+      // Stall detection — if no frames written for ~30s and we never started,
+      // tell the user the model download is in progress.
+      if (p.done === lastDone) {
+        stableTicks++;
+        if (stableTicks > 30 && p.done === 0) {
+          if (headlineEl) headlineEl.textContent = `Still loading CLIP weights — first run downloads ~890 MB. This takes a few minutes…`;
+        }
+      } else {
+        stableTicks = 0;
+        lastDone = p.done;
+      }
+    }, 1000);
   } catch (e) {
     status.textContent = '';
     toast('CLIP refinement failed to start: ' + e.message, 'error');
-  } finally {
     btn.disabled = false;
     btn.classList.remove('loading');
   }
