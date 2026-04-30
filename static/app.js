@@ -1767,6 +1767,14 @@ if ($('btn-pick-continue')) {
   // Step 6 → Step 7 (Save)
   $('btn-pick-continue').addEventListener('click', () => showFilterStep(7));
 }
+if ($('btn-pick-skip')) {
+  // Bottom of step 6 — Skip Smart pick straight to Save
+  $('btn-pick-skip').addEventListener('click', () => showFilterStep(7));
+}
+if ($('btn-pick-skip-top')) {
+  // Top-right of step 6 — same skip target
+  $('btn-pick-skip-top').addEventListener('click', () => showFilterStep(7));
+}
 
 async function populateFilterModelPicker() {
   const optgroup = $('filter-model-mine');

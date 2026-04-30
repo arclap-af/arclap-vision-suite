@@ -1398,9 +1398,19 @@
 
   <!-- ============= STEP 6: Smart Annotation Picker (CSI-Annotation-v3) ============= -->
   <section class="card wiz-pane hidden" data-pane="6">
-    <div class="card-header">
-      <h2><span class="step-badge">6</span> Smart annotation pick</h2>
-      <p>Pick the best subset of frames from your filtered survivors for human annotation. Six stages: pHash dedup → CLIP embed → class-agnostic detect → class-need + clustering → per-class quota → curator. Output: CVAT-ready zip + benchmark holdout zip + manifest.json.</p>
+    <div class="card-header card-header-row">
+      <div>
+        <h2><span class="step-badge">6</span> Smart annotation pick</h2>
+        <p>Pick the best subset of frames from your filtered survivors for human annotation. Six stages: pHash dedup → CLIP embed → class-agnostic detect → class-need + clustering → per-class quota → curator. Output: CVAT-ready zip + benchmark holdout zip + manifest.json.</p>
+      </div>
+      <button class="btn btn-ghost btn-small" id="btn-pick-skip-top" type="button"
+              title="Skip the smart pick and jump directly to Save">
+        Skip this step →
+      </button>
+    </div>
+
+    <div class="info-banner" style="margin:10px 0 14px">
+      <span><strong>Optional:</strong> the smart pick is for curating a training set. If you just want to keep the filtered survivors as-is, click <strong>Skip this step</strong> in the top-right and go straight to Save.</span>
     </div>
 
     <div class="step-explainer">
@@ -1527,7 +1537,8 @@
     </div>
 
     <div class="actions" style="margin-top:18px">
-      <button class="btn btn-secondary btn-lg" id="btn-pick-continue">Continue → Save filtered set</button>
+      <button class="btn btn-primary btn-lg" id="btn-pick-continue">Continue → Save filtered set</button>
+      <button class="btn btn-ghost btn-lg" id="btn-pick-skip" type="button">Skip Smart pick → Save</button>
     </div>
   </section>
 
