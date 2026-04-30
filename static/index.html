@@ -1687,6 +1687,16 @@
           <label class="checkbox-row" title="Preview face-blur on the thumbnails so you can verify export anonymisation (Tier 3 #9)">
             <input id="pp-preview-blur" type="checkbox"/> Preview face blur
           </label>
+          <select id="pp-curator-limit" class="input" style="width:130px"
+                  title="How many picks to load into the grid. Higher = more to scroll, slower to render (~1s per 1000 cards). Persists across sessions.">
+            <option value="500" selected>Load: 500</option>
+            <option value="1000">Load: 1,000</option>
+            <option value="2500">Load: 2,500</option>
+            <option value="5000">Load: 5,000</option>
+            <option value="10000">Load: 10,000</option>
+            <option value="20000">Load: 20,000</option>
+            <option value="100000">Load: all</option>
+          </select>
           <button class="btn btn-secondary btn-small" id="pp-curator-load">Load picks</button>
           <button class="btn btn-ghost btn-small" id="pp-undo" type="button" title="Undo last action (Ctrl+Z)" disabled>↶ Undo</button>
           <label style="display:flex;align-items:center;gap:6px;font-size:12px">
@@ -3656,7 +3666,7 @@ _data/util_report_schedules.json       ← weekly PDF schedules</pre>
   </div>
 </div>
 
-<script src="/static/app.js?v=2026-04-30-g-curatorf"></script>
-<script src="/static/shell-v2.js?v=2026-04-30-g-curatorf"></script>
+<script src="/static/app.js?v=2026-04-30-h-limit"></script>
+<script src="/static/shell-v2.js?v=2026-04-30-h-limit"></script>
 </body>
 </html>

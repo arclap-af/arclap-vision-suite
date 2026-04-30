@@ -1787,6 +1787,17 @@
     $('pp-show-bboxes').dataset.wired = '1';
     $('pp-show-bboxes').addEventListener('change', loadCuratorPicks);
   }
+  // Limit dropdown — auto-reload on change so the operator doesn't have
+  // to click "Load picks" twice. Persisted to localStorage in
+  // loadCuratorPicks() so the choice survives across sessions.
+  if ($('pp-curator-limit') && !$('pp-curator-limit').dataset.wired) {
+    $('pp-curator-limit').dataset.wired = '1';
+    // Hydrate the dropdown from localStorage on first wire
+    const saved = localStorage.getItem('pp.curator.limit');
+    if (saved) $('pp-curator-limit').value = saved;
+    $('pp-curator-limit').dataset.hydrated = '1';
+    $('pp-curator-limit').addEventListener('change', () => loadCuratorPicks());
+  }
 
   // ─── Curator filter wiring (chips / sliders / shortcuts / reset) ──
   if ($('pp-filter-panel') && !$('pp-filter-panel').dataset.wired) {
@@ -2364,10 +2375,26 @@
     const cls = $('pp-curator-class').value;
     const sort = $('pp-curator-sort') ? $('pp-curator-sort').value : 'class_score';
     const showBboxes = $('pp-show-bboxes') ? $('pp-show-bboxes').checked : true;
+    // Operator-controlled batch size, persisted across sessions in
+    // localStorage. Default 500 keeps the original behaviour. Higher
+    // values pull more picks per fetch but slow down the grid render
+    // (~1s per 1000 cards).
+    const limitEl = $('pp-curator-limit');
+    let limit = 500;
+    if (limitEl) {
+      // Hydrate from localStorage on first call
+      const saved = localStorage.getItem('pp.curator.limit');
+      if (saved && !limitEl.dataset.hydrated) {
+        limitEl.value = saved;
+        limitEl.dataset.hydrated = '1';
+      }
+      limit = parseInt(limitEl.value) || 500;
+      localStorage.setItem('pp.curator.limit', String(limit));
+    }
     const url = new URL(`/api/picker/${_ppActiveScan}/runs/${_ppActiveRun}/picks`,
                         window.location.origin);
     url.searchParams.set('status', status);
-    url.searchParams.set('limit', '500');
+    url.searchParams.set('limit', String(limit));
     // Density sort isn't supported server-side; use client sort, request
     // server's default ordering instead.
     url.searchParams.set('sort', sort === 'density' ? 'class_score' : sort);
