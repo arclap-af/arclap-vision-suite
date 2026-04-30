@@ -3692,6 +3692,123 @@ def filter_frame_feedback(job_id: str, req: FrameFeedbackRequest):
         conn.close()
 
 
+class ConditionOverrideRequest(BaseModel):
+    """Per-frame manual override of a condition tag.
+
+    `path`            — the image path being judged
+    `original_tag`    — what the auto-tagger said (e.g. 'fog')
+    `verdict`         — 'wrong'   → write a manual row that excludes the
+                                    frame from `original_tag` (we record
+                                    'good' as the override so the frame
+                                    survives clean-only filters).
+                      — 'confirm' → write a manual row CONFIRMING the
+                                    auto-tag with confidence 1.0 (so the
+                                    operator's eyes pin it down).
+                      — 'reset'   → delete the manual row, falling back
+                                    to the heuristic / CLIP source.
+    """
+    path: str
+    original_tag: str
+    verdict: str = Field(..., pattern="^(wrong|confirm|reset)$")
+
+
+@app.post("/api/filter/{job_id}/condition-override")
+def filter_condition_override(job_id: str, req: ConditionOverrideRequest):
+    """Single-click misclassification flag for the condition-preview popup.
+
+    The popup lets the operator browse all frames the auto-tagger gave a
+    given tag (e.g. all 339 'fog' frames) and click 'Wrong' / 'Confirm'
+    on the obvious mistakes. Writes a row to the conditions table with
+    `source='manual'` so source-priority resolution picks it over the
+    heuristic / CLIP guess.
+
+    Returns the post-write state so the UI can update the row badge.
+    """
+    _, db_path = _filter_db(job_id)
+    conn = _sqlite3.connect(db_path)
+    try:
+        existing = conn.execute(
+            "SELECT 1 FROM images WHERE path = ?", (req.path,)
+        ).fetchone()
+        if not existing:
+            raise HTTPException(404, f"Path not in this scan: {req.path}")
+
+        if req.verdict == "wrong":
+            # Override with 'good' — frame should survive clean-only filters.
+            # Also store the original tag in `reason` so we can audit later.
+            conn.execute(
+                "INSERT OR REPLACE INTO conditions(path, tag, confidence, source, reason) "
+                "VALUES (?, 'good', 1.0, 'manual', ?)",
+                (req.path, f"override:not-{req.original_tag}"),
+            )
+        elif req.verdict == "confirm":
+            # Confirm the auto-tag — same tag, confidence pinned at 1.0,
+            # source promoted to 'manual'.
+            conn.execute(
+                "INSERT OR REPLACE INTO conditions(path, tag, confidence, source, reason) "
+                "VALUES (?, ?, 1.0, 'manual', ?)",
+                (req.path, req.original_tag, f"confirm:{req.original_tag}"),
+            )
+        elif req.verdict == "reset":
+            # Drop the manual override; heuristic / CLIP take over again.
+            conn.execute(
+                "DELETE FROM conditions WHERE path = ? AND source = 'manual'",
+                (req.path,),
+            )
+
+        conn.commit()
+        # Return the current effective tag (highest source priority)
+        row = conn.execute(
+            "SELECT tag, source, confidence FROM conditions "
+            "WHERE path = ? "
+            "ORDER BY CASE source "
+            "  WHEN 'manual' THEN 4 WHEN 'clip' THEN 3 "
+            "  WHEN 'heuristic_smoothed' THEN 2 ELSE 1 END DESC, "
+            "confidence DESC LIMIT 1",
+            (req.path,),
+        ).fetchone()
+        return {
+            "ok": True,
+            "verdict": req.verdict,
+            "effective": ({"tag": row[0], "source": row[1],
+                            "confidence": row[2]} if row else None),
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/filter/{job_id}/tag-status")
+def filter_tag_status(job_id: str, paths: str):
+    """Bulk-fetch the manual-override status for a comma-separated list of
+    paths. Used by the condition-preview popup to colour each thumbnail
+    with its current verdict (none / confirmed / flagged-wrong)."""
+    _, db_path = _filter_db(job_id)
+    path_list = [p.strip() for p in paths.split("|") if p.strip()]
+    if not path_list:
+        return {"statuses": {}}
+    conn = _sqlite3.connect(db_path)
+    try:
+        ph = ",".join("?" * len(path_list))
+        rows = conn.execute(
+            f"SELECT path, tag, reason FROM conditions "
+            f"WHERE source = 'manual' AND path IN ({ph})",
+            path_list,
+        ).fetchall()
+        out = {}
+        for p, tag, reason in rows:
+            if reason and reason.startswith("override:not-"):
+                out[p] = {"verdict": "wrong",
+                          "original_tag": reason.split("override:not-", 1)[1]}
+            elif reason and reason.startswith("confirm:"):
+                out[p] = {"verdict": "confirm",
+                          "original_tag": reason.split("confirm:", 1)[1]}
+            else:
+                out[p] = {"verdict": "manual", "tag": tag}
+        return {"statuses": out}
+    finally:
+        conn.close()
+
+
 class VideoRenderRequest(FilterRule):
     """Full filter rule + video settings. Renders the matching frames as
     an MP4 timelapse. Same field shape as the export request so the same

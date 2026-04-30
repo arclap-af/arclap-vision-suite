@@ -1929,7 +1929,6 @@ async function loadFilterAnalyse(jobId) {
     loadPresetList();
     loadDateRange(jobId);
     loadConditionMeta(jobId);
-    loadPickerMeta(jobId);
     loadCameraBaselines(jobId);
     if ($('preset-select').value) loadPresetSummary(jobId, $('preset-select').value);
 
@@ -2370,362 +2369,250 @@ function renderConditionList(totalImages) {
           <span class="cond-row-count">${r.n_images.toLocaleString()}</span>
           <span class="muted small">(${pct}%)</span>
           <span class="cond-row-delta" data-tag="${escapeHtml(r.tag)}" title="${escapeHtml(sourceTip)}">→ ?</span>
+          <button type="button" class="cond-row-preview" title="Preview frames tagged ${escapeHtml(meta.label)}"
+            data-preview-kind="condition" data-preview-tag="${escapeHtml(r.tag)}"
+            data-preview-label="${escapeHtml(meta.label)}" data-preview-count="${r.n_images}">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+            </svg>
+          </button>
         </span>
       </label>`;
   }).join('');
 }
 
-// ─── Section E · Smart-picker insights ────────────────────────────────
-let _pickerMeta = null;     // last /picker-meta payload
-let _pickerTaxonomy = [];   // [{id, en, de}] for the class-need dropdown
-
-async function loadPickerMeta(jobId) {
-  if (!jobId) return;
-  try {
-    const m = await (await fetch(`/api/filter/${jobId}/picker-meta`)).json();
-    _pickerMeta = m;
-    const section = $('rule-section-e');
-    const banner = $('picker-meta-disabled-banner');
-    if (!section) return;
-    if (!m.available) {
-      section.hidden = false;
-      if (banner) banner.hidden = false;
-      // Hide all sub-cards (presets/cluster/density/classneed) by clearing
-      ['picker-presets-card', 'picker-livebar', 'picker-preview-strip'].forEach(id => {
-        const el = $(id); if (el) el.style.display = 'none';
-      });
-      return;
-    }
-    section.hidden = false;
-    if (banner) banner.hidden = true;
-    ['picker-presets-card', 'picker-livebar'].forEach(id => {
-      const el = $(id); if (el) el.style.display = '';
-    });
-
-    renderClusterList(m.clusters || []);
-    renderDensityHistogram(m.density_histogram || [], m.density_max || 30);
-    // Set density slider max to actual max + 1
-    const dmax = Math.max(30, (m.density_max || 0) + 1);
-    const minSl = $('picker-density-min'), maxSl = $('picker-density-max');
-    if (minSl) minSl.max = String(dmax);
-    if (maxSl) { maxSl.max = String(dmax); if (!maxSl.dataset.userSet) maxSl.value = String(dmax); }
-    const dMaxV = $('picker-density-max-v');
-    if (dMaxV && !maxSl?.dataset.userSet) dMaxV.textContent = String(dmax);
-
-    // Load taxonomy for class-need dropdowns (once)
-    if (!_pickerTaxonomy.length) {
-      try {
-        const t = await (await fetch(`/api/picker/taxonomy/${jobId}`)).json();
-        _pickerTaxonomy = (t.taxonomy || []).map(c => ({
-          id: c.id, en: c.en || `class ${c.id}`, de: c.de || ''
-        }));
-      } catch(_e) { _pickerTaxonomy = []; }
-    }
-  } catch(_e) {
-    _pickerMeta = null;
-  }
-}
-
-function renderClusterList(clusters) {
-  const el = $('picker-cluster-list');
-  if (!el) return;
-  if (!clusters.length) {
-    el.innerHTML = '<p class="muted small" style="padding:14px">No phase clusters yet — run Stage 4 of the Smart Picker.</p>';
-    return;
-  }
-  // Total for percent calculation
-  const total = clusters.reduce((s, c) => s + (c.n_images || 0), 0);
-  el.innerHTML = clusters.map(c => {
-    const pct = total ? (100 * c.n_images / total).toFixed(1) : '0.0';
-    const tone = _clusterTone(c.label);
-    return `<label class="rule-class-row cond-row" data-cluster-tag="${escapeHtml(c.label)}">
-      <input type="checkbox" data-cluster-label="${escapeHtml(c.label)}" />
-      <span class="cond-row-name">
-        <span class="cond-dot cond-dot-${tone}" aria-hidden="true"></span>
-        <span class="cond-row-label">${escapeHtml(c.label)}</span>
-      </span>
-      <span class="n cond-row-n">
-        <span class="cond-row-count">${c.n_images.toLocaleString()}</span>
-        <span class="muted small">(${pct}%)</span>
-        <span class="cond-row-delta picker-cluster-delta" data-cluster="${escapeHtml(c.label)}">→ ?</span>
-      </span>
-    </label>`;
-  }).join('');
-}
-
-function _clusterTone(label) {
-  const map = {
-    busy: 'busy', winter: 'snow', fog: 'fog', rain: 'rain',
-    overcast: 'cloud', dusk: 'dusk', dawn: 'dusk', empty: 'other',
-    foundation: 'soil', framing: 'wood', finishing: 'finish',
-    excavation: 'soil', 'summer dust': 'sun',
-  };
-  return map[String(label).toLowerCase()] || 'other';
-}
-
-function renderDensityHistogram(histogram, dmax) {
-  const wrap = $('picker-density-histogram');
-  if (!wrap) return;
-  if (!histogram.length) {
-    wrap.innerHTML = '<p class="muted small" style="padding:8px">No density data — run Stage 3 of the Smart Picker.</p>';
-    return;
-  }
-  const maxN = Math.max(1, ...histogram.map(b => b.n_images));
-  // 0..dmax bars, then 30+ overflow if present
-  wrap.innerHTML = histogram.map(b => {
-    const h = Math.max(2, Math.round(60 * b.n_images / maxN));
-    const lbl = b.is_overflow ? '30+' : String(b.bucket);
-    return `<div class="picker-density-bar" style="height:${h}px"
-      title="${b.n_images.toLocaleString()} frames with ${lbl} object${b.bucket === 1 ? '' : 's'}">
-      <span class="picker-density-bar-tip">${b.n_images.toLocaleString()}</span>
-      <span class="picker-density-bar-x">${lbl}</span>
-    </div>`;
-  }).join('');
-}
-
-function renderClassNeedRule(existing = null) {
-  const wrap = $('picker-classneed-rules');
-  if (!wrap) return;
-  const id = `cn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  const div = document.createElement('div');
-  div.className = 'picker-classneed-rule';
-  div.id = id;
-  const opts = _pickerTaxonomy.length
-    ? _pickerTaxonomy.map(c =>
-        `<option value="${c.id}">${escapeHtml(c.id + ' · ' + c.en)}</option>`).join('')
-    : '<option value="0">— no taxonomy loaded —</option>';
-  div.innerHTML = `
-    <select data-cn-class class="input">${opts}</select>
-    <label class="text-row" style="flex:1;min-width:200px">
-      <span>Min CLIP score</span>
-      <div class="slider-with-value">
-        <input type="range" data-cn-min min="0" max="100" step="1" value="20" />
-        <span class="slider-value" data-cn-min-v>0.20</span>
-      </div>
-    </label>
-    <button class="btn btn-ghost btn-small picker-classneed-remove" type="button" title="Remove this rule">✕</button>`;
-  wrap.appendChild(div);
-  if (existing) {
-    div.querySelector('[data-cn-class]').value = String(existing.class_id);
-    div.querySelector('[data-cn-min]').value = String(Math.round(existing.min_score * 100));
-    div.querySelector('[data-cn-min-v]').textContent = (existing.min_score || 0).toFixed(2);
-  }
-  div.querySelector('[data-cn-min]').addEventListener('input', (e) => {
-    div.querySelector('[data-cn-min-v]').textContent = (parseInt(e.target.value) / 100).toFixed(2);
-    scheduleRuleRecount();
-  });
-  div.querySelector('[data-cn-class]').addEventListener('change', scheduleRuleRecount);
-  div.querySelector('.picker-classneed-remove').addEventListener('click', () => {
-    div.remove();
-    scheduleRuleRecount();
-  });
-}
-
-// Goal-based presets — combos of the underlying filters.
-const PICKER_GOAL_PRESETS = {
-  annotation: {
-    label: 'Annotation candidates',
-    apply: () => {
-      _setMinSharpness(80);
-      _setMinDensity(5); _setMaxDensity(30);
-      _setClusterTicks(['busy', 'foundation', 'framing', 'excavation']);
-      _setClusterLogic('any');
-      _setCondTicks(['night', 'fog', 'blur', 'lens_drops', 'lens_smudge', 'overexposed']);
-      _setCondLogic('none');
-      _setRuleConf(30);
-    },
-  },
-  busy: {
-    label: 'Busy machine sites',
-    apply: () => {
-      _setMinDensity(13); _setMaxDensity(30);
-      _setClusterTicks(['busy', 'foundation', 'framing']);
-      _setClusterLogic('any');
-      _setCondTicks(['night', 'fog', 'blur', 'lens_drops', 'lens_smudge', 'overexposed']);
-      _setCondLogic('none');
-    },
-  },
-  edge: {
-    label: 'Edge cases the model misses',
-    apply: () => {
-      _setMinDensity(1); _setMaxDensity(30);
-      _setRuleConf(5);
-      _setCondTicks(['night', 'fog', 'blur', 'lens_drops', 'lens_smudge']);
-      _setCondLogic('none');
-      // class-need: pick a few rare classes if taxonomy available
-      _clearClassNeedRules();
-      const rare = (_pickerTaxonomy || []).slice(20, 25);
-      rare.forEach(c => renderClassNeedRule({ class_id: c.id, min_score: 0.22 }));
-    },
-  },
-  audit: {
-    label: 'Phase audit',
-    apply: () => {
-      _setHourRange(7, 19);
-      _setCondTicks(['night', 'fog', 'rain', 'blur', 'lens_drops', 'lens_smudge', 'overexposed']);
-      _setCondLogic('none');
-      _setClusterTicks([]);
-      _setMinDensity(0); _setMaxDensity(30);
-    },
-  },
-  hotspots: {
-    label: 'Equipment density hotspots',
-    apply: () => {
-      _setMinDensity(13); _setMaxDensity(30);
-      // Switch to top-N mode by default for hotspots
-      const topN = document.querySelector('input[name="picker-mode"][value="top_n"]');
-      if (topN) { topN.checked = true; topN.dispatchEvent(new Event('change', {bubbles: true})); }
-      _setScoreWeights({ density: 60, class_need: 0, uncertainty: 0, quality: 40 });
-    },
-  },
-  reset: {
-    label: 'Reset Section E',
-    apply: () => {
-      _setClusterTicks([]); _setClusterLogic('any');
-      _setMinDensity(0);
-      _setMaxDensity(_pickerMeta?.density_max ? _pickerMeta.density_max + 1 : 30);
-      _clearClassNeedRules();
-      const m = document.querySelector('input[name="picker-mode"][value="match"]');
-      if (m) { m.checked = true; m.dispatchEvent(new Event('change', {bubbles: true})); }
-    },
-  },
+// ════════════════════════════════════════════════════════════════════
+//  Tag-preview modal — opens when the operator clicks the 👁 button on
+//  a condition or cluster row. Shows actual frames so they can verify
+//  the auto-tagger and flag mistakes with one click.
+// ════════════════════════════════════════════════════════════════════
+const _tagPreview = {
+  open: false,
+  kind: null,        // 'condition' | 'cluster'
+  tag: null,         // canonical tag string ('fog', 'busy', etc.)
+  label: null,       // human-readable label
+  count: 0,          // total frames in scan with this tag
+  filter: 'all',    // 'all' | 'confirm' | 'wrong'
+  thumbs: [],       // [{path, thumb_url}]
+  statuses: {},     // {path: {verdict, original_tag}}
+  k: 48,             // how many to fetch per shuffle
 };
 
-function _setMinDensity(v) {
-  const s = $('picker-density-min'); if (!s) return;
-  s.value = String(v);
-  s.dataset.userSet = '1';
-  const lbl = $('picker-density-min-v'); if (lbl) lbl.textContent = String(v);
+function _tagPreviewBuildRule() {
+  // Build a FilterRule that filters to ONLY this tag (no other gates).
+  // For conditions: cond_logic='any', conditions=[tag]
+  // For clusters:   cluster_logic='any', clusters=[tag]
+  const rule = {
+    classes: [], logic: 'any', min_conf: 0.0, min_count: 1,
+    min_quality: 0.0, max_quality: 1.0,
+    min_brightness: 0, max_brightness: 255, min_sharpness: 0,
+    min_dets: 0, max_dets: 100000,
+    conditions: [], cond_logic: 'any',
+    clusters: [], cluster_logic: 'any',
+    min_n_objects: 0, max_n_objects: 100000,
+    class_need: [], mode: 'match',
+  };
+  if (_tagPreview.kind === 'condition') {
+    rule.conditions = [_tagPreview.tag];
+    rule.cond_logic = 'any';
+  } else if (_tagPreview.kind === 'cluster') {
+    rule.clusters = [_tagPreview.tag];
+    rule.cluster_logic = 'any';
+  }
+  return rule;
 }
-function _setMaxDensity(v) {
-  const s = $('picker-density-max'); if (!s) return;
-  s.value = String(v);
-  s.dataset.userSet = '1';
-  const lbl = $('picker-density-max-v'); if (lbl) lbl.textContent = String(v);
-}
-function _setClusterTicks(labels) {
-  document.querySelectorAll('#picker-cluster-list input').forEach(cb => {
-    cb.checked = labels.includes(cb.dataset.clusterLabel);
+
+async function openTagPreview(kind, tag, label, count) {
+  if (!activeFilterScanId) {
+    toast('Run a Filter scan first', 'warn');
+    return;
+  }
+  _tagPreview.open = true;
+  _tagPreview.kind = kind;
+  _tagPreview.tag = tag;
+  _tagPreview.label = label;
+  _tagPreview.count = parseInt(count) || 0;
+  _tagPreview.filter = 'all';
+  _tagPreview.thumbs = [];
+  _tagPreview.statuses = {};
+
+  const modal = $('tag-preview-modal');
+  const eyebrow = $('tag-preview-eyebrow');
+  const title = $('tag-preview-title');
+  const sub = $('tag-preview-sub');
+  if (eyebrow) eyebrow.textContent = kind === 'condition' ? 'Condition tag' : 'Phase cluster';
+  if (title) title.textContent = label;
+  if (sub) sub.textContent = `${_tagPreview.count.toLocaleString()} frames in this scan are tagged "${label}"`;
+  // Reset tabs
+  document.querySelectorAll('.tag-preview-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === 'all');
+    t.setAttribute('aria-selected', t.dataset.tab === 'all' ? 'true' : 'false');
   });
+  if (modal) modal.hidden = false;
+  document.body.classList.add('tag-preview-locked');
+  await _tagPreviewLoad();
 }
-function _setClusterLogic(v) {
-  const s = $('picker-cluster-logic'); if (s) s.value = v;
+
+function closeTagPreview() {
+  const modal = $('tag-preview-modal');
+  if (modal) modal.hidden = true;
+  document.body.classList.remove('tag-preview-locked');
+  _tagPreview.open = false;
 }
-function _setCondTicks(tags) { setConditionTicks(tags); }
-function _setCondLogic(v) { setConditionLogic(v); }
-function _setRuleConf(pct) {
-  const r = $('rule-conf'); if (!r) return;
-  r.value = String(pct);
-  const v = $('rule-conf-value'); if (v) v.textContent = (pct / 100).toFixed(2);
-}
-function _setMinSharpness(v) {
-  const r = $('rule-min-sharpness'); if (r) {
-    r.value = String(v);
-    const lbl = $('rule-min-sharpness-value'); if (lbl) lbl.textContent = String(v);
-  }
-}
-function _setHourRange(start, end) {
-  const s = $('rule-day-start'), e = $('rule-day-end');
-  if (s) s.value = String(start);
-  if (e) e.value = String(end);
-  if (typeof applyDailyWindowToHours === 'function') applyDailyWindowToHours();
-}
-function _clearClassNeedRules() {
-  const wrap = $('picker-classneed-rules');
-  if (wrap) wrap.innerHTML = '';
-}
-function _setScoreWeights(w) {
-  if (w.density != null) {
-    $('picker-w-density').value = String(w.density);
-    $('picker-w-density-v').textContent = String(w.density);
-  }
-  if (w.class_need != null) {
-    $('picker-w-classneed').value = String(w.class_need);
-    $('picker-w-classneed-v').textContent = String(w.class_need);
-  }
-  if (w.uncertainty != null) {
-    $('picker-w-uncertainty').value = String(w.uncertainty);
-    $('picker-w-uncertainty-v').textContent = String(w.uncertainty);
-  }
-  if (w.quality != null) {
-    $('picker-w-quality').value = String(w.quality);
-    $('picker-w-quality-v').textContent = String(w.quality);
+
+async function _tagPreviewLoad() {
+  const grid = $('tag-preview-grid');
+  if (grid) grid.innerHTML = '<p class="muted" style="padding:24px">Loading…</p>';
+  const rule = _tagPreviewBuildRule();
+  try {
+    const r = await fetch(
+      `/api/filter/${activeFilterScanId}/match-preview-thumbs?k=${_tagPreview.k}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(rule) });
+    if (!r.ok) throw new Error('preview-thumbs failed');
+    const d = await r.json();
+    _tagPreview.thumbs = d.thumbs || [];
+    if (!_tagPreview.thumbs.length) {
+      grid.innerHTML = '<p class="muted" style="padding:24px">No frames returned. The auto-tagger may have produced 0 examples for this tag.</p>';
+      _tagPreviewStats();
+      return;
+    }
+    // Bulk-fetch existing manual-override statuses
+    const paths = _tagPreview.thumbs.map(t => t.path).join('|');
+    try {
+      const sr = await fetch(
+        `/api/filter/${activeFilterScanId}/tag-status?paths=${encodeURIComponent(paths)}`);
+      if (sr.ok) _tagPreview.statuses = (await sr.json()).statuses || {};
+    } catch { _tagPreview.statuses = {}; }
+    _tagPreviewRender();
+  } catch (e) {
+    if (grid) grid.innerHTML = `<p class="muted" style="padding:24px">Could not load preview: ${escapeHtml(e.message)}</p>`;
   }
 }
 
-function _applyPickerGoal(name) {
-  const preset = PICKER_GOAL_PRESETS[name];
-  if (!preset) return;
-  preset.apply();
-  scheduleRuleRecount();
-  toast(`Goal preset: ${preset.label}`, 'success');
+function _tagPreviewRender() {
+  const grid = $('tag-preview-grid');
+  if (!grid) return;
+  // Apply tab filter
+  const visible = _tagPreview.thumbs.filter(t => {
+    const v = (_tagPreview.statuses[t.path] || {}).verdict;
+    if (_tagPreview.filter === 'confirm') return v === 'confirm';
+    if (_tagPreview.filter === 'wrong')   return v === 'wrong';
+    return true;  // 'all'
+  });
+  if (!visible.length) {
+    grid.innerHTML = `<p class="muted" style="padding:24px">No frames in this filter view.</p>`;
+    _tagPreviewStats();
+    return;
+  }
+  grid.innerHTML = visible.map(t => {
+    const st = _tagPreview.statuses[t.path] || {};
+    const v = st.verdict;
+    let badge = '';
+    if (v === 'confirm') badge = '<span class="tag-preview-badge ok">✓ confirmed</span>';
+    else if (v === 'wrong') badge = '<span class="tag-preview-badge bad">✗ flagged wrong</span>';
+    return `
+      <div class="tag-preview-tile" data-path="${escapeHtml(t.path)}">
+        <img src="${t.thumb_url}" alt="" loading="lazy"
+             onerror="this.style.background='var(--color-surface)';this.alt='(image unavailable)'" />
+        ${badge}
+        <div class="tag-preview-actions">
+          <button type="button" class="tag-preview-btn confirm" data-act="confirm"
+                  title="Confirm: this IS ${escapeHtml(_tagPreview.label)}">✓</button>
+          <button type="button" class="tag-preview-btn wrong" data-act="wrong"
+                  title="Wrong: this is NOT ${escapeHtml(_tagPreview.label)} (override to good)">✗</button>
+          <button type="button" class="tag-preview-btn reset" data-act="reset"
+                  title="Reset to auto-tagger">⟲</button>
+        </div>
+      </div>`;
+  }).join('');
+  _tagPreviewStats();
 }
 
-// Wire all Section E events once on document ready
+function _tagPreviewStats() {
+  const stats = $('tag-preview-stats');
+  if (!stats) return;
+  const total = _tagPreview.thumbs.length;
+  let nConfirm = 0, nWrong = 0;
+  for (const t of _tagPreview.thumbs) {
+    const v = (_tagPreview.statuses[t.path] || {}).verdict;
+    if (v === 'confirm') nConfirm++;
+    else if (v === 'wrong') nWrong++;
+  }
+  stats.textContent = `${total} sample${total === 1 ? '' : 's'} loaded · ${nConfirm} confirmed · ${nWrong} flagged wrong`;
+}
+
+async function _tagPreviewAct(path, verdict) {
+  if (!path || !verdict) return;
+  try {
+    const r = await fetch(
+      `/api/filter/${activeFilterScanId}/condition-override`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, original_tag: _tagPreview.tag, verdict }) });
+    if (!r.ok) throw new Error('override failed');
+    const d = await r.json();
+    if (verdict === 'reset') {
+      delete _tagPreview.statuses[path];
+    } else {
+      _tagPreview.statuses[path] = { verdict, original_tag: _tagPreview.tag };
+    }
+    _tagPreviewRender();
+    // Schedule a recount because manual overrides change source-priority
+    // resolution (the changed frame may now drop out of / enter the
+    // current rule's match set).
+    if (typeof scheduleRuleRecount === 'function') scheduleRuleRecount();
+  } catch (e) {
+    toast('Override failed: ' + e.message, 'error');
+  }
+}
+
+// Wire all delegations once
 document.addEventListener('DOMContentLoaded', () => {
-  // Goal presets
-  document.querySelectorAll('[data-goal]').forEach(b => {
-    b.addEventListener('click', () => _applyPickerGoal(b.dataset.goal));
+  // Eye-icon click → open modal
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.cond-row-preview');
+    if (btn) {
+      e.preventDefault();
+      e.stopPropagation();
+      openTagPreview(
+        btn.dataset.previewKind,
+        btn.dataset.previewTag,
+        btn.dataset.previewLabel,
+        parseInt(btn.dataset.previewCount) || 0,
+      );
+      return;
+    }
+    if (e.target.closest('[data-tag-preview-close]')) {
+      closeTagPreview();
+      return;
+    }
+    // Tile actions
+    const actBtn = e.target.closest('.tag-preview-btn');
+    if (actBtn) {
+      const tile = actBtn.closest('.tag-preview-tile');
+      if (tile) _tagPreviewAct(tile.dataset.path, actBtn.dataset.act);
+      return;
+    }
+    // Tab switch
+    const tab = e.target.closest('.tag-preview-tab');
+    if (tab) {
+      _tagPreview.filter = tab.dataset.tab;
+      document.querySelectorAll('.tag-preview-tab').forEach(t => {
+        t.classList.toggle('active', t === tab);
+        t.setAttribute('aria-selected', t === tab ? 'true' : 'false');
+      });
+      _tagPreviewRender();
+      return;
+    }
+    // Shuffle
+    if (e.target.closest('#tag-preview-shuffle')) {
+      _tagPreviewLoad();
+      return;
+    }
   });
-  // Density quick-buckets
-  document.querySelectorAll('[data-density]').forEach(b => {
-    b.addEventListener('click', () => {
-      const [lo, hi] = b.dataset.density.split(',').map(Number);
-      _setMinDensity(lo); _setMaxDensity(hi);
-      scheduleRuleRecount();
-    });
-  });
-  // Density slider sync
-  ['picker-density-min', 'picker-density-max'].forEach(id => {
-    const s = $(id); if (!s) return;
-    s.addEventListener('input', (e) => {
-      s.dataset.userSet = '1';
-      const lbl = $(`${id}-v`); if (lbl) lbl.textContent = e.target.value;
-      // Enforce min <= max
-      const mn = parseInt($('picker-density-min').value || '0');
-      const mx = parseInt($('picker-density-max').value || '30');
-      if (id === 'picker-density-min' && mn > mx) {
-        $('picker-density-max').value = String(mn);
-        $('picker-density-max-v').textContent = String(mn);
-      } else if (id === 'picker-density-max' && mx < mn) {
-        $('picker-density-min').value = String(mx);
-        $('picker-density-min-v').textContent = String(mx);
-      }
-      scheduleRuleRecount();
-    });
-  });
-  // Cluster checkboxes
-  const cl = $('picker-cluster-list');
-  if (cl) cl.addEventListener('change', scheduleRuleRecount);
-  const clLogic = $('picker-cluster-logic');
-  if (clLogic) clLogic.addEventListener('change', scheduleRuleRecount);
-  // Class-need
-  const cn = $('picker-add-classneed');
-  if (cn) cn.addEventListener('click', () => renderClassNeedRule());
-  // Mode toggle
-  document.querySelectorAll('input[name="picker-mode"]').forEach(r => {
-    r.addEventListener('change', () => {
-      const top = $('picker-topn-controls');
-      if (top) top.hidden = !document.querySelector('input[name="picker-mode"]:checked')
-                                   .value.startsWith('top');
-      scheduleRuleRecount();
-    });
-  });
-  // Top-N controls
-  ['picker-topn-n', 'picker-w-density', 'picker-w-classneed',
-   'picker-w-uncertainty', 'picker-w-quality'].forEach(id => {
-    const el = $(id); if (!el) return;
-    el.addEventListener('input', (e) => {
-      const lbl = $(`${id}-v`);
-      if (lbl) lbl.textContent = e.target.value;
-      scheduleRuleRecount();
-    });
-  });
-  // Jump to picker
-  const jump = $('btn-jump-to-picker');
-  if (jump) jump.addEventListener('click', () => {
-    document.querySelector('[data-page="swiss"]')?.click();
-    setTimeout(() => document.querySelector('[data-stab="pipeline"]')?.click(), 80);
+  // Esc closes modal
+  document.addEventListener('keydown', (e) => {
+    if (_tagPreview.open && e.key === 'Escape') closeTagPreview();
   });
 });
 
@@ -3189,33 +3076,6 @@ function currentRule() {
     .map(el => el.dataset.condTag);
   const condMin = $('cond-min-confidence');
 
-  // Section E · Smart-picker filters
-  const clusters = Array.from(
-    document.querySelectorAll('#picker-cluster-list input:checked')
-  ).map(el => el.dataset.clusterLabel);
-  const cluster_logic = $('picker-cluster-logic') ? $('picker-cluster-logic').value : 'any';
-  const min_n_objects = $('picker-density-min')
-    ? parseInt($('picker-density-min').value) : 0;
-  const max_n_objects = $('picker-density-max')
-    ? parseInt($('picker-density-max').value) : 100000;
-  const class_need = Array.from(
-    document.querySelectorAll('.picker-classneed-rule')
-  ).map(row => ({
-    class_id: parseInt(row.querySelector('[data-cn-class]').value) || 0,
-    min_score: parseFloat(row.querySelector('[data-cn-min]').value) || 0,
-  })).filter(r => r.class_id || r.min_score);
-
-  // Mode + score weights for Top-N
-  const modeRadio = document.querySelector('input[name="picker-mode"]:checked');
-  const mode = modeRadio ? modeRadio.value : 'match';
-  const top_n = parseInt($('picker-topn-n')?.value) || 500;
-  const score_weights = {
-    density: parseFloat($('picker-w-density')?.value || 25) / 100,
-    class_need: parseFloat($('picker-w-classneed')?.value || 35) / 100,
-    uncertainty: parseFloat($('picker-w-uncertainty')?.value || 20) / 100,
-    quality: parseFloat($('picker-w-quality')?.value || 20) / 100,
-  };
-
   return {
     classes,
     logic: $('rule-logic').value,
@@ -3230,15 +3090,6 @@ function currentRule() {
     conditions,
     cond_logic: $('cond-logic') ? $('cond-logic').value : 'any',
     cond_min_confidence: condMin ? parseInt(condMin.value) / 100 : 0,
-    // Section E
-    clusters,
-    cluster_logic,
-    min_n_objects,
-    max_n_objects: Math.max(min_n_objects, max_n_objects),
-    class_need,
-    mode,
-    top_n,
-    score_weights,
   };
 }
 
@@ -3320,205 +3171,9 @@ async function runRuleRecount() {
     // if the user toggled JUST that tag? Computed in parallel with a small
     // concurrency cap so we don't hammer the server.
     _scheduleDeltaPreview(rule, d.total);
-
-    // Section E · mirror live counter into picker-livebar (if section visible)
-    _updatePickerLivebar(rule, d.matches, d.total, pct);
-    // Section E · refresh thumbnail preview strip (debounced inside helper)
-    _schedulePickerPreviewStrip(rule);
-    // Section E · per-cluster delta preview (only if section is visible)
-    _schedulePickerClusterDelta(rule);
-    // Section E · if mode === top_n, run scoring endpoint to display the count
-    if (rule.mode === 'top_n') _scheduleTopNRecount(rule);
-    else _hideTopNHint();
   } catch (e) {
     $('rule-match-count').textContent = '?';
   }
-}
-
-// ─── Section E · live counter mirroring + delta + preview thumbs ────────
-let _lastPickerCount = null;
-function _updatePickerLivebar(rule, matches, total, pct) {
-  const sect = $('rule-section-e');
-  if (!sect || sect.hidden) return;
-  const lb     = $('picker-livebar');
-  const count  = $('picker-livebar-count');
-  const fill   = $('picker-livebar-fill');
-  const meta   = $('picker-livebar-meta');
-  const delta  = $('picker-livebar-delta');
-  if (count) count.textContent = `${matches.toLocaleString()} / ${total.toLocaleString()} match`;
-  if (meta)  meta.textContent  = `${pct.toFixed(1)}% of scan kept`;
-  if (fill)  fill.style.width  = pct.toFixed(1) + '%';
-  if (delta) {
-    if (_lastPickerCount == null || _lastPickerCount === matches) {
-      delta.textContent = '';
-      delta.classList.remove('up', 'down');
-    } else {
-      const diff = matches - _lastPickerCount;
-      delta.textContent = `${diff > 0 ? '+' : ''}${diff.toLocaleString()}`;
-      delta.classList.toggle('up', diff > 0);
-      delta.classList.toggle('down', diff < 0);
-    }
-  }
-  if (lb && _lastPickerCount != null && _lastPickerCount !== matches) {
-    lb.classList.add('flash');
-    setTimeout(() => lb.classList.remove('flash'), 380);
-  }
-  _lastPickerCount = matches;
-}
-
-// ─── Section E · preview strip (random 6 thumbnails of survivors) ───────
-let _previewStripTimer = null;
-let _previewStripSeq = 0;
-function _schedulePickerPreviewStrip(rule) {
-  clearTimeout(_previewStripTimer);
-  _previewStripTimer = setTimeout(() => _runPickerPreviewStrip(rule), 220);
-}
-async function _runPickerPreviewStrip(rule) {
-  const strip = $('picker-preview-strip');
-  if (!strip) return;
-  const sect = $('rule-section-e');
-  if (!sect || sect.hidden) return;
-  const seq = ++_previewStripSeq;
-  strip.classList.add('loading');
-  try {
-    const r = await fetch(`/api/filter/${activeFilterScanId}/match-preview-thumbs`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(rule),
-    });
-    if (seq !== _previewStripSeq) return;
-    if (!r.ok) throw new Error('preview-thumbs failed');
-    const d = await r.json();
-    strip.hidden = false;
-    const thumbs = d.thumbs || [];
-    if (!thumbs.length) {
-      strip.innerHTML = '<p class="muted small" style="padding:14px">No survivors yet — loosen the filter or pick a goal preset above.</p>';
-      strip.classList.remove('loading');
-      return;
-    }
-    strip.innerHTML = thumbs.map(t => `
-      <div class="picker-preview-tile" title="${escapeHtml(t.path || '')}">
-        <img src="${t.thumb_url}" alt="" loading="lazy"
-             onerror="this.style.background='var(--color-surface)';this.alt='(image unavailable)'" />
-      </div>`).join('');
-    strip.classList.remove('loading');
-  } catch (_e) {
-    if (seq !== _previewStripSeq) return;
-    strip.innerHTML = '<p class="muted small" style="padding:14px">Preview unavailable.</p>';
-    strip.classList.remove('loading');
-  }
-}
-
-// ─── Section E · per-cluster delta preview ──────────────────────────────
-let _clusterDeltaTimer = null;
-let _clusterDeltaSeq = 0;
-function _schedulePickerClusterDelta(rule) {
-  clearTimeout(_clusterDeltaTimer);
-  _clusterDeltaTimer = setTimeout(() => _runPickerClusterDelta(rule), 320);
-}
-async function _runPickerClusterDelta(baseRule) {
-  if (!activeFilterScanId) return;
-  const sect = $('rule-section-e');
-  if (!sect || sect.hidden) return;
-  const seq = ++_clusterDeltaSeq;
-  const rows = document.querySelectorAll('#picker-cluster-list .cond-row');
-  if (!rows.length) return;
-  const baseMatches = _lastPickerCount;
-  const hypothetical = async (label) => {
-    const r = JSON.parse(JSON.stringify(baseRule));
-    const cs = new Set(r.clusters || []);
-    if (cs.has(label)) cs.delete(label);
-    else cs.add(label);
-    r.clusters = Array.from(cs);
-    try {
-      const res = await fetch(`/api/filter/${activeFilterScanId}/match-count`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(r),
-      });
-      if (!res.ok) return null;
-      const d = await res.json();
-      return d.matches;
-    } catch (_e) { return null; }
-  };
-  const labels = Array.from(rows).map(row => row.dataset.clusterTag).filter(Boolean);
-  const queue = labels.slice();
-  let active = 0;
-  return new Promise((resolve) => {
-    const next = () => {
-      if (seq !== _clusterDeltaSeq) { resolve(); return; }
-      if (queue.length === 0 && active === 0) { resolve(); return; }
-      while (active < 4 && queue.length) {
-        const lab = queue.shift();
-        active++;
-        hypothetical(lab).then(n => {
-          if (seq !== _clusterDeltaSeq) { active--; next(); return; }
-          const span = document.querySelector(`.picker-cluster-delta[data-cluster="${CSS.escape(lab)}"]`);
-          if (span) {
-            if (n == null || baseMatches == null) {
-              span.textContent = '';
-            } else {
-              const diff = n - baseMatches;
-              span.classList.remove('up', 'down', 'zero');
-              if (diff === 0) {
-                span.textContent = '→ no change';
-                span.classList.add('zero');
-              } else if (diff > 0) {
-                span.textContent = `→ +${diff.toLocaleString()}`;
-                span.classList.add('up');
-              } else {
-                span.textContent = `→ ${diff.toLocaleString()}`;
-                span.classList.add('down');
-              }
-            }
-          }
-          active--;
-          next();
-        });
-      }
-    };
-    next();
-  });
-}
-
-// ─── Section E · Top-N mode hint ────────────────────────────────────────
-let _topNTimer = null;
-let _topNSeq = 0;
-function _scheduleTopNRecount(rule) {
-  clearTimeout(_topNTimer);
-  _topNTimer = setTimeout(() => _runTopNRecount(rule), 250);
-}
-async function _runTopNRecount(rule) {
-  const hint = $('picker-topn-hint');
-  if (!hint) return;
-  const seq = ++_topNSeq;
-  hint.textContent = 'Scoring…';
-  try {
-    const r = await fetch(`/api/filter/${activeFilterScanId}/top-n`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(rule),
-    });
-    if (seq !== _topNSeq) return;
-    if (!r.ok) throw new Error('top-n failed');
-    const d = await r.json();
-    const requested = d.requested_n ?? rule.top_n ?? 500;
-    const got = d.n ?? 0;
-    if (got === 0) {
-      hint.textContent = 'Top-N: 0 frames in survivor pool — loosen the filter.';
-    } else if (got < requested) {
-      hint.textContent = `Top-N: ${got.toLocaleString()} picked (only ${got.toLocaleString()} survived the rule, fewer than requested ${requested.toLocaleString()}).`;
-    } else {
-      hint.textContent = `Top-N: top ${got.toLocaleString()} of survivors picked by composite score (weights normalised).`;
-    }
-  } catch (_e) {
-    if (seq !== _topNSeq) return;
-    hint.textContent = 'Top-N scoring unavailable (run Smart Picker stages first).';
-  }
-}
-function _hideTopNHint() {
-  const hint = $('picker-topn-hint');
-  if (hint) hint.textContent = '';
 }
 
 // C · Per-row delta preview cache (debounced + concurrency-limited)
