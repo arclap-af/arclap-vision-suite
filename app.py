@@ -3305,13 +3305,22 @@ def picker_estimate(job_id: str, req: PickerEstimateReq):
         total_candidates = sum(per_class.values())
         # How many distinct classes have at least 1 candidate
         classes_with_candidates = len(per_class)
-        # How many distinct paths overall
+        # How many distinct paths overall — this is the HARD CEILING
+        # on total picks because of cross-class dedup (a frame can be
+        # picked for at most one class).
         path_count_row = conn.execute(
             f"SELECT COUNT(DISTINCT n.path) FROM image_class_need n "
             f"WHERE n.score > ? {path_clause}",
             params,
         ).fetchone()
         unique_paths = int(path_count_row[0] if path_count_row else 0)
+
+        # Apply dedup ceiling — the projection naively summed per-class
+        # picks, but cross-class dedup means total picks ≤ unique_paths.
+        # Without this cap the operator sees "9,006 picks" when their
+        # filter only has 624 survivors, which is wildly misleading.
+        projected_total_pre_dedup = projected_total
+        projected_total = min(projected_total, unique_paths)
 
         return {
             "total_candidates": total_candidates,
@@ -3320,6 +3329,8 @@ def picker_estimate(job_id: str, req: PickerEstimateReq):
             "per_class_candidates": per_class,
             "per_class_projected": per_class_projected,
             "projected_total_picks": projected_total,
+            "projected_total_pre_dedup": projected_total_pre_dedup,
+            "dedup_ceiling_hit": projected_total_pre_dedup > projected_total,
             "scoped_to_filter": bool(req.path_filter),
         }
     finally:

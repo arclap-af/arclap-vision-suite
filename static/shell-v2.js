@@ -1223,6 +1223,186 @@
       } catch(_e) { /* keep the stock options only */ }
     })();
 
+    // ────────────────────────────────────────────────────────────────
+    //  Stage runner — runs picker stages 1..4 sequentially in one pass
+    //
+    //  Sources of data:
+    //  - The `/api/picker/{job_id}/progress` endpoint already returns
+    //    cached row counts per stage table (phash / clip / classagnostic
+    //    / class_need). We use it to (a) hydrate the per-stage status
+    //    chips and (b) decide which stages to skip when "Skip cached"
+    //    is on.
+    //  - The runner reuses the EXACT same endpoints as the per-stage
+    //    buttons (stage1-phash, stage2-clip, stage3-classagnostic,
+    //    stage4-need + stage4-cluster). No new backend logic.
+    //
+    //  Stop-after-current: setting _ppRunnerStopRequested causes the
+    //  loop to bail out after the in-flight stage settles.
+    // ────────────────────────────────────────────────────────────────
+    let _ppRunnerStopRequested = false;
+    let _ppRunnerActive = false;
+
+    function _ppRunnerSetStatus(stage, label, tone) {
+      const el = $(`pp-runner-s${stage}-status`);
+      if (!el) return;
+      el.textContent = label || '—';
+      el.classList.remove('cached', 'running', 'done', 'failed', 'skipped');
+      if (tone) el.classList.add(tone);
+    }
+
+    async function _ppRunnerRefreshStatus() {
+      // Hydrate the four chips from the same /progress endpoint the
+      // existing per-stage progress polling uses. "Cached" means the
+      // stage's table already has rows; the operator can click "Skip
+      // cached" + "Run selected" to fast-forward.
+      if (!_ppActiveScan) {
+        for (const n of [1,2,3,4]) _ppRunnerSetStatus(n, '—');
+        return;
+      }
+      try {
+        const p = await (await fetch(`/api/picker/${_ppActiveScan}/progress`)).json();
+        const total = p.total || 0;
+        const map = {1: p.phash, 2: p.clip, 3: p.classagnostic, 4: p.class_need};
+        for (const n of [1,2,3,4]) {
+          const cached = map[n] || 0;
+          if (total > 0 && cached >= total) {
+            _ppRunnerSetStatus(n, `cached ✓ (${cached.toLocaleString()})`, 'cached');
+          } else if (cached > 0) {
+            _ppRunnerSetStatus(n, `partial (${cached.toLocaleString()}/${total.toLocaleString()})`, '');
+          } else {
+            _ppRunnerSetStatus(n, 'not run', '');
+          }
+        }
+      } catch(_e) {
+        for (const n of [1,2,3,4]) _ppRunnerSetStatus(n, '—');
+      }
+    }
+
+    // Run a single stage by simulating a click on its existing button —
+    // that way the runner reuses the per-stage progress bar, error
+    // handling, and result text. Returns true on success, false on error.
+    async function _ppRunnerRunOne(stage) {
+      const btn = $(`pp-s${stage}-run`);
+      if (!btn) return false;
+      _ppRunnerSetStatus(stage, 'running…', 'running');
+      // Wrap the per-stage onclick in a promise that resolves when the
+      // button re-enables (= stage finished or errored).
+      return new Promise(resolve => {
+        const originalOnclick = btn.onclick;
+        if (!originalOnclick) { resolve(false); return; }
+        const watcher = setInterval(() => {
+          if (!btn.disabled) {
+            clearInterval(watcher);
+            const result = $(`pp-s${stage}-result`);
+            const text = result ? result.textContent : '';
+            const ok = !text.startsWith('ERROR');
+            _ppRunnerSetStatus(stage, ok ? `done · ${(text||'').slice(0,40)}` : 'failed', ok ? 'done' : 'failed');
+            resolve(ok);
+          }
+        }, 200);
+        // Trigger the per-stage button programmatically
+        btn.click();
+      });
+    }
+
+    function _ppRunnerSelectedStages() {
+      return [1,2,3,4].filter(n => $(`pp-runner-s${n}`)?.checked);
+    }
+
+    async function _ppRunnerOrchestrate() {
+      if (_ppRunnerActive) return;
+      if (!_ppActiveScan) { alert('Pick a scan first.'); return; }
+      const selected = _ppRunnerSelectedStages();
+      if (!selected.length) {
+        alert('No stages selected — tick at least one.');
+        return;
+      }
+      _ppRunnerActive = true;
+      _ppRunnerStopRequested = false;
+      const goBtn = $('pp-runner-go');
+      const allBtn = $('pp-runner-all');
+      const stopBtn = $('pp-runner-stop');
+      if (goBtn) goBtn.disabled = true;
+      if (allBtn) allBtn.disabled = true;
+      if (stopBtn) stopBtn.hidden = false;
+      const skipCached = $('pp-runner-skip-cached')?.checked;
+      const progEl = $('pp-runner-progress');
+      const progText = $('pp-runner-progress-text');
+      const progFill = $('pp-runner-progress-fill');
+      if (progEl) progEl.hidden = false;
+
+      // Read the current /progress once to know which stages can be skipped
+      let cachedSet = new Set();
+      if (skipCached) {
+        try {
+          const p = await (await fetch(`/api/picker/${_ppActiveScan}/progress`)).json();
+          const total = p.total || 0;
+          const map = {1: p.phash, 2: p.clip, 3: p.classagnostic, 4: p.class_need};
+          for (const n of [1,2,3,4]) {
+            if (total > 0 && (map[n] || 0) >= total) cachedSet.add(n);
+          }
+        } catch(_e) {}
+      }
+
+      let done = 0;
+      const total = selected.length;
+      for (const n of selected) {
+        if (_ppRunnerStopRequested) break;
+        if (cachedSet.has(n)) {
+          _ppRunnerSetStatus(n, 'skipped (cached)', 'skipped');
+          done++;
+          if (progText) progText.textContent = `Skipped stage ${n} (cached) · ${done}/${total}`;
+          if (progFill) progFill.style.width = `${(done/total*100).toFixed(0)}%`;
+          continue;
+        }
+        if (progText) progText.textContent = `Running stage ${n}… (${done+1}/${total})`;
+        if (progFill) progFill.style.width = `${(done/total*100).toFixed(0)}%`;
+        const ok = await _ppRunnerRunOne(n);
+        if (!ok) {
+          if (progText) progText.textContent = `Stage ${n} failed — stopping. See its result line for details.`;
+          break;
+        }
+        done++;
+      }
+      if (progText) {
+        if (_ppRunnerStopRequested) {
+          progText.textContent = `Stopped after stage ${selected[done] || ''} · ${done}/${total} done`;
+        } else {
+          progText.textContent = `All done · ${done}/${total} stages succeeded`;
+        }
+      }
+      if (progFill) progFill.style.width = `${(done/total*100).toFixed(0)}%`;
+      if (goBtn) goBtn.disabled = false;
+      if (allBtn) allBtn.disabled = false;
+      if (stopBtn) stopBtn.hidden = true;
+      _ppRunnerActive = false;
+      _ppRunnerStopRequested = false;
+      // Refresh status chips one last time from the server
+      await _ppRunnerRefreshStatus();
+    }
+
+    if (!document.body.dataset.ppRunnerWired && $('pp-runner')) {
+      document.body.dataset.ppRunnerWired = '1';
+      $('pp-runner-go')?.addEventListener('click', _ppRunnerOrchestrate);
+      $('pp-runner-all')?.addEventListener('click', () => {
+        for (const n of [1,2,3,4]) {
+          const cb = $(`pp-runner-s${n}`); if (cb) cb.checked = true;
+        }
+        _ppRunnerOrchestrate();
+      });
+      $('pp-runner-stop')?.addEventListener('click', () => {
+        _ppRunnerStopRequested = true;
+        const txt = $('pp-runner-progress-text');
+        if (txt) txt.textContent = txt.textContent + ' · stop requested, waiting for current stage to finish…';
+      });
+      // Refresh the status chips when a scan is selected and on a timer
+      // while the picker tab is open.
+      _ppRunnerRefreshStatus();
+      setInterval(() => {
+        if (!_ppRunnerActive) _ppRunnerRefreshStatus();
+      }, 5000);
+    }
+
     // Stage 5: run picker
     // ─── Stage 5 — Smart picker (extended controls) ────────────────
     // Helper that builds the request body from all the UI knobs. The
@@ -1279,11 +1459,22 @@
         if (!r.ok) throw new Error('estimate failed');
         const d = await r.json();
         const projected = d.projected_total_picks || 0;
+        const projectedPre = d.projected_total_pre_dedup || projected;
         const cands = d.total_candidates || 0;
         const classes = d.classes_with_candidates || 0;
+        const uniquePaths = d.unique_paths || 0;
+        const dedupHit = !!d.dedup_ceiling_hit;
         if (projEl) projEl.textContent = projected.toLocaleString() + ' picks';
-        if (metaEl) metaEl.textContent =
-          `from ${cands.toLocaleString()} candidates across ${classes}/40 classes${scope.suffix || ''}`;
+        if (metaEl) {
+          let msg = `from ${cands.toLocaleString()} candidates across ${classes}/40 classes${scope.suffix || ''}`;
+          if (dedupHit) {
+            // Cross-class dedup is bottlenecking — make this loud so
+            // the operator knows widening the filter is the real lever.
+            msg += ` · capped at ${uniquePaths.toLocaleString()} unique frames (dedup)`;
+          }
+          metaEl.textContent = msg;
+          metaEl.classList.toggle('dedup-cap', dedupHit);
+        }
         // Bar fills as a fraction of the per-class target × 40 ceiling
         if (fillEl) {
           const ceiling = Math.max(1, body.per_class_target * 40);

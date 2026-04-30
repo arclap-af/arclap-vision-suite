@@ -2321,6 +2321,117 @@ body.lb-open { overflow: hidden; }
 .site-machine-pill .cost { color: var(--color-brand); font-weight: 600; }
 
 /* ════════════════════════════════════════════════════════════════════
+   Smart Picker · Stage runner (orchestrate stages 1-4 in one pass)
+   Sits above Stage 1. Each stage's individual button still works.
+   ════════════════════════════════════════════════════════════════════ */
+.pp-runner {
+  margin: 14px 0;
+  padding: 14px 16px;
+  background: linear-gradient(135deg,
+    var(--color-surface) 0%,
+    color-mix(in oklab, var(--color-brand-soft) 35%, var(--color-surface)) 100%);
+  border: 1px solid var(--color-brand-border);
+  border-radius: var(--radius-2);
+}
+.pp-runner-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+.pp-runner-head strong {
+  font-family: var(--font-brand);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--color-text-strong);
+}
+.pp-runner-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-start;
+}
+.pp-runner-checks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 6px;
+  flex: 1 1 60%;
+  min-width: 280px;
+}
+.pp-runner-check {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-1);
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease-out);
+}
+.pp-runner-check:hover { border-color: var(--arc-ink-300); }
+.pp-runner-check:has(input:checked) { border-color: var(--color-brand); background: var(--color-brand-soft); }
+.pp-runner-check span:nth-of-type(1) {
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  color: var(--color-text);
+}
+.pp-runner-check span:nth-of-type(1) strong {
+  font-family: var(--font-brand);
+  margin-right: 4px;
+}
+.pp-runner-status {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.pp-runner-status.cached  { color: var(--arc-green-700); }
+.pp-runner-status.running { color: var(--color-brand); animation: pulse 1.2s ease-in-out infinite; }
+.pp-runner-status.done    { color: var(--arc-green-700); }
+.pp-runner-status.failed  { color: var(--color-brand); font-weight: 700; }
+.pp-runner-status.skipped { color: var(--color-text-subtle); font-style: italic; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+.pp-runner-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+.pp-runner-actions .btn { white-space: nowrap; }
+.pp-runner-progress {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-1);
+}
+.pp-runner-progress-text {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-strong);
+  margin-bottom: 4px;
+}
+.pp-runner-progress-bar {
+  height: 6px;
+  background: var(--color-surface-alt);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+.pp-runner-progress-bar > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, var(--color-brand), var(--arc-red-700));
+  border-radius: var(--radius-pill);
+  transition: width var(--dur-2) var(--ease-out);
+}
+
+/* ════════════════════════════════════════════════════════════════════
    Smart Picker · Stage 5 redesign
    Visual flow · signal cards · presets · advanced controls · estimate
    ════════════════════════════════════════════════════════════════════ */
@@ -2417,9 +2528,10 @@ body.lb-open { overflow: hidden; }
 }
 .pp-flow-step {
   display: grid;
-  grid-template-columns: 36px 1fr;
+  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-rows: auto auto;
   align-items: start;
-  gap: 10px;
+  gap: 4px 10px;
   padding: 10px 12px;
   background: var(--color-surface);
   border: 1px solid var(--color-border-soft);
@@ -2436,15 +2548,30 @@ body.lb-open { overflow: hidden; }
   font-family: var(--font-brand);
   font-weight: 700;
   font-size: 13px;
+  /* Number circle spans both rows so it sits centred next to the
+     two-line title + body. */
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: start;
 }
+/* Pin BOTH the headline strong + body p to column 2. Without this,
+   auto-flow drops the <p> into row-2-column-1 (36px wide), forcing
+   one-word-per-line wrapping. */
 .pp-flow-step strong {
+  grid-column: 2;
+  grid-row: 1;
   display: block;
   font-family: var(--font-brand);
   font-weight: 600;
   font-size: 13px;
   color: var(--color-text-strong);
 }
-.pp-flow-step p { margin: 2px 0 0; line-height: 1.45; }
+.pp-flow-step p {
+  grid-column: 2;
+  grid-row: 2;
+  margin: 0;
+  line-height: 1.45;
+}
 .pp-flow-step code {
   font-family: var(--font-mono);
   font-size: 11.5px;
@@ -2452,6 +2579,10 @@ body.lb-open { overflow: hidden; }
   padding: 1px 5px;
   border-radius: 3px;
   color: var(--color-text);
+  /* Allow the long score-formula <code> block to wrap inside the
+     column instead of forcing horizontal overflow. */
+  white-space: normal;
+  word-break: break-word;
 }
 .pp-flow-arrow {
   text-align: center;
@@ -2579,6 +2710,13 @@ body.lb-open { overflow: hidden; }
   gap: 16px;
 }
 .pp-estimate-detail strong { color: var(--color-text-strong); font-weight: 600; }
+/* When cross-class dedup is the bottleneck, surface it in the meta line.
+   This makes "you're capped because your filter is too narrow" obvious
+   instead of leaving the operator wondering why N picks came back. */
+#pp-estimate-meta.dedup-cap {
+  color: var(--color-brand);
+  font-weight: 600;
+}
 
 /* Stage 5 stage container — slightly tinted to mark its prominence */
 .pp-stage-s5 {

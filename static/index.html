@@ -12,7 +12,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <link rel="stylesheet" href="/static/style.css" />
-<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-i-noAA" />
+<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-k-runner" />
 </head>
 <body>
 
@@ -1497,6 +1497,38 @@
           <input id="pp-use-survivors" type="checkbox" checked/> Restrict to filtered survivors
         </label>
         <button class="btn btn-secondary btn-small" id="pp-refresh-scans">Refresh scans</button>
+      </div>
+
+      <!-- ════════════════════════════════════════════════════════════
+           Stage runner — pick which stages to run, in one pass.
+           Each stage's individual "Run stage N" button still works
+           for one-off re-runs.
+           ════════════════════════════════════════════════════════════ -->
+      <div class="pp-runner" id="pp-runner">
+        <div class="pp-runner-head">
+          <strong>Stages to run</strong>
+          <span class="muted small">Tick the stages you want, then hit <em>Run selected</em>. Or hit <em>Run all</em> to do everything in sequence. Each stage caches — re-runs only do new frames.</span>
+        </div>
+        <div class="pp-runner-body">
+          <div class="pp-runner-checks">
+            <label class="pp-runner-check"><input type="checkbox" id="pp-runner-s1" data-runner-stage="1" checked /> <span><strong>1</strong> · pHash dedup</span><span class="pp-runner-status muted small" id="pp-runner-s1-status">—</span></label>
+            <label class="pp-runner-check"><input type="checkbox" id="pp-runner-s2" data-runner-stage="2" checked /> <span><strong>2</strong> · CLIP embed</span><span class="pp-runner-status muted small" id="pp-runner-s2-status">—</span></label>
+            <label class="pp-runner-check"><input type="checkbox" id="pp-runner-s3" data-runner-stage="3" checked /> <span><strong>3</strong> · Pre-detect</span><span class="pp-runner-status muted small" id="pp-runner-s3-status">—</span></label>
+            <label class="pp-runner-check"><input type="checkbox" id="pp-runner-s4" data-runner-stage="4" checked /> <span><strong>4</strong> · Class-need + clustering</span><span class="pp-runner-status muted small" id="pp-runner-s4-status">—</span></label>
+          </div>
+          <div class="pp-runner-actions">
+            <label class="checkbox-row" title="Skip stages whose cache table is already populated for the current scope">
+              <input type="checkbox" id="pp-runner-skip-cached" checked /> Skip cached
+            </label>
+            <button class="btn btn-secondary btn-small" id="pp-runner-all" type="button" title="Tick all four stages then run sequentially">↺ Run all</button>
+            <button class="btn btn-primary btn-small" id="pp-runner-go" type="button">▸ Run selected stages</button>
+            <button class="btn btn-ghost btn-small" id="pp-runner-stop" type="button" hidden title="Stop after the current stage finishes">⏹ Stop after current</button>
+          </div>
+        </div>
+        <div class="pp-runner-progress" id="pp-runner-progress" hidden>
+          <div class="pp-runner-progress-text" id="pp-runner-progress-text">—</div>
+          <div class="pp-runner-progress-bar"><span id="pp-runner-progress-fill"></span></div>
+        </div>
       </div>
 
       <!-- ── Stage 1 ── -->
@@ -3848,7 +3880,7 @@ _data/util_report_schedules.json       ← weekly PDF schedules</pre>
   </div>
 </div>
 
-<script src="/static/app.js?v=2026-04-30-j-stage5"></script>
-<script src="/static/shell-v2.js?v=2026-04-30-j-stage5"></script>
+<script src="/static/app.js?v=2026-04-30-k-runner"></script>
+<script src="/static/shell-v2.js?v=2026-04-30-k-runner"></script>
 </body>
 </html>
