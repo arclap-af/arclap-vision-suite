@@ -48,11 +48,13 @@ incoming/
 _models/*
 !_models/CSI_V1.pt
 
-# Reference image library — sampled 3 per class (~13 MB) so users can
-# see what the model thinks each class looks like.
+# Reference image library — per-class folders with crawler manifests
+# and licensed images so users can see what the model thinks each class
+# looks like. CSV manifests carry source URL + license per image.
 !_reference/**/*.jpg
 !_reference/**/*.png
 !_reference/**/*.jpeg
+!_reference/**/*.csv
 
 # Design handoff bundle and any future design source-of-truth artefacts
 _design/
