@@ -3634,6 +3634,241 @@ input[type="number"].input::-webkit-outer-spin-button {
 .cond-dot-blur  { background: var(--arc-amber-500); }
 .cond-dot-sun   { background: #FACC15; }
 .cond-dot-other { background: var(--color-text-subtle); }
+/* Phase-cluster status tones (used by Section E) */
+.cond-dot-busy   { background: var(--color-brand); }
+.cond-dot-soil   { background: #92400E; }
+.cond-dot-wood   { background: #B45309; }
+.cond-dot-finish { background: var(--arc-blue-500); }
+
+/* ════════════════════════════════════════════════════════════════════
+   Filter wizard · Section E — Smart-picker insights
+   Quick-goal presets · live counter · preview strip · mode toggle ·
+   Top-N controls · phase clusters · density histogram · class-need
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Quick-goal presets row — slightly different tint to read as a "shortcut bar" */
+.cond-card-presets {
+  background: linear-gradient(135deg,
+    var(--color-surface) 0%,
+    color-mix(in oklab, var(--color-brand-soft) 35%, var(--color-surface)) 100%);
+  border-color: var(--color-brand-border);
+}
+.cond-card-presets .cond-shortcuts-row { margin-bottom: 0; }
+.cond-card-presets .btn { white-space: nowrap; }
+
+/* Section E live counter — same skin as Section D */
+.picker-livebar {
+  /* Inherits all .cond-livebar rules (sticky, blur, fill, flash). Slight
+     tint distinguishes it from Section D's livebar at a glance. */
+  border-left: 3px solid var(--color-brand);
+}
+
+/* Thumbnail preview strip — 6 sample survivors, refreshes on rule change */
+.picker-preview-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-2);
+  margin: var(--space-2) 0 var(--space-3);
+  min-height: 88px;
+  align-items: stretch;
+  transition: opacity var(--dur-2) var(--ease-out);
+}
+.picker-preview-strip.loading { opacity: 0.55; }
+.picker-preview-tile {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  border-radius: var(--radius-1);
+  overflow: hidden;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-soft);
+  box-shadow: var(--shadow-1);
+}
+.picker-preview-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+@media (max-width: 900px) {
+  .picker-preview-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* Mode toggle (Match all / Top-N) — radio cards */
+.picker-mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+  margin: var(--space-3) 0;
+}
+.picker-mode-radio {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease-out),
+              background var(--dur-1) var(--ease-out),
+              box-shadow var(--dur-1) var(--ease-out);
+}
+.picker-mode-radio:hover {
+  border-color: var(--arc-ink-300);
+  background: var(--color-surface-alt);
+}
+.picker-mode-radio:has(input:checked) {
+  border-color: var(--color-brand);
+  background: var(--color-brand-soft);
+  box-shadow: 0 0 0 3px var(--color-brand-soft);
+}
+.picker-mode-radio input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.picker-mode-radio span {
+  font-family: var(--font-brand);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--color-text-strong);
+}
+.picker-mode-radio small {
+  font-size: 12px;
+  color: var(--color-text-subtle);
+}
+@media (max-width: 720px) {
+  .picker-mode-toggle { grid-template-columns: 1fr; }
+}
+
+/* Top-N weight sliders — compact 4-up grid */
+.picker-topn-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-2);
+  margin-bottom: var(--space-3);
+}
+.picker-topn-controls .text-row {
+  margin: 0;
+}
+.picker-topn-hint {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-subtle);
+  border-top: 1px dashed var(--color-border-soft);
+  padding-top: var(--space-2);
+}
+
+/* Density histogram — tiny vertical bars, labelled along x-axis */
+.picker-density-histogram {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 78px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-2);
+  margin: var(--space-2) 0 var(--space-3);
+  overflow-x: auto;
+}
+.picker-density-bar {
+  position: relative;
+  flex: 1 1 14px;
+  min-width: 14px;
+  background: linear-gradient(180deg, var(--color-brand), var(--arc-red-700));
+  border-radius: 2px 2px 0 0;
+  transition: filter var(--dur-1) var(--ease-out);
+  cursor: default;
+}
+.picker-density-bar:hover {
+  filter: brightness(1.2) saturate(1.2);
+}
+.picker-density-bar-tip {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--arc-ink-900);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: var(--radius-1);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+.picker-density-bar:hover .picker-density-bar-tip { opacity: 1; }
+.picker-density-bar-x {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--color-text-subtle);
+  font-weight: 500;
+}
+
+/* CLIP class-need rules — multi-row repeating pattern */
+.picker-classneed-rules {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.picker-classneed-rule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-2);
+}
+.picker-classneed-rule select {
+  flex: 0 1 320px;
+  min-width: 220px;
+}
+.picker-classneed-rule .text-row { margin: 0; }
+.picker-classneed-remove {
+  margin-left: auto;
+  color: var(--color-brand);
+}
+.picker-classneed-remove:hover {
+  background: var(--color-brand-soft);
+  border-color: var(--color-brand-border);
+}
+
+/* Per-cluster delta preview chip — same style as condition delta */
+.picker-cluster-delta {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-alt);
+  color: var(--color-text-subtle);
+  border: 1px solid var(--color-border-soft);
+  white-space: nowrap;
+  margin-left: var(--space-2);
+}
+.picker-cluster-delta.up   { background: var(--arc-green-50); color: var(--arc-green-700); border-color: var(--arc-green-100); }
+.picker-cluster-delta.down { background: var(--color-brand-soft); color: var(--color-brand); border-color: var(--color-brand-border); }
+.picker-cluster-delta.zero { color: var(--color-text-subtle); }
 
 /* ════════════════════════════════════════════════════════════════════
    CLIP refinement live progress (Filter wizard step 4 · section D)

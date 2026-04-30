@@ -2195,6 +2195,14 @@ def filter_thumb(job_id: str, path: str, size: int = 320):
 
 # --- Filter rule -> SQL ---------------------------------------------------
 
+class ClassNeedRule(BaseModel):
+    """One {class_id, min_score} threshold inside the Smart-picker
+    class-need filter. The frame matches when its CLIP cosine score for
+    that class (in image_class_need) is >= min_score."""
+    class_id: int
+    min_score: float = 0.20
+
+
 class FilterRule(BaseModel):
     classes: list[int] = Field(default_factory=list)
     logic: str = Field("any", pattern="^(any|all|none)$")
@@ -2217,6 +2225,26 @@ class FilterRule(BaseModel):
     conditions: list[str] = Field(default_factory=list)
     cond_logic: str = Field("any", pattern="^(any|all|none)$")
     cond_min_confidence: float = 0.0
+    # ─── Section E · Smart-picker insights (additive) ───
+    # Phase clusters from image_cluster_v2 (e.g. busy / foundation /
+    # winter / fog). Same any/all/none semantics as conditions.
+    clusters: list[str] = Field(default_factory=list)
+    cluster_logic: str = Field("any", pattern="^(any|all|none)$")
+    # Object density from image_classagnostic.box_idx>=0 box count per
+    # frame. (0, 100000) = no density filter. Inclusive bounds.
+    min_n_objects: int = 0
+    max_n_objects: int = 100000
+    # CLIP class-need rules: each row {class_id, min_score} adds an
+    # EXISTS clause on image_class_need. Multiple rows compose with AND.
+    class_need: list[ClassNeedRule] = Field(default_factory=list)
+    # Top-N mode: when set, the result is sorted by a weighted score and
+    # truncated to top_n rows. weights: density / class_need / uncertainty /
+    # quality. Used by the dedicated /top-n endpoint, not by /match-count.
+    mode: str = Field("match", pattern="^(match|top_n)$")
+    top_n: int = 500
+    score_weights: dict = Field(
+        default_factory=lambda: {"density": 0.25, "class_need": 0.35,
+                                 "uncertainty": 0.20, "quality": 0.20})
 
 
 _TIMESTAMP_RE = re.compile(
@@ -2367,6 +2395,51 @@ def _build_match_sql(rule: FilterRule) -> tuple[str, list]:
         elif rule.cond_logic == "none":
             where.append("NOT " + prio_exists)
             params += [*cond, rule.cond_min_confidence]
+
+    # ═══ Section E · Smart-picker filters (additive) ═══
+
+    # Phase cluster filter — image_cluster_v2.cluster_label in (...)
+    # Tables may not exist on legacy/early scans → wrap in TRY-LIKE
+    # via "EXISTS … table that may be missing" guarded by the SQL
+    # builder caller, which catches OperationalError.
+    cl = rule.clusters
+    if cl:
+        ph = ",".join("?" * len(cl))
+        if rule.cluster_logic == "any":
+            where.append(
+                f"EXISTS (SELECT 1 FROM image_cluster_v2 v "
+                f"WHERE v.path = i.path AND v.cluster_label IN ({ph}))")
+            params += list(cl)
+        elif rule.cluster_logic == "all":
+            for label in cl:
+                where.append(
+                    "EXISTS (SELECT 1 FROM image_cluster_v2 v "
+                    "WHERE v.path = i.path AND v.cluster_label = ?)")
+                params += [label]
+        elif rule.cluster_logic == "none":
+            where.append(
+                f"NOT EXISTS (SELECT 1 FROM image_cluster_v2 v "
+                f"WHERE v.path = i.path AND v.cluster_label IN ({ph}))")
+            params += list(cl)
+
+    # Object density — count of class-agnostic boxes per frame.
+    # Use a correlated subquery (cheap because path is indexed).
+    if rule.min_n_objects > 0 or rule.max_n_objects < 100000:
+        where.append(
+            "COALESCE("
+            "(SELECT COUNT(*) FROM image_classagnostic ca "
+            "WHERE ca.path = i.path AND ca.box_idx >= 0)"
+            ", 0) BETWEEN ? AND ?")
+        params += [int(rule.min_n_objects), int(rule.max_n_objects)]
+
+    # CLIP class-need — each rule adds a separate EXISTS clause (AND).
+    for rn in (rule.class_need or []):
+        cid = int(getattr(rn, "class_id", rn["class_id"] if isinstance(rn, dict) else None))
+        ms  = float(getattr(rn, "min_score", rn["min_score"] if isinstance(rn, dict) else 0.0))
+        where.append(
+            "EXISTS (SELECT 1 FROM image_class_need cn "
+            "WHERE cn.path = i.path AND cn.class_id = ? AND cn.score >= ?)")
+        params += [cid, ms]
 
     return f"FROM images i WHERE {' AND '.join(where)}", params
 
@@ -3905,6 +3978,237 @@ def filter_conditions_summary(job_id: str):
                  "by_source": raw_by_tag.get(r[0], {})}
                 for r in eff_rows
             ],
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/filter/{job_id}/picker-meta")
+def filter_picker_meta(job_id: str):
+    """Smart-picker metadata for Section E in the Filter wizard.
+
+    Returns:
+      available           — true iff the picker has run on this scan
+      clusters            — [{label, n_images}] from image_cluster_v2
+      density_histogram   — [{bucket_lo, bucket_hi, n_images}] of frame
+                            box counts from image_classagnostic
+      density_max         — int, the largest box count seen
+      n_with_boxes        — int, frames with ≥ 1 class-agnostic box
+      class_need_quantiles — { class_id: {p50, p75, p90, p95, max} }
+    """
+    _, db_path = _filter_db(job_id)
+    conn = _sqlite3.connect(db_path)
+    out = {"available": False, "clusters": [], "density_histogram": [],
+           "density_max": 0, "n_with_boxes": 0, "class_need_quantiles": {}}
+    try:
+        # Clusters
+        try:
+            rows = conn.execute(
+                "SELECT cluster_label, COUNT(*) AS n FROM image_cluster_v2 "
+                "GROUP BY cluster_label ORDER BY n DESC"
+            ).fetchall()
+            if rows:
+                out["clusters"] = [
+                    {"label": r[0], "n_images": int(r[1])} for r in rows
+                ]
+                out["available"] = True
+        except _sqlite3.OperationalError:
+            pass
+
+        # Density histogram (per-frame box count)
+        try:
+            counts_per_path = conn.execute(
+                "SELECT n_boxes, COUNT(*) AS n_imgs FROM ("
+                "  SELECT path, COUNT(*) AS n_boxes FROM image_classagnostic "
+                "  WHERE box_idx >= 0 GROUP BY path"
+                ") GROUP BY n_boxes ORDER BY n_boxes"
+            ).fetchall()
+            if counts_per_path:
+                out["available"] = True
+                # Bucket the histogram into 0,1,2…29,30+ for compact display
+                buckets = []
+                bucket_30plus = 0
+                for nb, ni in counts_per_path:
+                    if nb <= 30:
+                        buckets.append({"bucket": int(nb), "n_images": int(ni)})
+                    else:
+                        bucket_30plus += int(ni)
+                if bucket_30plus:
+                    buckets.append({"bucket": 31, "n_images": bucket_30plus,
+                                    "is_overflow": True})
+                out["density_histogram"] = buckets
+                out["density_max"] = int(max((nb for nb, _ in counts_per_path),
+                                              default=0))
+                out["n_with_boxes"] = int(sum(int(ni) for _, ni in counts_per_path))
+        except _sqlite3.OperationalError:
+            pass
+
+        # CLIP class-need quantiles per class — used by the rule sliders
+        # to pick a sensible default min_score.
+        try:
+            rows = conn.execute(
+                "SELECT class_id, score FROM image_class_need "
+                "ORDER BY class_id, score"
+            ).fetchall()
+            if rows:
+                out["available"] = True
+                from statistics import quantiles
+                by_cls: dict[int, list[float]] = {}
+                for cid, sc in rows:
+                    by_cls.setdefault(int(cid), []).append(float(sc))
+                qs: dict[str, dict] = {}
+                for cid, scores in by_cls.items():
+                    if len(scores) < 4:
+                        continue
+                    try:
+                        q = quantiles(scores, n=20)  # 5%-step
+                        qs[str(cid)] = {
+                            "p50": round(q[9], 3),
+                            "p75": round(q[14], 3),
+                            "p90": round(q[17], 3),
+                            "p95": round(q[18], 3),
+                            "max": round(max(scores), 3),
+                            "n": len(scores),
+                        }
+                    except Exception:
+                        continue
+                out["class_need_quantiles"] = qs
+        except _sqlite3.OperationalError:
+            pass
+    finally:
+        conn.close()
+    return out
+
+
+@app.post("/api/filter/{job_id}/match-preview-thumbs")
+def filter_match_preview_thumbs(job_id: str, rule: FilterRule, k: int = 6):
+    """Return the path + thumbnail URL of up to `k` random sample frames
+    matching the current rule. Powers the inline preview strip next to
+    the live counter so the operator visually verifies the filter.
+
+    Order: ORDER BY RANDOM() so the strip refreshes with different
+    frames between ticks — operator gets variety, not the same 6.
+    """
+    _, db_path = _filter_db(job_id)
+    sql_from, params = _build_match_sql(rule)
+    conn = _sqlite3.connect(db_path)
+    try:
+        try:
+            rows = conn.execute(
+                f"SELECT i.path {sql_from} ORDER BY RANDOM() LIMIT {int(k)}",
+                params,
+            ).fetchall()
+        except _sqlite3.OperationalError as e:
+            return {"thumbs": [], "error": str(e)}
+        # Hour/dow filter post-pass
+        if rule.hours or rule.dow:
+            paths = [r[0] for r in rows]
+            kept = set(_hour_dow_filter(rule, paths))
+            rows = [r for r in rows if r[0] in kept]
+        thumbs = [{
+            "path": r[0],
+            "thumb_url": (f"/api/filter/{job_id}/thumb?path="
+                          + urllib.parse.quote(r[0], safe='')),
+        } for r in rows]
+        return {"thumbs": thumbs, "count": len(thumbs)}
+    finally:
+        conn.close()
+
+
+@app.post("/api/filter/{job_id}/top-n")
+def filter_top_n(job_id: str, rule: FilterRule):
+    """Top-N mode — return the N best frames by a weighted composite
+    score, where the score combines:
+        density       — class-agnostic box count (normalised to 0..1)
+        class_need    — max CLIP score across the rule.class_need[]
+                        classes (if provided), else max across all classes
+        uncertainty   — distance of avg detection conf from 0.5
+                        (model-unsure frames score higher)
+        quality       — image quality score from images.quality
+
+    Frames are first filtered by the existing rule (clusters / density /
+    class_need / Section A-D / etc), then scored, then sorted desc.
+
+    Weights are normalised to sum to 1. Defaults:
+        density 0.25, class_need 0.35, uncertainty 0.20, quality 0.20
+    """
+    _, db_path = _filter_db(job_id)
+    sql_from, params = _build_match_sql(rule)
+
+    # Normalise weights
+    w = dict(rule.score_weights or {})
+    keys = ["density", "class_need", "uncertainty", "quality"]
+    raw = {k: max(0.0, float(w.get(k, 0.0))) for k in keys}
+    total_w = sum(raw.values()) or 1.0
+    w_norm = {k: raw[k] / total_w for k in keys}
+
+    conn = _sqlite3.connect(db_path)
+    try:
+        # Pull max box count for normalisation (cached at scan-DB level
+        # would be nicer, but cheap enough on small DBs).
+        try:
+            density_max = conn.execute(
+                "SELECT MAX(n_boxes) FROM ("
+                "  SELECT COUNT(*) AS n_boxes FROM image_classagnostic "
+                "  WHERE box_idx >= 0 GROUP BY path)").fetchone()[0] or 1
+        except _sqlite3.OperationalError:
+            density_max = 1
+        density_max = max(1, int(density_max))
+
+        # Build score expression — uses LEFT JOINs so frames missing
+        # from a sub-table (e.g. no class-agnostic boxes) still get a
+        # 0 contribution rather than being dropped.
+        cn_classes = [int(getattr(rn, "class_id", rn["class_id"]
+                          if isinstance(rn, dict) else 0))
+                      for rn in (rule.class_need or [])]
+        cn_clause_sql = ""
+        cn_params: list = []
+        if cn_classes:
+            ph = ",".join("?" * len(cn_classes))
+            cn_clause_sql = f" AND cn.class_id IN ({ph})"
+            cn_params = list(cn_classes)
+
+        score_sql = (
+            f"({w_norm['density']} * COALESCE("
+            f"  (SELECT CAST(COUNT(*) AS REAL) / {density_max} "
+            f"   FROM image_classagnostic ca "
+            f"   WHERE ca.path = i.path AND ca.box_idx >= 0), 0) "
+            f"+ {w_norm['class_need']} * COALESCE("
+            f"  (SELECT MAX(cn.score) FROM image_class_need cn "
+            f"   WHERE cn.path = i.path{cn_clause_sql}), 0) "
+            f"+ {w_norm['uncertainty']} * (1.0 - 2.0 * ABS("
+            f"  COALESCE((SELECT AVG(d.max_conf) FROM detections d "
+            f"            WHERE d.path = i.path), 0.5) - 0.5)) "
+            f"+ {w_norm['quality']} * COALESCE(i.quality, 0)"
+            f") AS score"
+        )
+
+        try:
+            rows = conn.execute(
+                f"SELECT i.path, i.quality, i.brightness, i.sharpness, "
+                f"       i.n_dets, {score_sql} "
+                f"{sql_from} "
+                f"ORDER BY score DESC LIMIT ?",
+                cn_params + params + [int(rule.top_n)],
+            ).fetchall()
+        except _sqlite3.OperationalError as e:
+            raise HTTPException(400, f"top-n SQL failed: {e}")
+        # Hour/dow filter post-pass — applied AFTER ORDER BY/LIMIT, so
+        # if the user has hour filters, take a wider sample then trim.
+        if rule.hours or rule.dow:
+            allowed = set(_hour_dow_filter(
+                rule, [r[0] for r in rows]))
+            rows = [r for r in rows if r[0] in allowed][:int(rule.top_n)]
+        return {
+            "picks": [
+                {"path": r[0], "quality": r[1], "brightness": r[2],
+                 "sharpness": r[3], "n_dets": r[4], "score": float(r[5] or 0)}
+                for r in rows
+            ],
+            "weights": w_norm,
+            "density_max": density_max,
+            "n": len(rows),
+            "requested_n": int(rule.top_n),
         }
     finally:
         conn.close()

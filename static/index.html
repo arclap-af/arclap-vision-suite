@@ -1420,6 +1420,167 @@
       </div>
     </details>
 
+    <!-- ═══ Section E · Smart-picker insights (additive) ═══ -->
+    <details class="rule-section" open id="rule-section-e" hidden>
+      <summary><span class="rule-num">E</span> Smart-picker insights</summary>
+      <div class="rule-section-body">
+
+        <!-- Disabled banner (shown if picker stages haven't run) -->
+        <div class="info-banner" id="picker-meta-disabled-banner" hidden>
+          <span><strong>Run the Smart Picker first.</strong> Phase clusters, object density and CLIP class-need filters become available after stages 1, 3, and 4 of the Smart Picker (step 6) populate the picker tables. <button class="btn btn-ghost btn-small" id="btn-jump-to-picker" type="button">Jump to step 6 →</button></span>
+        </div>
+
+        <!-- Goal-based presets row -->
+        <div class="cond-card cond-card-presets" id="picker-presets-card">
+          <header class="cond-card-head">
+            <span class="cond-card-eyebrow">Quick goals</span>
+            <h5 class="cond-card-title">One-click filter combos</h5>
+          </header>
+          <div class="cond-shortcuts-row">
+            <button type="button" class="btn btn-ghost btn-small" data-goal="annotation"
+              title="Diverse busy / construction phases · density ≥ 5 · YOLO confidence borderline">Annotation candidates</button>
+            <button type="button" class="btn btn-ghost btn-small" data-goal="busy"
+              title="Density ≥ 13 · cluster ∈ busy/foundation/framing · clean conditions">Busy machine sites</button>
+            <button type="button" class="btn btn-ghost btn-small" data-goal="edge"
+              title="Low YOLO confidence + high CLIP class-need + ≥1 objectness box">Edge cases the model misses</button>
+            <button type="button" class="btn btn-ghost btn-small" data-goal="audit"
+              title="Daylight only · clean conditions · spread across phases">Phase audit (stakeholder)</button>
+            <button type="button" class="btn btn-ghost btn-small" data-goal="hotspots"
+              title="Top frames by box-count · sorted descending">Equipment density hotspots</button>
+            <button type="button" class="btn btn-ghost btn-small" data-goal="reset">Reset Section E</button>
+          </div>
+        </div>
+
+        <!-- Live counter + thumbnail preview strip -->
+        <div class="cond-livebar picker-livebar" id="picker-livebar">
+          <div class="cond-livebar-text">
+            <strong id="picker-livebar-count">—</strong>
+            <span class="muted small" id="picker-livebar-meta">no Section E filters active</span>
+          </div>
+          <div class="cond-livebar-track"><span class="cond-livebar-fill" id="picker-livebar-fill"></span></div>
+          <span class="cond-livebar-delta" id="picker-livebar-delta"></span>
+        </div>
+        <div class="picker-preview-strip" id="picker-preview-strip" hidden></div>
+
+        <!-- Mode toggle: Match all rules vs Top-N by score -->
+        <div class="picker-mode-toggle">
+          <label class="picker-mode-radio">
+            <input type="radio" name="picker-mode" value="match" checked />
+            <span>Match all rules</span>
+            <small class="muted">every frame that passes is kept</small>
+          </label>
+          <label class="picker-mode-radio">
+            <input type="radio" name="picker-mode" value="top_n" />
+            <span>Top N by composite score</span>
+            <small class="muted">rank the survivors by a weighted score</small>
+          </label>
+        </div>
+
+        <div class="picker-topn-controls" id="picker-topn-controls" hidden>
+          <label class="text-row">
+            <span>Top N</span>
+            <input type="number" id="picker-topn-n" class="input" min="10" max="20000" value="500" />
+          </label>
+          <label class="text-row">
+            <span>w · density</span>
+            <div class="slider-with-value">
+              <input type="range" id="picker-w-density" min="0" max="100" step="5" value="25" />
+              <span class="slider-value" id="picker-w-density-v">25</span>
+            </div>
+          </label>
+          <label class="text-row">
+            <span>w · class-need</span>
+            <div class="slider-with-value">
+              <input type="range" id="picker-w-classneed" min="0" max="100" step="5" value="35" />
+              <span class="slider-value" id="picker-w-classneed-v">35</span>
+            </div>
+          </label>
+          <label class="text-row">
+            <span>w · uncertainty</span>
+            <div class="slider-with-value">
+              <input type="range" id="picker-w-uncertainty" min="0" max="100" step="5" value="20" />
+              <span class="slider-value" id="picker-w-uncertainty-v">20</span>
+            </div>
+          </label>
+          <label class="text-row">
+            <span>w · quality</span>
+            <div class="slider-with-value">
+              <input type="range" id="picker-w-quality" min="0" max="100" step="5" value="20" />
+              <span class="slider-value" id="picker-w-quality-v">20</span>
+            </div>
+          </label>
+          <p class="muted small picker-topn-hint" id="picker-topn-hint" style="grid-column:1/-1;margin:0"></p>
+        </div>
+
+        <!-- Sub-card 1 of 3: Phase clusters -->
+        <div class="cond-card cond-card-clusters">
+          <header class="cond-card-head">
+            <span class="cond-card-eyebrow">Phase clusters</span>
+            <h5 class="cond-card-title">Construction phase / weather tags</h5>
+          </header>
+          <p class="muted small">Auto-named at Stage 4 of the Smart Picker. Each tag groups visually-similar frames (e.g. <em>busy site activity</em>, <em>winter snow</em>, <em>excavation pit</em>).</p>
+          <div class="rule-grid">
+            <label class="text-row">
+              <span>Logic</span>
+              <select id="picker-cluster-logic" class="input">
+                <option value="any" selected>ANY · keep frames in at least one ticked cluster</option>
+                <option value="all">ALL · frame must belong to every ticked cluster</option>
+                <option value="none">NONE · exclude any frame in these clusters</option>
+              </select>
+            </label>
+          </div>
+          <div id="picker-cluster-list" class="rule-class-checks cond-tag-list">
+            <p class="muted small" style="padding:14px">Loading phase clusters…</p>
+          </div>
+        </div>
+
+        <!-- Sub-card 2 of 3: Object density -->
+        <div class="cond-card cond-card-density">
+          <header class="cond-card-head">
+            <span class="cond-card-eyebrow">Object density</span>
+            <h5 class="cond-card-title">Class-agnostic box count per frame</h5>
+          </header>
+          <p class="muted small">From Stage 3 (class-agnostic objectness). High density = busy frame with many machines/people/equipment. Low = empty.</p>
+          <div class="picker-density-histogram" id="picker-density-histogram"></div>
+          <div class="rule-grid">
+            <label class="text-row">
+              <span>Min objects per frame</span>
+              <div class="slider-with-value">
+                <input type="range" id="picker-density-min" min="0" max="30" step="1" value="0" />
+                <span class="slider-value" id="picker-density-min-v">0</span>
+              </div>
+            </label>
+            <label class="text-row">
+              <span>Max objects per frame</span>
+              <div class="slider-with-value">
+                <input type="range" id="picker-density-max" min="0" max="30" step="1" value="30" />
+                <span class="slider-value" id="picker-density-max-v">30</span>
+              </div>
+            </label>
+          </div>
+          <div class="cond-shortcuts-row">
+            <button type="button" class="btn btn-ghost btn-small" data-density="0,1">Empty (0–1)</button>
+            <button type="button" class="btn btn-ghost btn-small" data-density="2,5">Sparse (2–5)</button>
+            <button type="button" class="btn btn-ghost btn-small" data-density="6,12">Moderate (6–12)</button>
+            <button type="button" class="btn btn-ghost btn-small" data-density="13,30">Busy (13+)</button>
+            <button type="button" class="btn btn-ghost btn-small" data-density="0,30">Any density</button>
+          </div>
+        </div>
+
+        <!-- Sub-card 3 of 3: CLIP class-need -->
+        <div class="cond-card cond-card-classneed">
+          <header class="cond-card-head">
+            <span class="cond-card-eyebrow">CLIP class-need</span>
+            <h5 class="cond-card-title">Hunt rare classes the trained model misses</h5>
+          </header>
+          <p class="muted small">CLIP zero-shot scores every frame against every class — even classes you haven't trained yet. Set a min score per class to find candidates.</p>
+          <div id="picker-classneed-rules" class="picker-classneed-rules"></div>
+          <button type="button" class="btn btn-secondary btn-small" id="picker-add-classneed">+ Add class-need rule</button>
+        </div>
+
+      </div>
+    </details>
+
     <div class="match-strip">
       <div class="match-bignum">
         <span id="rule-match-count">—</span>
