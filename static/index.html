@@ -986,115 +986,140 @@
 
   <!-- ============= STEP 1: Source ============= -->
   <section class="card wiz-pane" data-pane="1">
-    <div class="card-header">
-      <h2><span class="step-badge">1</span> Pick the pictures + the model that will look at them</h2>
-      <p>Either index a new folder, or re-open an existing scan to pick up where you left off.</p>
-    </div>
-
-    <div class="step-explainer">
-      <strong>What's happening here?</strong>
-      <p>You're telling the Suite <em>which folder</em> to scan and <em>which YOLO model</em> should look at every picture. Once you click <em>Start indexing</em>, the model runs on every image and writes to a tiny database what it saw (which classes, how confidently, plus brightness/sharpness/timestamp). That database is the foundation everything else queries — it's a one-time cost per folder.</p>
-      <ul>
-        <li><strong>Scan time:</strong> ~5–15 minutes per 50k pictures on a 3090, assuming the folder is on a local SSD. OneDrive cloud-only files are 20× slower — set "Always keep on this device" first.</li>
-        <li><strong>Sample every Nth:</strong> set to 10 for a fast preview pass, then re-scan with 1 once you've validated your filter rules.</li>
-        <li><strong>Model choice:</strong> custom-trained = your project's classes; stock = generic COCO (people, cars, trucks…).</li>
-      </ul>
-    </div>
-
-    <h3>Option A — Index a new folder or video</h3>
-    <label class="text-row">
-      <span>Source · folder of images <em>or</em> a video file</span>
-      <div class="folder-input-row">
-        <input type="text" id="filter-source" placeholder="C:\path\to\images  ·  or  C:\path\to\walkthrough.mp4" />
-        <button class="btn btn-secondary" id="btn-browse-source" type="button">📁 Folder…</button>
-        <button class="btn btn-secondary" id="btn-browse-video" type="button">🎬 Video…</button>
+    <header class="wiz-pane-head">
+      <span class="step-badge">1</span>
+      <div class="wiz-pane-titles">
+        <span class="wiz-eyebrow">Step 1 · Source</span>
+        <h2 class="wiz-pane-title">Pick the pictures + the model</h2>
+        <p class="wiz-pane-lede">Either index a new folder/video, or re-open a previous scan.</p>
       </div>
-      <span class="muted small">The Suite reads from this path directly — no upload. For a <strong>video</strong>, every frame is extracted first, then detection runs on each frame. Use <em>Sample every Nth image</em> below to skip frames if needed (1&nbsp;=&nbsp;all). Supported: <code>.mp4 .mov .avi .mkv .webm</code>.
-        Recent: <span id="recent-source-paths"></span></span>
-    </label>
-    <div class="filter-grid" style="margin-top:12px">
-      <label class="text-row">
-        <span>Label (for your reference)</span>
-        <input type="text" id="filter-label" placeholder="Site A · Q3 2025" />
-      </label>
-      <label class="text-row">
-        <span>YOLO model</span>
-        <select id="filter-model">
-          <optgroup label="— your registered models —" id="filter-model-mine"></optgroup>
-          <optgroup label="— stock Ultralytics —">
-            <option value="yolov8x-seg.pt">yolov8x-seg.pt — most accurate (~20 img/s on RTX 3090)</option>
-            <option value="yolov8m-seg.pt" selected>yolov8m-seg.pt — balanced (~50 img/s)</option>
-            <option value="yolov8n-seg.pt">yolov8n-seg.pt — fastest (~100 img/s)</option>
-            <option value="yolov8x.pt">yolov8x.pt — detection only, no masks</option>
-          </optgroup>
-        </select>
-        <span class="muted small">Pick one of your custom-trained models to detect your project's classes (e.g. equipment), or a stock model for generic COCO classes.</span>
-      </label>
-      <label class="text-row">
-        <span>Min confidence (during scan)</span>
-        <input type="range" id="filter-conf" min="5" max="60" step="1" value="20" />
-        <span id="filter-conf-value" class="muted small">0.20</span>
-      </label>
-      <label class="text-row">
-        <span>Sample every Nth image</span>
-        <input type="number" id="filter-every" min="1" value="1" />
-        <span class="muted small">1 = every image · 10 = quick survey first pass</span>
-      </label>
-      <label class="checkbox-row">
-        <input type="checkbox" id="filter-recurse" checked />
-        Include all subfolders (recommended) — the scanner walks every level
-      </label>
+    </header>
+
+    <div class="info-banner">
+      <span><strong>What this step does.</strong> Tells the Suite which folder (or video) to scan and which YOLO model looks at every picture. Once you click <em>Start indexing</em>, the model runs on every image and writes to a tiny SQLite what it saw — class, confidence, brightness, sharpness, timestamp. Everything else in the wizard queries that DB. One-time cost per folder.</div>
     </div>
-    <button class="btn btn-primary btn-lg" id="btn-filter-scan" style="margin-top:14px">Start indexing</button>
 
-    <hr style="margin:24px 0; border:none; border-top:1px solid var(--color-border)" />
+    <div class="wiz-section">
+      <header class="wiz-section-head">
+        <span class="wiz-section-eyebrow">Option A</span>
+        <h3 class="wiz-section-title">Index a new folder or video</h3>
+      </header>
 
-    <h3>Option B — Re-open an existing scan</h3>
-    <label class="text-row">
-      <span>Choose a scan</span>
-      <select id="filter-scan-select">
-        <option value="">No scans yet</option>
-      </select>
-    </label>
-    <div id="source-info" class="source-info hidden">
-      <div class="source-info-meta" id="source-info-meta"></div>
-      <h4 style="margin-top:14px">Sample frames</h4>
-      <div id="source-thumbs" class="thumb-grid small"></div>
-      <div class="actions" style="margin-top:14px">
-        <button class="btn btn-secondary" id="btn-source-continue">Continue → Analyse</button>
+      <label class="text-row">
+        <span>Source · folder of images <em>or</em> a video file</span>
+        <div class="folder-input-row">
+          <input type="text" id="filter-source" class="input mono" placeholder="C:\path\to\images   ·   or   C:\path\to\walkthrough.mp4" />
+          <button class="btn btn-secondary" id="btn-browse-source" type="button">Folder…</button>
+          <button class="btn btn-secondary" id="btn-browse-video" type="button">Video…</button>
+        </div>
+        <span class="muted small">No upload. For a <strong>video</strong>, every frame is extracted first then detection runs on each. Supported: <code>.mp4 .mov .avi .mkv .webm</code>. Recent: <span id="recent-source-paths"></span></span>
+      </label>
+
+      <div class="filter-grid" style="margin-top:var(--space-3)">
+        <label class="text-row">
+          <span>Label · for your reference</span>
+          <input type="text" id="filter-label" class="input" placeholder="Site A · Q3 2025" />
+        </label>
+        <label class="text-row">
+          <span>YOLO model</span>
+          <select id="filter-model" class="input">
+            <optgroup label="— your registered models —" id="filter-model-mine"></optgroup>
+            <optgroup label="— stock Ultralytics —">
+              <option value="yolov8x-seg.pt">yolov8x-seg.pt · most accurate · ~20 img/s on 3090</option>
+              <option value="yolov8m-seg.pt" selected>yolov8m-seg.pt · balanced · ~50 img/s</option>
+              <option value="yolov8n-seg.pt">yolov8n-seg.pt · fastest · ~100 img/s</option>
+              <option value="yolov8x.pt">yolov8x.pt · detection only, no masks</option>
+            </optgroup>
+          </select>
+          <span class="muted small">Custom-trained = your project's classes. Stock = generic COCO.</span>
+        </label>
+        <label class="text-row">
+          <span>Min confidence during scan</span>
+          <div class="slider-with-value">
+            <input type="range" id="filter-conf" min="5" max="60" step="1" value="20" />
+            <span id="filter-conf-value" class="slider-value">0.20</span>
+          </div>
+          <span class="muted small">Cuts low-confidence noise from the index.</span>
+        </label>
+        <label class="text-row">
+          <span>Sample every Nth image</span>
+          <input type="number" id="filter-every" class="input" min="1" value="1" />
+          <span class="muted small"><strong>1</strong> = every image · <strong>10</strong> = quick first pass.</span>
+        </label>
+        <label class="checkbox-row checkbox-row-card">
+          <input type="checkbox" id="filter-recurse" checked />
+          <div>
+            <strong>Include all subfolders</strong>
+            <span class="muted small">The scanner walks every level. Recommended.</span>
+          </div>
+        </label>
+      </div>
+
+      <div class="wiz-pane-actions" style="margin-top:var(--space-4)">
+        <button class="btn btn-primary btn-lg" id="btn-filter-scan">Start indexing</button>
+      </div>
+    </div>
+
+    <div class="wiz-section-divider"></div>
+
+    <div class="wiz-section">
+      <header class="wiz-section-head">
+        <span class="wiz-section-eyebrow">Option B</span>
+        <h3 class="wiz-section-title">Re-open an existing scan</h3>
+      </header>
+      <label class="text-row">
+        <span>Choose a scan</span>
+        <select id="filter-scan-select" class="input">
+          <option value="">No scans yet</option>
+        </select>
+      </label>
+      <div id="source-info" class="source-info hidden">
+        <div class="source-info-meta" id="source-info-meta"></div>
+        <h4 style="margin-top:var(--space-3)">Sample frames</h4>
+        <div id="source-thumbs" class="thumb-grid small"></div>
+        <div class="wiz-pane-actions" style="margin-top:var(--space-3)">
+          <button class="btn btn-secondary" id="btn-source-continue">Continue → Analyse</button>
+        </div>
       </div>
     </div>
   </section>
 
   <!-- ============= STEP 2: Index progress ============= -->
   <section class="card wiz-pane hidden" data-pane="2">
-    <div class="card-header">
-      <h2><span class="step-badge">2</span> Scanning every picture</h2>
-      <p>Streaming live from the YOLO scanner. ETA is shown in the log.</p>
-    </div>
+    <header class="wiz-pane-head">
+      <span class="step-badge">2</span>
+      <div class="wiz-pane-titles">
+        <span class="wiz-eyebrow">Step 2 · Scan</span>
+        <h2 class="wiz-pane-title">Indexing every picture</h2>
+        <p class="wiz-pane-lede">Streaming live from the YOLO scanner. ETA is shown in the log.</p>
+      </div>
+      <span class="wiz-pane-status muted small" id="filter-index-status">Waiting…</span>
+    </header>
 
-    <div class="step-explainer">
-      <strong>What's happening here?</strong>
-      <p>For every picture, the model runs once on the GPU, the detections are written to the scan database (class, confidence, count, bounding box), and three quality numbers are computed from a downsampled grayscale copy: <em>brightness</em> (mean pixel value), <em>sharpness</em> (Laplacian variance — high = crisp edges), and <em>contrast</em> (pixel std-dev). The filename is also parsed for a timestamp like <code>YYYY-MM-DD_HH-MM-SS</code> so date/hour filtering works later. You can leave this tab — when the scan finishes a notification fires.</p>
+    <div class="info-banner">
+      <span><strong>What this step does.</strong> For every picture, the model runs once on the GPU; detections (class · confidence · count · bbox) are written to the scan DB; three quality numbers are computed from a grayscale copy: <em>brightness</em> (mean), <em>sharpness</em> (Laplacian var), <em>contrast</em> (std-dev); filenames are parsed for <code>YYYY-MM-DD_HH-MM-SS</code> timestamps so date/hour filtering works later. You can leave this tab — when the scan finishes you'll get a notification.</span>
     </div>
 
     <pre id="filter-log" class="log-output">Waiting…</pre>
-    <div class="actions" style="margin-top:14px">
-      <button class="btn btn-secondary" id="btn-index-continue" disabled>Continue → Analyse</button>
-      <span class="muted small" id="filter-index-status"></span>
+
+    <div class="wiz-pane-actions">
+      <button class="btn btn-primary" id="btn-index-continue" disabled>Continue → Analyse</button>
     </div>
   </section>
 
   <!-- ============= STEP 3: Analyse ============= -->
   <section class="card wiz-pane hidden" data-pane="3">
-    <div class="card-header">
-      <h2><span class="step-badge">3</span> What's in your archive — overview</h2>
-      <p id="filter-summary-label"></p>
-    </div>
+    <header class="wiz-pane-head">
+      <span class="step-badge">3</span>
+      <div class="wiz-pane-titles">
+        <span class="wiz-eyebrow">Step 3 · Results</span>
+        <h2 class="wiz-pane-title">What's in your archive</h2>
+        <p class="wiz-pane-lede" id="filter-summary-label">—</p>
+      </div>
+    </header>
 
-    <div class="step-explainer">
-      <strong>What's happening here?</strong>
-      <p>Now that the scan is done, this is the bird's-eye view. The charts read the <em>quality</em>, <em>brightness</em>, <em>sharpness</em>, and <em>detection</em> distributions across your whole archive. The <em>hour-of-day</em> chart shows when activity happened (parsed from filenames). The <em>co-occurrence</em> heatmap shows which classes appear in the same frames — useful to discover patterns (e.g. "people are usually near machines"). Use this page to <strong>understand the shape of your data before filtering</strong> — the values you'll set in the next step (brightness threshold, quality bar, etc.) make a lot more sense once you've seen these distributions.</p>
+    <div class="info-banner">
+      <span><strong>The bird's-eye view.</strong> Distributions of quality / brightness / sharpness / detections across the whole archive, plus the hour-of-day pattern (parsed from filenames) and the class co-occurrence heatmap. Read these before tightening filters in step 4 — the numbers make sense once you've seen the shapes.</span>
     </div>
 
     <div class="charts-row">
@@ -1160,25 +1185,25 @@
 
     <!-- Quick-presets row -->
     <div class="rule-presets">
-      <h4 style="margin:0 0 8px">⚡ Quick presets</h4>
-      <p class="muted small" style="margin:0 0 10px">One click loads a typical filter combo. Then tweak the sections below.</p>
+      <h4>Quick presets</h4>
+      <p class="muted small" style="margin:0 0 var(--space-2)">One click loads a typical filter combo. Then tweak the sections below.</p>
       <div class="rule-preset-row">
         <button class="btn btn-ghost btn-small" data-preset="daylight"
-                title="Hours 7–19, weekdays, brightness ≥ 80">☀️ Daylight site activity</button>
+                title="Hours 7–19, weekdays, brightness ≥ 80">Daylight site activity</button>
         <button class="btn btn-ghost btn-small" data-preset="annotation"
-                title="Min quality ≥ 4 stars, ≥ 1 detection, brightness 60–200">🎯 Annotation candidates</button>
+                title="Min quality ≥ 4 stars, ≥ 1 detection, brightness 60–200">Annotation candidates</button>
         <button class="btn btn-ghost btn-small" data-preset="night"
-                title="Hours 20–06, all classes">🌙 Night-time only</button>
+                title="Hours 20–06, all classes">Night-time only</button>
         <button class="btn btn-ghost btn-small" data-preset="busy"
-                title="≥ 3 detections per frame, daylight">🏗️ Busy frames only</button>
+                title="≥ 3 detections per frame, daylight">Busy frames only</button>
         <button class="btn btn-ghost btn-small" data-preset="reset"
-                title="Clear all filters and start fresh">↺ Reset all</button>
+                title="Clear all filters and start fresh">Reset all</button>
       </div>
     </div>
 
     <!-- Section A: Detected objects -->
     <details class="rule-section" open>
-      <summary><span class="rule-num">A</span> 🎯 Detected objects</summary>
+      <summary><span class="rule-num">A</span> Detected objects</summary>
       <div class="rule-section-body">
         <p class="muted small">Tick the classes you care about. The logic dropdown decides how multiple ticks combine.</p>
         <div class="rule-grid">
@@ -1207,7 +1232,7 @@
 
     <!-- Section B: Time window -->
     <details class="rule-section" open>
-      <summary><span class="rule-num">B</span> 🕐 When the picture was taken</summary>
+      <summary><span class="rule-num">B</span> When the picture was taken</summary>
       <div class="rule-section-body">
         <p class="muted small" id="rule-date-help">Filenames must contain a parseable timestamp (e.g. <code>2025-04-15_14-32-08.jpg</code>) for time filters to work.</p>
 
@@ -1266,7 +1291,7 @@
 
     <!-- Section D: Weather & lens conditions (heuristic-tagged in scan) -->
     <details class="rule-section" open>
-      <summary><span class="rule-num">D</span> 🌤️ Weather &amp; lens conditions</summary>
+      <summary><span class="rule-num">D</span> Weather &amp; lens conditions</summary>
       <div class="rule-section-body">
         <p class="muted small">During the scan, every picture is auto-tagged for these conditions (night, fog, rain, blur, lens drops, etc.) using the heuristic detector. Tick the conditions you want to keep — or use the logic dropdown to <em>exclude</em> bad ones.</p>
         <div class="rule-grid">
@@ -1289,9 +1314,9 @@
           <p class="muted small" style="padding:14px">No conditions detected yet — re-scan with the latest version to populate this section.</p>
         </div>
         <div class="cond-shortcuts">
-          <button type="button" class="btn btn-ghost btn-small" id="cond-quick-clean">☀️ Clean only (NONE of: night, fog, rain, blur, lens_drops, lens_smudge, overexposed)</button>
-          <button type="button" class="btn btn-ghost btn-small" id="cond-quick-good">✅ Tag = "good" only</button>
-          <button type="button" class="btn btn-ghost btn-small" id="cond-quick-clear">↺ Clear ticks</button>
+          <button type="button" class="btn btn-ghost btn-small" id="cond-quick-clean">Clean only (NONE of: night, fog, rain, blur, lens_drops, lens_smudge, overexposed)</button>
+          <button type="button" class="btn btn-ghost btn-small" id="cond-quick-good">Tag = "good" only</button>
+          <button type="button" class="btn btn-ghost btn-small" id="cond-quick-clear">Clear ticks</button>
         </div>
 
         <div class="cond-clip">
@@ -1302,7 +1327,7 @@
               <input type="checkbox" id="clip-only-uncertain" checked />
               Only re-check uncertain frames (heuristic confidence &lt; 0.85) — faster
             </label>
-            <button class="btn btn-secondary" id="btn-refine-clip" type="button">🔬 Run CLIP refinement</button>
+            <button class="btn btn-secondary" id="btn-refine-clip" type="button">Run CLIP refinement</button>
           </div>
           <span class="muted small" id="clip-refine-status"></span>
         </div>
@@ -1312,7 +1337,7 @@
           <p class="muted small" style="margin:0 0 8px">Have a <code>labels.json</code> mapping <em>filename → good/bad</em> (or named tags)? Import it to override the heuristic for those exact frames. Manual labels win — heuristic and CLIP can't override them.</p>
           <div class="folder-input-row">
             <input type="text" id="labels-import-path" placeholder="C:\path\to\labels.json" />
-            <button class="btn btn-secondary" id="btn-labels-import" type="button">📥 Import labels</button>
+            <button class="btn btn-secondary" id="btn-labels-import" type="button">Import labels</button>
           </div>
           <span class="muted small" id="labels-import-status"></span>
         </div>
@@ -1321,7 +1346,7 @@
 
     <!-- Section C: Image quality -->
     <details class="rule-section" open>
-      <summary><span class="rule-num">C</span> 🌅 Visual quality</summary>
+      <summary><span class="rule-num">C</span> Visual quality</summary>
       <div class="rule-section-body">
         <p class="muted small">Drop pictures that won't be useful — too dark, too washed out, too blurry, or empty of detections.</p>
         <div class="rule-grid">
@@ -1644,25 +1669,23 @@
 
   <!-- ============= STEP 7: Save ============= -->
   <section class="card wiz-pane hidden" data-pane="7">
-    <div class="card-header">
-      <h2><span class="step-badge">7</span> Save the filtered set</h2>
-      <p id="save-summary" class="muted small">Loading match count…</p>
-    </div>
+    <header class="wiz-pane-head">
+      <span class="step-badge">7</span>
+      <div class="wiz-pane-titles">
+        <span class="wiz-eyebrow">Step 7 · Save</span>
+        <h2 class="wiz-pane-title">Save the filtered set</h2>
+        <p class="wiz-pane-lede" id="save-summary">Loading match count…</p>
+      </div>
+    </header>
 
-    <div class="step-explainer">
-      <strong>What's happening here?</strong>
-      <p>Two ways to use the filtered set:</p>
-      <ul>
-        <li><strong>📁 Save folder</strong> — write the pictures into a new folder (shortcuts, hardlinks, or real copies). Optionally burn the detection boxes onto the saved files for review.</li>
-        <li><strong>🎬 Render video</strong> — turn the filtered pictures into an MP4 timelapse, ordered by their capture time. Smart FPS / duration suggestions; optional timestamp overlay; auto crop for vertical-social or cinema 16:9.</li>
-      </ul>
-      <p>You can do <em>both</em> in one click — the video tab and folder tab don't conflict.</p>
+    <div class="info-banner">
+      <span><strong>Two ways to use the filtered set.</strong> <strong>Save folder</strong> writes the pictures into a new folder (shortcuts / hardlinks / real copies). Optionally burns detection boxes onto the saved files for review. <strong>Render video</strong> turns the filtered pictures into an MP4 timelapse, ordered by capture time, with smart FPS suggestions, optional timestamp overlay, and auto-crop for vertical-social or cinema 16:9. You can do <em>both</em> in one click — the tabs don't conflict.</span>
     </div>
 
     <!-- Save tabs -->
     <nav class="save-tabs">
-      <button type="button" class="save-tab active" data-save-tab="folder">📁 Save folder</button>
-      <button type="button" class="save-tab" data-save-tab="video">🎬 Render video</button>
+      <button type="button" class="save-tab active" data-save-tab="folder">Save folder</button>
+      <button type="button" class="save-tab" data-save-tab="video">Render video</button>
     </nav>
 
     <div class="save-tab-pane" data-tab-pane="folder">
