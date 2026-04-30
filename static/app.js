@@ -486,7 +486,7 @@ const STRINGS = {
   en: {
     'dashboard': 'Home', 'wizard': 'Timelapse Editor', 'models': 'Models',
     'train': 'Train', 'live': 'Live RTSP', 'filter': 'Filter',
-    'cameras': 'Cameras', 'swiss': 'CSI',
+    'cameras': 'Cameras', 'swiss': 'Swiss',
     'history': 'History', 'projects': 'Projects',
     'no_models': 'No models registered yet.',
     'no_projects': 'No projects yet.',
@@ -495,7 +495,7 @@ const STRINGS = {
   de: {
     'dashboard': 'Start', 'wizard': 'Zeitraffer-Editor', 'models': 'Modelle',
     'train': 'Training', 'live': 'Live RTSP', 'filter': 'Filter',
-    'cameras': 'Kameras', 'swiss': 'CSI',
+    'cameras': 'Kameras', 'swiss': 'Swiss',
     'history': 'Verlauf', 'projects': 'Projekte',
     'no_models': 'Noch keine Modelle registriert.',
     'no_projects': 'Noch keine Projekte.',
