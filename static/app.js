@@ -2182,8 +2182,19 @@ function buildRuleUI() {
   // Reset rule defaults
   ruleSelectedHours = new Set([...Array(24).keys()]);
 
-  // Day-of-week pill toggles
+  // Day-of-week pill toggles.
+  // NOTE: buildRuleUI() is called every time the operator enters Step 4
+  // (and again after every preset click). The DoW pills, shortcut buttons,
+  // daily-window inputs, preset row, and rule-control inputs are STATIC
+  // HTML — they're not recreated on each call — so naive addEventListener
+  // would stack 2+ handlers per element after the first visit. Stacked
+  // toggle handlers cancel each other out (handler 1 toggles OFF, handler
+  // 2 immediately toggles back ON), making the pills appear "frozen" on
+  // their initial state. Guard with .dataset.wired so each handler is
+  // attached exactly once for the lifetime of the page.
   document.querySelectorAll('#dow-pills button').forEach(b => {
+    if (b.dataset.wired) return;
+    b.dataset.wired = '1';
     b.addEventListener('click', () => {
       const d = parseInt(b.dataset.dow);
       if (ruleSelectedDow.has(d)) {
@@ -2197,19 +2208,28 @@ function buildRuleUI() {
     });
   });
   // DoW shortcuts
-  if ($('dow-weekdays')) $('dow-weekdays').addEventListener('click', () => setDow([1,2,3,4,5]));
-  if ($('dow-weekends')) $('dow-weekends').addEventListener('click', () => setDow([6,7]));
-  if ($('dow-all'))      $('dow-all').addEventListener('click', () => setDow([1,2,3,4,5,6,7]));
+  const _wireOnce = (id, fn) => {
+    const el = $(id);
+    if (!el || el.dataset.wired) return;
+    el.dataset.wired = '1';
+    el.addEventListener('click', fn);
+  };
+  _wireOnce('dow-weekdays', () => setDow([1,2,3,4,5]));
+  _wireOnce('dow-weekends', () => setDow([6,7]));
+  _wireOnce('dow-all',      () => setDow([1,2,3,4,5,6,7]));
 
   // Daily window from / until pickers — sync into ruleSelectedHours + grid
   ['rule-day-start', 'rule-day-end'].forEach(id => {
     const el = $(id);
-    if (!el) return;
+    if (!el || el.dataset.wired) return;
+    el.dataset.wired = '1';
     el.addEventListener('input', () => { applyDailyWindowToHours(); scheduleRuleRecount(); });
   });
 
   // Quick-preset buttons
   document.querySelectorAll('.rule-preset-row button[data-preset]').forEach(b => {
+    if (b.dataset.wired) return;
+    b.dataset.wired = '1';
     b.addEventListener('click', () => applyRulePreset(b.dataset.preset));
   });
 
@@ -2218,7 +2238,8 @@ function buildRuleUI() {
    'rule-max-brightness','rule-min-sharpness','rule-min-dets',
    'rule-min-date','rule-max-date'].forEach(id => {
     const el = $(id);
-    if (!el) return;
+    if (!el || el.dataset.wired) return;
+    el.dataset.wired = '1';
     el.addEventListener('input', () => {
       // Update inline value labels for ranges
       if ($(id + '-value')) {
