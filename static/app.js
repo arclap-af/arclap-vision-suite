@@ -1595,6 +1595,24 @@ function renderRecentPaths() {
 if ($('btn-browse-source')) {
   $('btn-browse-source').addEventListener('click', () => openFolderModal('filter-source'));
 }
+if ($('btn-browse-video')) {
+  $('btn-browse-video').addEventListener('click',
+    () => openFolderModal('filter-source', '.mp4,.mov,.avi,.mkv,.webm'));
+}
+
+// Show/hide the "frames to extract" input based on whether the path looks like a video.
+const VIDEO_EXT_RE = /\.(mp4|mov|avi|mkv|webm)$/i;
+function refreshFilterSourceMode() {
+  const v = ($('filter-source')?.value || '').trim();
+  const isVideo = VIDEO_EXT_RE.test(v);
+  const row = $('filter-video-options-row');
+  if (row) row.classList.toggle('hidden', !isVideo);
+}
+if ($('filter-source')) {
+  $('filter-source').addEventListener('input', refreshFilterSourceMode);
+  // Run once on load to handle any pre-filled value.
+  setTimeout(refreshFilterSourceMode, 0);
+}
 if ($('folder-modal-close')) {
   $('folder-modal-close').addEventListener('click', closeFolderModal);
 }
@@ -1650,7 +1668,8 @@ bindRange('export-conf', 'export-conf-value');
 if ($('btn-filter-scan')) {
   $('btn-filter-scan').addEventListener('click', async () => {
     const source = $('filter-source').value.trim();
-    if (!source) { toast('Enter a source folder path first', 'error'); return; }
+    if (!source) { toast('Enter a source folder path or a video file first', 'error'); return; }
+    const isVideo = VIDEO_EXT_RE.test(source);
     const body = {
       source_path: source,
       label: $('filter-label').value.trim() || null,
@@ -1658,6 +1677,9 @@ if ($('btn-filter-scan')) {
       conf: parseInt($('filter-conf').value) / 100,
       every: parseInt($('filter-every').value) || 1,
       recurse: $('filter-recurse').checked,
+      video_n_frames: isVideo
+        ? Math.max(10, parseInt($('filter-video-n-frames').value) || 240)
+        : null,
     };
     $('btn-filter-scan').classList.add('loading');
     try {

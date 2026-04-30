@@ -1941,22 +1941,69 @@ class FilterScanRequest(BaseModel):
     every: int = 1
     recurse: bool = True
     classes: str | None = None  # comma-separated class IDs
-    label: str | None = None   # human label for the scan
+    label: str | None = None    # human label for the scan
+    video_n_frames: int | None = None  # how many frames to sample if source is a video
+
+
+_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 
 
 @app.post("/api/filter/scan")
 def filter_scan(req: FilterScanRequest):
     src = Path(req.source_path).expanduser().resolve()
-    if not src.is_dir():
-        raise HTTPException(400, f"Folder not found: {src}")
     scan_id = uuid.uuid4().hex[:12]
+    video_meta = None
+
+    # If the user pointed at a video file, sample evenly-spaced frames
+    # into a temp folder under _outputs/, then run the scan against that.
+    if src.is_file() and src.suffix.lower() in _VIDEO_EXTS:
+        n_frames = max(10, int(req.video_n_frames or 240))
+        frames_dir = OUTPUTS / f"filter_frames_{scan_id}"
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        cap = cv2.VideoCapture(str(src))
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        if total <= 0:
+            cap.release()
+            raise HTTPException(400, f"Video has no readable frames: {src}")
+        n = min(n_frames, total)
+        indices = [int(i * (total - 1) / max(1, n - 1)) for i in range(n)]
+        written = 0
+        for idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            dst = frames_dir / f"{src.stem}_f{written:05d}.jpg"
+            cv2.imwrite(str(dst), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            written += 1
+        cap.release()
+        if written == 0:
+            raise HTTPException(400, "Could not extract any frames from the video")
+        video_meta = {
+            "video_path": str(src),
+            "frames_extracted": written,
+            "frames_dir": str(frames_dir),
+            "video_total_frames": total,
+            "video_fps": fps,
+        }
+        # Hand off the frame folder as the actual scan source
+        src = frames_dir
+
+    elif not src.is_dir():
+        raise HTTPException(400,
+            f"Source not found: {src}. Pass a folder of images or a video file "
+            f"({', '.join(sorted(_VIDEO_EXTS))})")
+
     db_path = DATA / f"filter_{scan_id}.db"
-    label = req.label or src.name
+    label = req.label or (Path(video_meta["video_path"]).stem if video_meta else src.name)
     settings = {
         "model": req.model, "conf": req.conf, "batch": req.batch,
         "every": req.every, "recurse": req.recurse, "classes": req.classes,
         "label": label,
     }
+    if video_meta:
+        settings.update(video_meta)
     job = db.create_job(
         kind="folder", mode="filter_scan",
         input_ref=str(src),
@@ -1964,7 +2011,12 @@ def filter_scan(req: FilterScanRequest):
         settings=settings,
     )
     queue.submit(job.id)
-    return {"job_id": job.id, "scan_id": scan_id, "db_path": str(db_path)}
+    return {
+        "job_id": job.id,
+        "scan_id": scan_id,
+        "db_path": str(db_path),
+        "video": video_meta,
+    }
 
 
 @app.get("/api/filter/scans")
