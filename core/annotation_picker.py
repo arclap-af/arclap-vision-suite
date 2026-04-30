@@ -989,11 +989,14 @@ def cluster_v2(scan_db_path, *, n_clusters: int = 200,
         "INSERT INTO image_cluster_v2 VALUES (?, ?, ?)", data)
     conn.commit()
     conn.close()
+    # Convert numpy types to native Python so FastAPI's JSON encoder
+    # accepts the response body (np.str_ / np.int64 → str / int).
+    uniq, counts = np.unique(cluster_label, return_counts=True)
+    label_distribution = {str(u): int(c) for u, c in zip(uniq, counts)}
     return {"n_clusters": int(n_clusters),
-            "n_images": len(paths),
+            "n_images": int(len(paths)),
             "scoped": bool(path_filter),
-            "label_distribution": dict(zip(*np.unique(cluster_label,
-                                                      return_counts=True)))}
+            "label_distribution": label_distribution}
 
 
 # ─── Pick run lifecycle ─────────────────────────────────────────────
