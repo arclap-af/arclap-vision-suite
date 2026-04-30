@@ -1398,17 +1398,25 @@
     const grid = $('pp-curator-grid'); if (!grid) return;
     const cards = grid.querySelectorAll('.pp-card');
     const indices = Array.from(_ppSelected).sort((a, b) => a - b);
-    // Show a non-blocking progress hint via the bulk-hint span
     const hint = $('pp-bulk-hint');
     const total = indices.length;
     let done = 0;
     if (hint) hint.textContent = `Applying ${status} to ${total} picks…`;
-    // Sequential to avoid hammering the server; small concurrency would be
-    // possible but keeps the UI deterministic.
+    const undoBatch = [];
     for (const idx of indices) {
       const card = cards[idx];
       if (!card) continue;
       const path = decodeURIComponent(card.dataset.path);
+      const prev = _ppPicksCache.find(p => p.path === path);
+      if (prev) {
+        undoBatch.push({
+          path,
+          prev_status: prev.status || 'pending',
+          prev_reject: prev.reject_reason || null,
+          prev_reclass: prev.reclass_id != null ? prev.reclass_id : null,
+        });
+        prev.status = status;
+      }
       try {
         await fetch(`/api/picker/${_ppActiveScan}/runs/${_ppActiveRun}/curator`, {
           method: 'POST', headers: {'Content-Type':'application/json'},
@@ -1420,10 +1428,425 @@
       done++;
       if (hint && done % 10 === 0) hint.textContent = `Applying ${status}… ${done} / ${total}`;
     }
+    _ppRecordUndo(undoBatch);
     if (hint) hint.textContent = `Applied ${status} to ${total} picks.`;
     _ppSelected.clear();
     _ppRefreshBulkBar();
     updateCuratorCounts();
+    _ppRefreshQuota();
+    if (status === 'approved') await _ppRefreshReference();
+  }
+
+  // ─── Per-class quota tracker (Tier 2 #4) ────────────────────────
+  async function _ppRefreshQuota() {
+    if (!_ppActiveScan || !_ppActiveRun) return;
+    try {
+      const data = await (await fetch(`/api/picker/${_ppActiveScan}/runs/${_ppActiveRun}/quota`)).json();
+      const bar = $('pp-quota-bar'); if (!bar) return;
+      bar.hidden = false;
+      const target = data.per_class_target || 0;
+      const covered = data.n_classes_covered || 0;
+      const totalEl = $('pp-quota-total');
+      const coveredEl = $('pp-quota-covered');
+      const targetEl = $('pp-quota-target');
+      const totalClasses = (data.by_class || []).length || _ppTaxonomy.length || 40;
+      if (totalEl) totalEl.textContent = totalClasses;
+      if (coveredEl) coveredEl.textContent = covered;
+      if (targetEl) targetEl.textContent = target ? `target ${target}/class · ${data.n_classes_below_half} below half` : 'no target set';
+      const grid = $('pp-quota-grid');
+      if (grid && !grid.hidden) _ppRenderQuotaGrid(data);
+      grid && grid.dataset && (grid.dataset.payload = JSON.stringify(data));
+    } catch(_e) {}
+  }
+  function _ppRenderQuotaGrid(data) {
+    const grid = $('pp-quota-grid'); if (!grid) return;
+    const target = data.per_class_target || 0;
+    const rows = (data.by_class || []).slice().sort((a, b) => a.class_id - b.class_id);
+    grid.innerHTML = rows.map(r => {
+      const kept = (r.approved || 0) + (r.holdout || 0);
+      const pct = target ? Math.min(100, Math.round(100 * kept / target)) : 0;
+      const cname = _ppClassName(r.class_id);
+      const danger = target && kept < target / 2;
+      return `<div class="pp-quota-row${danger ? ' under' : ''}" data-classid="${r.class_id}">
+        <span class="pp-quota-name" title="${escapeAttr(cname)}">${escapeText(cname)}</span>
+        <span class="pp-quota-bar-track"><span class="pp-quota-bar-fill" style="width:${pct}%"></span></span>
+        <span class="pp-quota-num mono">${kept}/${target || '?'}</span>
+      </div>`;
+    }).join('');
+    grid.querySelectorAll('.pp-quota-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const cid = row.dataset.classid;
+        const sel = $('pp-curator-class');
+        if (sel) {
+          sel.value = cid;
+          loadCuratorPicks();
+        }
+      });
+    });
+  }
+
+  // ─── Lightbox (Tier 1 #3) ───────────────────────────────────────
+  let _lbIdx = -1;
+  let _lbZoom = 1;
+  let _lbPan = { x: 0, y: 0 };
+  function _ppOpenLightbox(idx) {
+    const lb = $('pp-lightbox'); if (!lb) return;
+    _lbIdx = idx;
+    _lbZoom = 1; _lbPan = { x: 0, y: 0 };
+    _ppPaintLightbox();
+    lb.classList.remove('hidden');
+    document.body.classList.add('lb-open');
+  }
+  function _ppCloseLightbox() {
+    const lb = $('pp-lightbox'); if (!lb) return;
+    lb.classList.add('hidden');
+    document.body.classList.remove('lb-open');
+    _lbIdx = -1;
+  }
+  function _ppPaintLightbox() {
+    const p = _ppPicksCache[_lbIdx];
+    if (!p) return;
+    const img = $('pp-lightbox-img');
+    const svg = $('pp-lightbox-svg');
+    const info = $('pp-lightbox-info');
+    if (img) {
+      img.src = `/api/picker/image?path=${encodeURIComponent(p.path)}`;
+      img.style.transform = `scale(${_lbZoom}) translate(${_lbPan.x}px, ${_lbPan.y}px)`;
+    }
+    if (svg) {
+      svg.innerHTML = '';
+      img.onload = () => {
+        const nw = img.naturalWidth, nh = img.naturalHeight;
+        if (!nw || !nh) return;
+        svg.setAttribute('viewBox', `0 0 ${nw} ${nh}`);
+        (p.bboxes || []).forEach(b => {
+          const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          r.setAttribute('x', b.x1);
+          r.setAttribute('y', b.y1);
+          r.setAttribute('width', Math.max(0, b.x2 - b.x1));
+          r.setAttribute('height', Math.max(0, b.y2 - b.y1));
+          r.setAttribute('class', 'pp-lb-bbox');
+          svg.appendChild(r);
+          const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          t.setAttribute('x', b.x1 + 6);
+          t.setAttribute('y', b.y1 + 22);
+          t.setAttribute('class', 'pp-lb-bbox-label');
+          t.textContent = (b.obj || 0).toFixed(2);
+          svg.appendChild(t);
+        });
+        svg.style.transform = `scale(${_lbZoom}) translate(${_lbPan.x}px, ${_lbPan.y}px)`;
+      };
+    }
+    if (info) {
+      const det = (p.top_detections || []).map(d =>
+        `${d.class_name || ('cls ' + d.class_id)} ${(d.max_conf || 0).toFixed(2)}`).join(' · ') || 'no scan detections';
+      info.innerHTML = `
+        <div class="lb-row"><strong>${escapeText(_ppClassName(p.class_id))}</strong>
+          <span class="lb-score">score ${(p.score || 0).toFixed(2)}</span>
+          ${p.cluster_label ? `<span class="lb-cluster">${escapeText(p.cluster_label)}</span>` : ''}
+          <span class="lb-status pill ${p.status || 'pending'}">${p.status || 'pending'}</span>
+        </div>
+        <div class="lb-reason">${p.reason ? escapeText(p.reason) : '—'}</div>
+        <div class="lb-detections muted small">model detections · ${escapeText(det)}</div>
+        <div class="lb-path mono small">${escapeText(p.path)}</div>`;
+    }
+  }
+  document.addEventListener('keydown', (e) => {
+    const lb = $('pp-lightbox');
+    if (!lb || lb.classList.contains('hidden')) return;
+    const k = e.key.toLowerCase();
+    if (k === 'escape') { _ppCloseLightbox(); }
+    else if (k === 'arrowright' || k === 'arrowdown') {
+      e.preventDefault(); _lbIdx = Math.min(_ppPicksCache.length - 1, _lbIdx + 1);
+      _lbZoom = 1; _lbPan = {x:0,y:0}; _ppPaintLightbox();
+    } else if (k === 'arrowleft' || k === 'arrowup') {
+      e.preventDefault(); _lbIdx = Math.max(0, _lbIdx - 1);
+      _lbZoom = 1; _lbPan = {x:0,y:0}; _ppPaintLightbox();
+    } else if (k === 'a' || k === 'h' || k === 'r') {
+      const map = { a: 'approved', h: 'holdout', r: 'rejected' };
+      const p = _ppPicksCache[_lbIdx];
+      if (p) {
+        e.preventDefault();
+        _ppApply([{ path: p.path, status: map[k] }]);
+      }
+    }
+  });
+  // Lightbox wheel zoom + drag pan
+  (function wireLightbox() {
+    const stage = $('pp-lightbox-stage');
+    if (!stage) return;
+    stage.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      _lbZoom = Math.max(1, Math.min(8, _lbZoom * delta));
+      const img = $('pp-lightbox-img');
+      const svg = $('pp-lightbox-svg');
+      const t = `scale(${_lbZoom}) translate(${_lbPan.x}px, ${_lbPan.y}px)`;
+      if (img) img.style.transform = t;
+      if (svg) svg.style.transform = t;
+    }, { passive: false });
+    let dragging = false, sx = 0, sy = 0;
+    stage.addEventListener('mousedown', (e) => { dragging = true; sx = e.clientX; sy = e.clientY; });
+    stage.addEventListener('mouseup',   () => { dragging = false; });
+    stage.addEventListener('mouseleave',() => { dragging = false; });
+    stage.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const dx = (e.clientX - sx) / _lbZoom;
+      const dy = (e.clientY - sy) / _lbZoom;
+      sx = e.clientX; sy = e.clientY;
+      _lbPan.x += dx; _lbPan.y += dy;
+      const img = $('pp-lightbox-img');
+      const svg = $('pp-lightbox-svg');
+      const t = `scale(${_lbZoom}) translate(${_lbPan.x}px, ${_lbPan.y}px)`;
+      if (img) img.style.transform = t;
+      if (svg) svg.style.transform = t;
+    });
+  })();
+
+  // ─── Reject-reason mini-modal (Tier 2 #5) ───────────────────────
+  let _rejectCb = null;
+  function _ppPromptRejectReason(card, cb) {
+    const m = $('pp-reject-modal');
+    if (!m) { cb(null); return; }
+    _rejectCb = cb;
+    m.classList.remove('hidden');
+  }
+  document.addEventListener('click', (e) => {
+    const m = $('pp-reject-modal');
+    if (!m || m.classList.contains('hidden')) return;
+    const btn = e.target.closest('[data-reason]');
+    if (btn) {
+      const reason = btn.dataset.reason;
+      m.classList.add('hidden');
+      if (_rejectCb) _rejectCb(reason);
+      _rejectCb = null;
+      return;
+    }
+    if (e.target.id === 'pp-reject-cancel') {
+      m.classList.add('hidden'); _rejectCb = null; return;
+    }
+    if (e.target.id === 'pp-reject-skip') {
+      m.classList.add('hidden');
+      if (_rejectCb) _rejectCb(null);
+      _rejectCb = null;
+      return;
+    }
+  });
+
+  // ─── Re-classify popover (Tier 3 #12) ───────────────────────────
+  let _reclassCard = null;
+  function _ppOpenReclass(card) {
+    const pop = $('pp-reclass-popover'); if (!pop) return;
+    _reclassCard = card;
+    const list = $('pp-reclass-list');
+    if (list) {
+      list.innerHTML = _ppTaxonomy.map(c =>
+        `<button type="button" data-cid="${c.id}">
+          <span class="cid">${c.id}</span>
+          <span>${escapeText(c.en)}${c.de ? ` <em class="muted small">${escapeText(c.de)}</em>` : ''}</span>
+        </button>`
+      ).join('');
+    }
+    const filter = $('pp-reclass-filter');
+    if (filter) filter.value = '';
+    const r = card.getBoundingClientRect();
+    pop.style.top = (window.scrollY + r.bottom + 6) + 'px';
+    pop.style.left = (window.scrollX + Math.max(8, Math.min(window.innerWidth - 320, r.left))) + 'px';
+    pop.classList.remove('hidden');
+  }
+  document.addEventListener('click', (e) => {
+    const pop = $('pp-reclass-popover');
+    if (!pop || pop.classList.contains('hidden')) return;
+    const inPop = pop.contains(e.target);
+    const inOpener = e.target.closest('[data-act="reclass"]');
+    if (!inPop && !inOpener) { pop.classList.add('hidden'); return; }
+    const cancelBtn = e.target.closest('#pp-reclass-cancel');
+    if (cancelBtn) { pop.classList.add('hidden'); return; }
+    const opt = e.target.closest('[data-cid]');
+    if (opt && _reclassCard) {
+      const cid = parseInt(opt.dataset.cid);
+      const path = decodeURIComponent(_reclassCard.dataset.path);
+      _ppApply([{ path, status: 'approved', reclass_id: cid }]);
+      pop.classList.add('hidden');
+      _reclassCard = null;
+    }
+  });
+  document.addEventListener('input', (e) => {
+    if (e.target.id !== 'pp-reclass-filter') return;
+    const q = (e.target.value || '').toLowerCase();
+    const list = $('pp-reclass-list');
+    if (!list) return;
+    list.querySelectorAll('button').forEach(b => {
+      const txt = b.textContent.toLowerCase();
+      b.style.display = txt.includes(q) ? '' : 'none';
+    });
+  });
+
+  // ─── Similar frames panel (Tier 2 #6) ───────────────────────────
+  async function _ppLoadSimilar(path) {
+    const sec = $('pp-similar-section');
+    const wrap = $('pp-similar-thumbs');
+    const panel = $('pp-side-panel');
+    if (!sec || !wrap || !panel) return;
+    panel.classList.remove('hidden');
+    sec.hidden = false;
+    wrap.innerHTML = '<p class="muted small" style="padding:8px">Finding similar…</p>';
+    try {
+      const r = await (await fetch(
+        `/api/picker/${_ppActiveScan}/similar?path=${encodeURIComponent(path)}&k=6`
+      )).json();
+      const list = r.neighbors || [];
+      if (!list.length) {
+        wrap.innerHTML = '<p class="muted small" style="padding:8px">No similar frames in CLIP space (run stage 2 first?).</p>';
+        return;
+      }
+      wrap.innerHTML = list.map(n => `
+        <a class="pp-side-thumb" data-path="${encodeURIComponent(n.path)}" title="cos ${n.sim.toFixed(2)}">
+          <img src="/api/picker/image?path=${encodeURIComponent(n.path)}" loading="lazy"/>
+          <span class="pp-side-thumb-sim mono">${n.sim.toFixed(2)}</span>
+        </a>`).join('');
+      wrap.querySelectorAll('.pp-side-thumb').forEach(a => {
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          const p = decodeURIComponent(a.dataset.path);
+          // Highlight in grid + open lightbox if present in cache
+          const idx = _ppPicksCache.findIndex(x => x.path === p);
+          if (idx >= 0) _ppOpenLightbox(idx);
+          else window.open(`/api/picker/image?path=${encodeURIComponent(p)}`, '_blank');
+        });
+      });
+    } catch(_e) {
+      wrap.innerHTML = '<p class="muted small" style="padding:8px">Could not load similar frames.</p>';
+    }
+  }
+
+  // ─── Diversity nudge (Tier 3 #11) ───────────────────────────────
+  function _ppCheckDiversity() {
+    const sec = $('pp-diversity-section');
+    const note = $('pp-diversity-note');
+    if (!sec || !note) return;
+    // Count approved per cluster across the in-memory cache
+    const counts = {};
+    _ppPicksCache.forEach(p => {
+      if (p.status !== 'approved') return;
+      const k = p.cluster_label || `cluster ${p.cluster_id || '?'}`;
+      counts[k] = (counts[k] || 0) + 1;
+    });
+    const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    const top = entries[0];
+    if (top && top[1] >= 30) {
+      sec.hidden = false;
+      note.innerHTML = `You've approved <strong>${top[1]}</strong> frames of <strong>${escapeText(top[0])}</strong>. Consider sampling another cluster for diversity — under-represented phases improve generalisation.`;
+    } else {
+      sec.hidden = true;
+      note.textContent = '—';
+    }
+  }
+
+  // ─── Reference frame for active class (Tier 3 #10) ──────────────
+  async function _ppRefreshReference() {
+    const sec = $('pp-reference-thumbs');
+    if (!sec) return;
+    const cls = $('pp-curator-class') ? $('pp-curator-class').value : '';
+    if (cls === '') {
+      sec.innerHTML = '<p class="muted small" style="padding:8px">Filter by a single class to see its reference.</p>';
+      return;
+    }
+    // First approved pick of that class becomes the reference
+    const ref = _ppPicksCache.find(p =>
+      String(p.class_id) === String(cls) && p.status === 'approved');
+    if (!ref) {
+      sec.innerHTML = '<p class="muted small" style="padding:8px">Approve one frame of this class to set a reference.</p>';
+      return;
+    }
+    sec.innerHTML = `
+      <div class="pp-side-thumb pp-side-thumb-large">
+        <img src="/api/picker/image?path=${encodeURIComponent(ref.path)}" loading="lazy"/>
+        <span class="pp-side-thumb-sim mono">ref</span>
+      </div>
+      <p class="muted small" style="padding:6px 8px">${escapeText(_ppShortenReason(ref.reason || ''))}</p>`;
+  }
+
+  // Wire the new toolbar bits (sort, bbox toggle, blur preview, undo)
+  if ($('pp-curator-sort') && !$('pp-curator-sort').dataset.wired) {
+    $('pp-curator-sort').dataset.wired = '1';
+    $('pp-curator-sort').addEventListener('change', loadCuratorPicks);
+  }
+  if ($('pp-show-bboxes') && !$('pp-show-bboxes').dataset.wired) {
+    $('pp-show-bboxes').dataset.wired = '1';
+    $('pp-show-bboxes').addEventListener('change', loadCuratorPicks);
+  }
+  if ($('pp-preview-blur') && !$('pp-preview-blur').dataset.wired) {
+    $('pp-preview-blur').dataset.wired = '1';
+    $('pp-preview-blur').addEventListener('change', () => {
+      const grid = $('pp-curator-grid'); if (!grid) return;
+      const on = $('pp-preview-blur').checked;
+      grid.querySelectorAll('.pp-card .pp-card-thumb img').forEach(img => {
+        if (on) {
+          const path = decodeURIComponent(img.closest('.pp-card').dataset.path);
+          img.dataset.origSrc = img.src;
+          img.src = `/api/picker/blur-preview?path=${encodeURIComponent(path)}`;
+        } else {
+          if (img.dataset.origSrc) img.src = img.dataset.origSrc;
+        }
+      });
+    });
+  }
+  if ($('pp-undo') && !$('pp-undo').dataset.wired) {
+    $('pp-undo').dataset.wired = '1';
+    $('pp-undo').addEventListener('click', _ppUndoLast);
+  }
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      const tag = document.activeElement && document.activeElement.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const grid = $('pp-curator-grid');
+      if (!grid || !grid.querySelector('.pp-card')) return;
+      e.preventDefault();
+      _ppUndoLast();
+    }
+  });
+  if ($('pp-quota-toggle') && !$('pp-quota-toggle').dataset.wired) {
+    $('pp-quota-toggle').dataset.wired = '1';
+    $('pp-quota-toggle').addEventListener('click', () => {
+      const grid = $('pp-quota-grid'); if (!grid) return;
+      grid.hidden = !grid.hidden;
+      $('pp-quota-toggle').textContent = grid.hidden ? 'Show breakdown' : 'Hide breakdown';
+      if (!grid.hidden) {
+        try {
+          const data = JSON.parse(grid.dataset.payload || '{}');
+          _ppRenderQuotaGrid(data);
+        } catch(_e) {}
+      }
+    });
+  }
+  if ($('pp-side-close') && !$('pp-side-close').dataset.wired) {
+    $('pp-side-close').dataset.wired = '1';
+    $('pp-side-close').addEventListener('click', () => $('pp-side-panel').classList.add('hidden'));
+  }
+  // Lightbox wiring
+  if ($('pp-lightbox-close') && !$('pp-lightbox-close').dataset.wired) {
+    $('pp-lightbox-close').dataset.wired = '1';
+    $('pp-lightbox-close').addEventListener('click', _ppCloseLightbox);
+    $('pp-lightbox-prev').addEventListener('click', () => {
+      _lbIdx = Math.max(0, _lbIdx - 1); _lbZoom = 1; _lbPan = {x:0,y:0}; _ppPaintLightbox();
+    });
+    $('pp-lightbox-next').addEventListener('click', () => {
+      _lbIdx = Math.min(_ppPicksCache.length - 1, _lbIdx + 1); _lbZoom = 1; _lbPan = {x:0,y:0}; _ppPaintLightbox();
+    });
+    document.querySelectorAll('.pp-lightbox-actions [data-lb-act]').forEach(b => {
+      b.addEventListener('click', () => {
+        const p = _ppPicksCache[_lbIdx]; if (!p) return;
+        const act = b.dataset.lbAct;
+        if (act === 'rejected') {
+          _ppPromptRejectReason(null, async (reason) => {
+            await _ppApply([{ path: p.path, status: 'rejected', reject_reason: reason }]);
+          });
+        } else {
+          _ppApply([{ path: p.path, status: act }]);
+        }
+      });
+    });
   }
 
   function _ppSelectAllVisible(on) {
@@ -1464,78 +1887,263 @@
     }
   });
 
+  // ─── Tier 1+2+3 curator state ───────────────────────────────────
+  let _ppPicksCache = [];          // current pick rows (with bboxes etc.)
+  let _ppTaxonomy = [];            // [{id, en, de}] for re-classify lookup
+  let _ppClassNames = {};          // {class_id: en} cached per session
+  let _ppUndoStack = [];           // last actions: {path, prev_status}
+  const _PP_UNDO_MAX = 50;
+
+  function _ppRecordUndo(entries) {
+    // entries: [{path, prev_status, prev_reject, prev_reclass}]
+    if (!entries || !entries.length) return;
+    _ppUndoStack.push(entries);
+    while (_ppUndoStack.length > _PP_UNDO_MAX) _ppUndoStack.shift();
+    const btn = $('pp-undo');
+    if (btn) btn.disabled = false;
+  }
+
+  async function _ppUndoLast() {
+    const last = _ppUndoStack.pop();
+    if (!last) return;
+    for (const e of last) {
+      try {
+        await fetch(`/api/picker/${_ppActiveScan}/runs/${_ppActiveRun}/curator`, {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            path: e.path,
+            status: e.prev_status,
+            reject_reason: e.prev_reject || null,
+            reclass_id: e.prev_reclass != null ? e.prev_reclass : null,
+          }),
+        });
+      } catch(_e) {}
+    }
+    const btn = $('pp-undo');
+    if (btn) btn.disabled = _ppUndoStack.length === 0;
+    await loadCuratorPicks();
+  }
+
+  async function _ppEnsureTaxonomy() {
+    if (_ppTaxonomy.length || !_ppActiveScan) return;
+    try {
+      const t = await (await fetch(`/api/picker/taxonomy/${_ppActiveScan}`)).json();
+      _ppTaxonomy = (t.taxonomy || []).map(c => ({
+        id: c.id, en: c.en || `class ${c.id}`, de: c.de || ''
+      }));
+      _ppTaxonomy.forEach(c => { _ppClassNames[c.id] = c.en; });
+    } catch(_e) {}
+  }
+
+  function _ppClassName(id) {
+    return _ppClassNames[id] || `class ${id}`;
+  }
+
+  // Build the bbox overlay markup. `bboxes` are pixel-space (x1,y1,x2,y2)
+  // from image_classagnostic. We render absolutely-positioned divs and
+  // scale them once the <img> reports its natural dimensions via onload.
+  function _ppBboxOverlay(card, bboxes) {
+    if (!bboxes || !bboxes.length) return;
+    const img = card.querySelector('img');
+    const wrap = card.querySelector('.pp-card-thumb');
+    if (!img || !wrap) return;
+    const draw = () => {
+      const nw = img.naturalWidth || 1;
+      const nh = img.naturalHeight || 1;
+      const rw = img.clientWidth;
+      const rh = img.clientHeight;
+      if (!nw || !nh || !rw || !rh) return;
+      const sx = rw / nw, sy = rh / nh;
+      const old = wrap.querySelector('.pp-bbox-layer');
+      if (old) old.remove();
+      const layer = document.createElement('div');
+      layer.className = 'pp-bbox-layer';
+      bboxes.slice(0, 6).forEach(b => {
+        const box = document.createElement('div');
+        box.className = 'pp-bbox';
+        box.style.left   = (b.x1 * sx) + 'px';
+        box.style.top    = (b.y1 * sy) + 'px';
+        box.style.width  = ((b.x2 - b.x1) * sx) + 'px';
+        box.style.height = ((b.y2 - b.y1) * sy) + 'px';
+        const lbl = document.createElement('span');
+        lbl.className = 'pp-bbox-label';
+        lbl.textContent = (b.obj || 0).toFixed(2);
+        box.appendChild(lbl);
+        layer.appendChild(box);
+      });
+      wrap.appendChild(layer);
+    };
+    if (img.complete) draw();
+    else img.addEventListener('load', draw, { once: true });
+    // Re-draw on resize so the layer tracks the rendered thumb size
+    new ResizeObserver(draw).observe(img);
+  }
+
+  function _ppCardHTML(p, i, opts) {
+    const fname = (p.path.split(/[\\/]/).pop() || p.path);
+    const safePath = encodeURIComponent(p.path);
+    const reasonChip = p.reason
+      ? `<span class="pp-reason" title="${escapeAttr(p.reason)}">${escapeText(_ppShortenReason(p.reason))}</span>`
+      : '';
+    const clsName = _ppClassName(p.class_id);
+    const clusterPill = p.cluster_label
+      ? `<span class="pp-cluster" title="Phase cluster ${p.cluster_id}">${escapeText(p.cluster_label)}</span>`
+      : '';
+    const detTip = (p.top_detections || []).length
+      ? p.top_detections.map(d => `${d.class_name || ('cls ' + d.class_id)} ${(d.max_conf||0).toFixed(2)}`).join(' · ')
+      : 'no scan detections';
+    return `<div class="pp-card ${p.status||'pending'}" data-idx="${i}" data-path="${safePath}" data-classid="${p.class_id}" tabindex="0">
+      <input type="checkbox" class="pp-card-select" aria-label="Select pick" />
+      <button class="pp-card-zoom" data-act="zoom" title="Open lightbox (Enter)" type="button">⤢</button>
+      <div class="pp-card-thumb">
+        <img src="/api/picker/image?path=${safePath}" loading="lazy" alt="${escapeAttr(fname)}"/>
+      </div>
+      <div class="pp-card-meta">
+        <b title="Suggested class">${escapeText(clsName)}</b>
+        <span class="pp-card-conf">${(p.score||0).toFixed(2)}</span>
+      </div>
+      <div class="pp-card-tags">
+        ${clusterPill}
+        ${reasonChip}
+        <span class="pp-detbadge" title="${escapeAttr(detTip)}">det ${p.top_detections ? p.top_detections.length : 0}</span>
+      </div>
+      <div class="pp-card-actions">
+        <button data-act="approved" title="Approve (A)">A</button>
+        <button data-act="holdout" title="Holdout (H)">H</button>
+        <button data-act="rejected" title="Reject (R)">R</button>
+        <button data-act="reclass" title="Move to another class" type="button">↪</button>
+      </div>
+    </div>`;
+  }
+
+  function _ppShortenReason(r) {
+    if (!r) return '';
+    return r.length > 40 ? (r.slice(0, 38) + '…') : r;
+  }
+
+  // Local helpers (not provided by the host JS in this file scope)
+  function escapeText(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function escapeAttr(s) {
+    return escapeText(s).replace(/"/g, '&quot;');
+  }
+
   async function loadCuratorPicks() {
     if (!_ppActiveScan || !_ppActiveRun) return;
+    await _ppEnsureTaxonomy();
     const status = $('pp-curator-status').value || 'pending';
     const cls = $('pp-curator-class').value;
+    const sort = $('pp-curator-sort') ? $('pp-curator-sort').value : 'class_score';
+    const showBboxes = $('pp-show-bboxes') ? $('pp-show-bboxes').checked : true;
     const url = new URL(`/api/picker/${_ppActiveScan}/runs/${_ppActiveRun}/picks`,
                         window.location.origin);
     url.searchParams.set('status', status);
     url.searchParams.set('limit', '500');
+    url.searchParams.set('sort', sort);
+    url.searchParams.set('bboxes', String(showBboxes));
     let picks = (await (await fetch(url.toString())).json()).picks || [];
     if (cls !== '') picks = picks.filter(p => String(p.class_id) === String(cls));
+    _ppPicksCache = picks;
     const grid = $('pp-curator-grid');
-    // Reset selection state on every reload
     _ppSelected.clear();
     _ppSelectAnchor = -1;
     if (!picks.length) {
       grid.innerHTML = '<p class="muted small" style="padding:14px;text-align:center">No picks match the current filter.</p>';
       _ppRefreshBulkBar();
+      _ppRefreshQuota();
       return;
     }
-    grid.innerHTML = picks.map((p, i) => {
-      const fname = (p.path.split(/[\\/]/).pop() || p.path);
-      return `<div class="pp-card ${p.status||'pending'}" data-idx="${i}" data-path="${encodeURIComponent(p.path)}" tabindex="0">
-        <input type="checkbox" class="pp-card-select" aria-label="Select pick" />
-        <img src="/api/picker/image?path=${encodeURIComponent(p.path)}" loading="lazy" alt="${fname}"/>
-        <div class="pp-card-meta">
-          <b>cls ${p.class_id}</b>
-          <span class="pp-card-conf">${(p.score||0).toFixed(2)}</span>
-        </div>
-        <div class="pp-card-actions">
-          <button data-act="approved" title="Approve (A)">A</button>
-          <button data-act="holdout" title="Holdout (H)">H</button>
-          <button data-act="rejected" title="Reject (R)">R</button>
-        </div>
-      </div>`;
-    }).join('');
+    grid.innerHTML = picks.map((p, i) => _ppCardHTML(p, i)).join('');
     _ppFocusIdx = -1;
-    grid.querySelectorAll('.pp-card').forEach(card => {
+
+    grid.querySelectorAll('.pp-card').forEach((card, i) => {
+      const p = picks[i];
+      _ppBboxOverlay(card, p.bboxes);
+
       const cb = card.querySelector('.pp-card-select');
-      if (cb) {
-        cb.addEventListener('click', (e) => {
-          e.stopPropagation();
-          _ppToggleSelect(card, { shift: e.shiftKey });
-        });
-      }
+      if (cb) cb.addEventListener('click', (e) => {
+        e.stopPropagation();
+        _ppToggleSelect(card, { shift: e.shiftKey });
+      });
       card.addEventListener('click', (e) => {
-        // Shift-click on the body acts like a checkbox-driven range select
-        if (e.shiftKey) {
-          e.preventDefault();
-          _ppToggleSelect(card, { shift: true });
-          return;
-        }
+        if (e.target.closest('.pp-card-actions') || e.target.closest('.pp-card-select') || e.target.closest('.pp-card-zoom')) return;
+        if (e.shiftKey) { e.preventDefault(); _ppToggleSelect(card, { shift: true }); return; }
         const idx = parseInt(card.dataset.idx);
         _ppFocusCard(idx);
+        _ppLoadSimilar(p.path);
+      });
+      card.addEventListener('dblclick', () => _ppOpenLightbox(parseInt(card.dataset.idx)));
+      const zb = card.querySelector('.pp-card-zoom');
+      if (zb) zb.addEventListener('click', (e) => {
+        e.stopPropagation();
+        _ppOpenLightbox(parseInt(card.dataset.idx));
       });
     });
+
     grid.querySelectorAll('.pp-card-actions button').forEach(b => {
       b.onclick = async (e) => {
         e.stopPropagation();
         const card = b.closest('.pp-card');
+        const idx = parseInt(card.dataset.idx);
         const path = decodeURIComponent(card.dataset.path);
-        const status = b.dataset.act;
-        await fetch(`/api/picker/${_ppActiveScan}/runs/${_ppActiveRun}/curator`, {
-          method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ path, status }),
-        });
-        card.classList.remove('approved','rejected','holdout','pending');
-        card.classList.add(status);
-        updateCuratorCounts();
+        const act = b.dataset.act;
+        if (act === 'reclass') { _ppOpenReclass(card); return; }
+        if (act === 'rejected') {
+          // Open the reject-reason mini-modal anchored to this card
+          _ppPromptRejectReason(card, async (reason) => {
+            await _ppApply([{path, status: 'rejected', reject_reason: reason}]);
+          });
+          return;
+        }
+        await _ppApply([{path, status: act}]);
       };
     });
+
     _ppRefreshBulkBar();
+    _ppRefreshQuota();
+    _ppCheckDiversity();
+    await _ppRefreshReference();
+  }
+
+  // Unified apply — single pick or batch. Records undo entries.
+  async function _ppApply(actions) {
+    const undoBatch = [];
+    for (const a of actions) {
+      // Record the previous state (from cache) for undo
+      const prev = _ppPicksCache.find(p => p.path === a.path);
+      if (prev) {
+        undoBatch.push({
+          path: a.path,
+          prev_status: prev.status || 'pending',
+          prev_reject: prev.reject_reason || null,
+          prev_reclass: prev.reclass_id != null ? prev.reclass_id : null,
+        });
+      }
+      try {
+        await fetch(`/api/picker/${_ppActiveScan}/runs/${_ppActiveRun}/curator`, {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            path: a.path, status: a.status,
+            reject_reason: a.reject_reason || null,
+            reclass_id: a.reclass_id != null ? a.reclass_id : null,
+          }),
+        });
+      } catch(_e) {}
+      // Update cache + DOM
+      const card = document.querySelector(`.pp-card[data-path="${CSS.escape(encodeURIComponent(a.path))}"]`);
+      if (card) {
+        card.classList.remove('approved','rejected','holdout','pending');
+        card.classList.add(a.status);
+      }
+      if (prev) prev.status = a.status;
+    }
+    _ppRecordUndo(undoBatch);
     updateCuratorCounts();
+    _ppRefreshQuota();
+    _ppCheckDiversity();
+    if (actions.some(a => a.status === 'approved')) await _ppRefreshReference();
   }
 
   async function updateCuratorCounts() {

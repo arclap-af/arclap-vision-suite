@@ -3179,33 +3179,270 @@ def picker_runs(job_id: str):
     return {"runs": [dict(zip(cols, r)) for r in rows]}
 
 
+# Lazy migration: add columns + reclassify column to pick_decision tables
+# that predate the curator overhaul. Idempotent — runs once per DB.
+def _ensure_pick_decision_columns(db_path: str) -> None:
+    conn = _sqlite3.connect(db_path)
+    try:
+        cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(pick_decision)")}
+        if "reject_reason" not in cols:
+            conn.execute(
+                "ALTER TABLE pick_decision ADD COLUMN reject_reason TEXT")
+        if "reclass_id" not in cols:
+            conn.execute(
+                "ALTER TABLE pick_decision ADD COLUMN reclass_id INTEGER")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @app.get("/api/picker/{job_id}/runs/{run_id}/picks")
 def picker_run_picks(job_id: str, run_id: str, status: str = "pending",
-                     limit: int = 1000, offset: int = 0):
+                     limit: int = 1000, offset: int = 0,
+                     sort: str = "class_score",
+                     bboxes: bool = True):
+    """Return picks for the curator UI.
+
+    Each row is enriched with:
+      - reason (already in pick_decision) — surface picker's "why"
+      - cluster_label (image_cluster_v2) — phase tag
+      - top_detections (detections table) — class_name + max_conf, top 3
+      - bboxes (image_classagnostic) — class-agnostic boxes drawn during
+        stage 3, in pixel space, so the curator can see WHERE the
+        picker thought there was something. Disable via ?bboxes=false
+        for a lighter response on slow networks.
+      - reject_reason / reclass_id (pick_decision) — set in the curator UI
+
+    sort:
+      class_score (default)  — class_id ASC, score DESC
+      score                  — score DESC across all classes
+      class                  — class_id ASC, then path
+      path                   — path ASC
+    """
     db_path = _scan_db_for_job(job_id)
+    _ensure_pick_decision_columns(db_path)
     conn = picker_core._open_v2(db_path)
+    order_sql = {
+        "class_score": "class_id, score DESC",
+        "score":       "score DESC",
+        "class":       "class_id, path",
+        "path":        "path",
+    }.get(sort, "class_id, score DESC")
+
     rows = conn.execute(
-        "SELECT path, class_id, score, reason, status FROM pick_decision "
-        "WHERE run_id = ? AND (status = ? OR ? = 'all') "
-        "ORDER BY class_id, score DESC LIMIT ? OFFSET ?",
+        f"SELECT path, class_id, score, reason, status, "
+        f"       COALESCE(reject_reason, ''), reclass_id "
+        f"FROM pick_decision "
+        f"WHERE run_id = ? AND (status = ? OR ? = 'all') "
+        f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
         (run_id, status, status, limit, offset),
     ).fetchall()
+
+    paths = [r[0] for r in rows]
+    enrich = {p: {} for p in paths}
+
+    if paths:
+        ph = ",".join("?" * len(paths))
+        # Cluster phase tag per path
+        for p, cl, lbl in conn.execute(
+            f"SELECT path, cluster_id, cluster_label FROM image_cluster_v2 "
+            f"WHERE path IN ({ph})", paths
+        ):
+            enrich[p]["cluster_id"] = cl
+            enrich[p]["cluster_label"] = lbl
+
+        # Top-3 detections per path (from main scan model)
+        for p, cid, cname, cnt, mc in conn.execute(
+            f"SELECT path, class_id, COALESCE(class_name,''), count, max_conf "
+            f"FROM detections WHERE path IN ({ph}) "
+            f"ORDER BY path, max_conf DESC", paths
+        ):
+            d = enrich[p].setdefault("top_detections", [])
+            if len(d) < 3:
+                d.append({"class_id": cid, "class_name": cname,
+                          "count": cnt, "max_conf": float(mc or 0.0)})
+
+        # Class-agnostic boxes (only when ?bboxes=true)
+        if bboxes:
+            try:
+                for p, idx, x1, y1, x2, y2, obj in conn.execute(
+                    f"SELECT path, box_idx, x1, y1, x2, y2, objectness "
+                    f"FROM image_classagnostic WHERE path IN ({ph}) "
+                    f"AND box_idx >= 0 ORDER BY path, objectness DESC", paths
+                ):
+                    b = enrich[p].setdefault("bboxes", [])
+                    if len(b) < 8:  # cap per image to keep response small
+                        b.append({"x1": float(x1), "y1": float(y1),
+                                  "x2": float(x2), "y2": float(y2),
+                                  "obj": float(obj or 0.0)})
+            except _sqlite3.OperationalError:
+                pass  # image_classagnostic table may not exist yet
     conn.close()
-    return {"picks": [{"path": r[0], "class_id": r[1], "score": r[2],
-                        "reason": r[3], "status": r[4]} for r in rows]}
+
+    out = []
+    for r in rows:
+        e = enrich.get(r[0], {})
+        out.append({
+            "path": r[0], "class_id": r[1], "score": r[2],
+            "reason": r[3], "status": r[4],
+            "reject_reason": r[5] or None,
+            "reclass_id": r[6],
+            "cluster_id": e.get("cluster_id"),
+            "cluster_label": e.get("cluster_label"),
+            "top_detections": e.get("top_detections", []),
+            "bboxes": e.get("bboxes", []),
+        })
+    return {"picks": out, "sort": sort, "count": len(out)}
+
+
+@app.get("/api/picker/{job_id}/runs/{run_id}/quota")
+def picker_run_quota(job_id: str, run_id: str):
+    """Per-class quota tracker — how many approved/holdout picks per class
+    against the run's per_class_target. Powers the header mini-bars."""
+    db_path = _scan_db_for_job(job_id)
+    conn = picker_core._open_v2(db_path)
+    target = 0
+    try:
+        cfg_row = conn.execute(
+            "SELECT config_json FROM pick_run WHERE run_id = ?",
+            (run_id,)).fetchone()
+        if cfg_row and cfg_row[0]:
+            try:
+                target = int(json.loads(cfg_row[0]).get("per_class_target") or 0)
+            except Exception:
+                target = 0
+    except Exception:
+        target = 0
+
+    rows = conn.execute(
+        "SELECT class_id, status, COUNT(*) FROM pick_decision "
+        "WHERE run_id = ? GROUP BY class_id, status",
+        (run_id,)).fetchall()
+    conn.close()
+
+    by_class: dict[int, dict] = {}
+    for cid, st, n in rows:
+        d = by_class.setdefault(int(cid), {"approved": 0, "rejected": 0,
+                                            "holdout": 0, "pending": 0,
+                                            "class_id": int(cid)})
+        d[st] = int(n)
+    for cid, d in by_class.items():
+        d["total"] = sum(d[s] for s in ("approved", "rejected",
+                                         "holdout", "pending"))
+        d["target"] = target
+        d["percent_approved"] = round(
+            100.0 * (d["approved"] + d["holdout"]) / max(1, target), 1
+        ) if target else None
+    return {
+        "per_class_target": target,
+        "by_class": list(by_class.values()),
+        "n_classes_covered": sum(
+            1 for d in by_class.values() if (d["approved"] + d["holdout"]) > 0),
+        "n_classes_below_half":  sum(
+            1 for d in by_class.values()
+            if target and (d["approved"] + d["holdout"]) < target / 2),
+    }
+
+
+@app.get("/api/picker/{job_id}/similar")
+def picker_similar(job_id: str, path: str, k: int = 6):
+    """Return the k nearest neighbours by CLIP cosine distance for
+    a given image. Used by the \"Similar frames\" sidebar in the curator
+    UI to bulk-decide visually-coherent groups."""
+    import numpy as np
+    db_path = _scan_db_for_job(job_id)
+    conn = picker_core._open_v2(db_path)
+    try:
+        row = conn.execute(
+            "SELECT embedding, dim FROM image_clip WHERE path = ?",
+            (path,)).fetchone()
+        if not row:
+            raise HTTPException(404,
+                "No CLIP embedding for that path — run stage 2 first")
+        target = np.frombuffer(row[0], dtype=np.float32).reshape(row[1])
+        target /= (np.linalg.norm(target) + 1e-9)
+        all_rows = conn.execute(
+            "SELECT path, embedding, dim FROM image_clip").fetchall()
+        if not all_rows:
+            return {"neighbors": []}
+        paths = [r[0] for r in all_rows]
+        X = np.stack([
+            np.frombuffer(r[1], dtype=np.float32).reshape(r[2])
+            for r in all_rows
+        ])
+        norms = np.linalg.norm(X, axis=1, keepdims=True) + 1e-9
+        X /= norms
+        sims = X @ target
+        # Skip the input path itself
+        order = np.argsort(-sims)
+        out = []
+        for idx in order:
+            p = paths[int(idx)]
+            if p == path:
+                continue
+            out.append({"path": p, "sim": float(sims[int(idx)])})
+            if len(out) >= int(k):
+                break
+        return {"neighbors": out, "input": path}
+    finally:
+        conn.close()
+
+
+@app.get("/api/picker/{job_id}/blur-preview")
+def picker_blur_preview(path: str, job_id: str = None):
+    """Return a face-blurred preview JPG for a single source image.
+    Used by the \"Preview blurred\" toggle in the curator UI so the
+    operator can verify the export will anonymise faces correctly."""
+    p = Path(path).resolve()
+    if not p.is_file():
+        raise HTTPException(404, "Image not found")
+    if p.suffix.lower() not in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
+        raise HTTPException(400, "Not an image")
+    try:
+        img = cv2.imread(str(p))
+        if img is None:
+            raise HTTPException(400, "Could not decode image")
+        blurred = face_blur_core.blur_faces(img)
+        ok, buf = cv2.imencode(".jpg", blurred,
+                                [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if not ok:
+            raise HTTPException(500, "Could not encode preview")
+        from fastapi.responses import Response
+        return Response(content=buf.tobytes(), media_type="image/jpeg")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Blur preview failed: {e}")
 
 
 class CuratorActionReq(BaseModel):
     path: str
     status: str   # approved / rejected / holdout / pending
     curator: str | None = None
+    reject_reason: str | None = None  # when status='rejected'
+    reclass_id: int | None = None     # cross-class re-classify
 
 
 @app.post("/api/picker/{job_id}/runs/{run_id}/curator")
 def picker_curator_action(job_id: str, run_id: str, req: CuratorActionReq):
     db_path = _scan_db_for_job(job_id)
+    _ensure_pick_decision_columns(db_path)
     picker_core.update_decision(db_path, run_id, req.path,
                                  req.status, req.curator)
+    # Persist the optional reject_reason / reclass_id columns ourselves
+    # since picker_core.update_decision predates them.
+    if req.reject_reason or req.reclass_id is not None:
+        conn = _sqlite3.connect(db_path)
+        try:
+            conn.execute(
+                "UPDATE pick_decision SET reject_reason = ?, reclass_id = ? "
+                "WHERE run_id = ? AND path = ?",
+                (req.reject_reason, req.reclass_id, run_id, req.path),
+            )
+            conn.commit()
+        finally:
+            conn.close()
     return {"ok": True}
 
 

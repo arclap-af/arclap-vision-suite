@@ -1636,7 +1636,20 @@
             <option value="rejected">Rejected</option>
             <option value="holdout">Holdout</option>
           </select>
+          <select id="pp-curator-sort" class="input" style="width:160px" title="How to order picks in the grid">
+            <option value="class_score" selected>Sort: class · score ↓</option>
+            <option value="score">Sort: score (any class) ↓</option>
+            <option value="class">Sort: class · path</option>
+            <option value="path">Sort: file path</option>
+          </select>
+          <label class="checkbox-row" title="Draw class-agnostic detection boxes on each thumbnail (Tier 1 #1)">
+            <input id="pp-show-bboxes" type="checkbox" checked/> Show bboxes
+          </label>
+          <label class="checkbox-row" title="Preview face-blur on the thumbnails so you can verify export anonymisation (Tier 3 #9)">
+            <input id="pp-preview-blur" type="checkbox"/> Preview face blur
+          </label>
           <button class="btn btn-secondary btn-small" id="pp-curator-load">Load picks</button>
+          <button class="btn btn-ghost btn-small" id="pp-undo" type="button" title="Undo last action (Ctrl+Z)" disabled>↶ Undo</button>
           <label style="display:flex;align-items:center;gap:6px;font-size:12px">
             <input id="pp-blur-faces" type="checkbox" checked/> Blur faces in export
           </label>
@@ -1653,6 +1666,16 @@
           <button class="btn btn-secondary btn-small" id="pp-sched-save">Save schedule</button>
           <span id="pp-sched-status" class="muted small"></span>
         </div>
+        <!-- Per-class quota tracker (Tier 2 #4) -->
+        <div class="pp-quota-bar" id="pp-quota-bar" hidden>
+          <div class="pp-quota-summary">
+            <span><strong id="pp-quota-covered">0</strong>/<span id="pp-quota-total">40</span> classes covered</span>
+            <span class="muted small" id="pp-quota-target">target —/class</span>
+            <button class="btn btn-ghost btn-small" id="pp-quota-toggle" type="button">Show breakdown</button>
+          </div>
+          <div class="pp-quota-grid" id="pp-quota-grid" hidden></div>
+        </div>
+
         <!-- Bulk-action toolbar — appears whenever the grid has at least one card. -->
         <div class="pp-bulk-bar" id="pp-bulk-bar" hidden>
           <label class="pp-bulk-checkall">
@@ -3369,6 +3392,87 @@ _data/util_report_schedules.json       ← weekly PDF schedules</pre>
     </footer>
   </div>
 </div>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     Smart Annotation Picker · Curator overlays
+     Lightbox (Tier 1 #3) · Reject-reason picker (Tier 2 #5) ·
+     Similar-frames + Diversity nudge + Reference (Tier 2 #6, Tier 3 #10/11)
+     ════════════════════════════════════════════════════════════════════ -->
+
+<!-- Lightbox: full-screen image with zoom + pan + arrow nav -->
+<div class="pp-lightbox hidden" id="pp-lightbox" role="dialog" aria-modal="true" aria-label="Pick lightbox">
+  <button class="pp-lightbox-close" id="pp-lightbox-close" type="button" aria-label="Close">✕</button>
+  <button class="pp-lightbox-nav prev" id="pp-lightbox-prev" type="button" aria-label="Previous">‹</button>
+  <button class="pp-lightbox-nav next" id="pp-lightbox-next" type="button" aria-label="Next">›</button>
+  <div class="pp-lightbox-stage" id="pp-lightbox-stage">
+    <img id="pp-lightbox-img" alt="" />
+    <svg id="pp-lightbox-svg" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"></svg>
+  </div>
+  <div class="pp-lightbox-info" id="pp-lightbox-info"></div>
+  <div class="pp-lightbox-actions">
+    <button class="btn btn-secondary btn-small" data-lb-act="approved" title="Approve (A)">A · Approve</button>
+    <button class="btn btn-secondary btn-small" data-lb-act="holdout" title="Holdout (H)">H · Holdout</button>
+    <button class="btn btn-secondary btn-small" data-lb-act="rejected" title="Reject (R)">R · Reject</button>
+    <span class="pp-lightbox-zoom-tip muted small">Wheel to zoom · drag to pan · arrow keys to navigate</span>
+  </div>
+</div>
+
+<!-- Reject-reason picker (Tier 2 #5) -->
+<div class="pp-reject-modal hidden" id="pp-reject-modal" role="dialog" aria-modal="true" aria-label="Reject reason">
+  <div class="pp-reject-card">
+    <h4>Reject — why?</h4>
+    <p class="muted small">Optional. Stored with the decision so we can audit and improve the picker later.</p>
+    <div class="pp-reject-options">
+      <button type="button" data-reason="false_positive">False positive — model picked the wrong thing</button>
+      <button type="button" data-reason="blurry">Blurry / motion-blurred</button>
+      <button type="button" data-reason="occluded">Object too occluded / partial view</button>
+      <button type="button" data-reason="wrong_class">Wrong class — re-classify instead</button>
+      <button type="button" data-reason="too_similar">Too similar to another approved pick</button>
+      <button type="button" data-reason="bad_lighting">Bad lighting / overexposed / too dark</button>
+      <button type="button" data-reason="other">Other</button>
+    </div>
+    <div class="pp-reject-actions">
+      <button class="btn btn-ghost btn-small" id="pp-reject-cancel" type="button">Cancel</button>
+      <button class="btn btn-secondary btn-small" id="pp-reject-skip" type="button">Reject without reason</button>
+    </div>
+  </div>
+</div>
+
+<!-- Re-classify dropdown (Tier 3 #12) — appears as a popover anchored to a card -->
+<div class="pp-reclass-popover hidden" id="pp-reclass-popover" role="dialog" aria-label="Re-classify pick">
+  <h5>Move to a different class</h5>
+  <input type="search" id="pp-reclass-filter" placeholder="Search class…" class="input" />
+  <div class="pp-reclass-list" id="pp-reclass-list"></div>
+  <div class="pp-reclass-actions">
+    <button class="btn btn-ghost btn-small" id="pp-reclass-cancel" type="button">Cancel</button>
+  </div>
+</div>
+
+<!-- Similar-frames + Reference + Diversity sidebar (Tier 2 #6, Tier 3 #10/11) -->
+<aside class="pp-side-panel hidden" id="pp-side-panel">
+  <header>
+    <span class="pp-side-eyebrow">Curator helper</span>
+    <button class="btn btn-ghost btn-small" id="pp-side-close" type="button">✕</button>
+  </header>
+  <section class="pp-side-section" id="pp-similar-section" hidden>
+    <h5>Similar frames</h5>
+    <p class="muted small">Closest 6 by CLIP cosine. Click to bulk-decide a coherent group.</p>
+    <div class="pp-side-thumbs" id="pp-similar-thumbs">
+      <p class="muted small" style="padding:8px">Click a card → similar frames will appear here.</p>
+    </div>
+  </section>
+  <section class="pp-side-section" id="pp-diversity-section" hidden>
+    <h5>Diversity check</h5>
+    <p class="muted small" id="pp-diversity-note">—</p>
+  </section>
+  <section class="pp-side-section">
+    <h5>Reference for this class</h5>
+    <p class="muted small">The first APPROVED frame for the active class — your visual baseline. Hold curation decisions to it.</p>
+    <div class="pp-side-thumbs" id="pp-reference-thumbs">
+      <p class="muted small" style="padding:8px">Approve one frame to set a reference.</p>
+    </div>
+  </section>
+</aside>
 
 <!-- Toast container -->
 <div class="toasts" id="toasts"></div>
