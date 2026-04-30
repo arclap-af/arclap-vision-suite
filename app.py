@@ -3019,6 +3019,40 @@ def picker_taxonomy(job_id: str):
     return {"taxonomy": taxonomy_core.get_taxonomy(db_path)}
 
 
+@app.get("/api/picker/{job_id}/progress")
+def picker_progress(job_id: str):
+    """Live progress ping for the Smart Annotation Picker UI.
+
+    Returns total image count plus how many rows already exist in each
+    stage's cache table. The JS polls this every ~500 ms while a stage
+    is running so the operator sees a real progress bar instead of a
+    silent spinner.
+    """
+    db_path = _scan_db_for_job(job_id)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        def _count(sql: str) -> int:
+            try:
+                row = conn.execute(sql).fetchone()
+                return int(row[0] if row else 0)
+            except Exception:
+                return 0
+        out = {
+            "total": _count("SELECT COUNT(*) FROM images"),
+            "phash": _count("SELECT COUNT(*) FROM image_phash"),
+            "clip": _count("SELECT COUNT(*) FROM image_clip"),
+            "classagnostic": _count(
+                "SELECT COUNT(DISTINCT path) FROM image_classagnostic"),
+            "class_need": _count(
+                "SELECT COUNT(DISTINCT path) FROM image_class_need"),
+            "cluster": _count(
+                "SELECT COUNT(*) FROM image_cluster_v2"),
+        }
+    finally:
+        conn.close()
+    return out
+
+
 class PickerStageReq(BaseModel):
     model_path: str = "yolov8n.pt"
     clip_model: str = "ViT-L-14"

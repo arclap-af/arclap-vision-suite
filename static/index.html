@@ -1423,13 +1423,11 @@
       <div class="pp-header">
         <label>Filter scan (auto-set from steps 1–2)</label>
         <select id="pp-scan-pick" class="input"><option value="">— pick a scan —</option></select>
-        <label style="margin-left:14px">CLIP model</label>
-        <select id="pp-clip" class="input" style="width:120px">
-          <option value="ViT-B-32">ViT-B-32 (fast)</option>
-          <option value="ViT-L-14" selected>ViT-L-14 (best)</option>
+        <label style="margin-left:14px" title="OpenCLIP backbone used by Stage 2 (image embeddings) and Stage 4 (class-need + clustering). ViT-L-14 is more accurate but slower.">CLIP model</label>
+        <select id="pp-clip" class="input" style="width:160px">
+          <option value="ViT-B-32">ViT-B-32 — fast (~10 ms/img)</option>
+          <option value="ViT-L-14" selected>ViT-L-14 — best (~30 ms/img)</option>
         </select>
-        <label style="margin-left:14px">Class-agnostic model</label>
-        <input id="pp-cag-model" class="input mono" value="yolov8n.pt" style="width:160px"/>
         <span class="spacer"></span>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--color-text-muted)">
           <input id="pp-use-survivors" type="checkbox" checked/> Restrict to filtered survivors
@@ -1437,58 +1435,122 @@
         <button class="btn btn-secondary btn-small" id="pp-refresh-scans">Refresh scans</button>
       </div>
 
-      <div class="pp-stage" data-stage="1">
+      <!-- ── Stage 1 ── -->
+      <div class="pp-stage" data-stage="1" data-progress-key="phash">
         <div class="pp-stage-h">
           <span class="pp-num">1</span>
-          <div><h4 style="margin:0">pHash dedup</h4>
-          <p class="muted small" style="margin:2px 0 0">Drop near-identical timelapse frames (Hamming threshold 5).</p></div>
+          <div>
+            <h4 style="margin:0">pHash dedup <span class="pp-tag">images</span></h4>
+            <p class="muted small" style="margin:4px 0 0">
+              Computes a 64-bit perceptual hash per frame (DCT-based, scale/brightness-stable) then greedily clusters frames with Hamming distance ≤ 5 — keeping only the highest-quality representative per cluster. Typical reduction on a 30 fps timelapse: <strong>90 %+</strong>.
+              <br/><em>Cached in <code>image_phash</code>. Re-runs only hash new frames.</em>
+            </p>
+          </div>
           <button class="btn btn-secondary btn-small" id="pp-s1-run">Run stage 1</button>
+        </div>
+        <div class="pp-progress hidden" id="pp-s1-progress">
+          <div class="pp-progress-bar"><span class="pp-progress-fill"></span></div>
+          <div class="pp-progress-text" id="pp-s1-progress-text">0 / 0</div>
         </div>
         <div class="pp-stage-result muted small" id="pp-s1-result">—</div>
       </div>
 
-      <div class="pp-stage" data-stage="2">
+      <!-- ── Stage 2 ── -->
+      <div class="pp-stage" data-stage="2" data-progress-key="clip">
         <div class="pp-stage-h">
           <span class="pp-num">2</span>
-          <div><h4 style="margin:0">CLIP embed</h4>
-          <p class="muted small" style="margin:2px 0 0">One vector per image, cached. ViT-L-14 ≈ 30 ms/image on RTX 3090.</p></div>
+          <div>
+            <h4 style="margin:0">CLIP embed <span class="pp-tag">images</span></h4>
+            <p class="muted small" style="margin:4px 0 0">
+              Encodes every image with OpenCLIP into a 512- or 768-dim semantic vector (L2-normalised). These vectors let Stage 4 score "does this image LOOK LIKE class X?" without needing the trained YOLO to recognise the class. Throughput ~30 ms/image with ViT-L-14 on RTX 3090.
+              <br/><em>Cached in <code>image_clip</code>. Re-runs only embed new frames.</em>
+            </p>
+          </div>
           <button class="btn btn-secondary btn-small" id="pp-s2-run">Run stage 2</button>
+        </div>
+        <div class="pp-progress hidden" id="pp-s2-progress">
+          <div class="pp-progress-bar"><span class="pp-progress-fill"></span></div>
+          <div class="pp-progress-text" id="pp-s2-progress-text">0 / 0</div>
         </div>
         <div class="pp-stage-result muted small" id="pp-s2-result">—</div>
       </div>
 
-      <div class="pp-stage" data-stage="3">
+      <!-- ── Stage 3 ── -->
+      <div class="pp-stage" data-stage="3" data-progress-key="classagnostic">
         <div class="pp-stage-h">
           <span class="pp-num">3</span>
-          <div><h4 style="margin:0">Pre-detect (class-agnostic)</h4>
-          <p class="muted small" style="margin:2px 0 0">YOLO at conf 0.05 with class-agnostic NMS — finds "model saw something" candidates.</p></div>
+          <div>
+            <h4 style="margin:0">Pre-detect (class-agnostic) <span class="pp-tag">objectness</span></h4>
+            <p class="muted small" style="margin:4px 0 0">
+              Runs the chosen YOLO at <code>conf=0.05</code> with class-agnostic NMS — it returns bounding boxes without caring which class wins. Finds frames where <em>something object-shaped</em> is present, even if your trained model can't name it. This is how rare/untrained classes get flagged for human review.
+              <br/><em>Cached in <code>image_classagnostic</code> (up to 30 boxes/image).</em>
+            </p>
+          </div>
           <button class="btn btn-secondary btn-small" id="pp-s3-run">Run stage 3</button>
+        </div>
+        <div class="pp-stage-controls">
+          <label class="text-row" style="max-width:360px">
+            <span>YOLO model used by stage 3</span>
+            <select id="pp-cag-model" class="input mono">
+              <optgroup label="— stock Ultralytics —">
+                <option value="yolov8n.pt" selected>yolov8n.pt — fastest · ~6 MB · recommended for objectness</option>
+                <option value="yolov8s.pt">yolov8s.pt — small · ~22 MB</option>
+                <option value="yolov8m.pt">yolov8m.pt — medium · ~52 MB</option>
+                <option value="yolov8l.pt">yolov8l.pt — large · ~84 MB</option>
+                <option value="yolov8x.pt">yolov8x.pt — xlarge · ~136 MB · most accurate</option>
+              </optgroup>
+              <optgroup label="— your registered models —" id="pp-cag-model-mine"></optgroup>
+            </select>
+            <span class="muted small">For class-agnostic objectness, the smallest model is fine — we're throwing away the class predictions anyway and only keeping the boxes.</span>
+          </label>
+        </div>
+        <div class="pp-progress hidden" id="pp-s3-progress">
+          <div class="pp-progress-bar"><span class="pp-progress-fill"></span></div>
+          <div class="pp-progress-text" id="pp-s3-progress-text">0 / 0</div>
         </div>
         <div class="pp-stage-result muted small" id="pp-s3-result">—</div>
       </div>
 
-      <div class="pp-stage" data-stage="4">
+      <!-- ── Stage 4 ── -->
+      <div class="pp-stage" data-stage="4" data-progress-key="class_need">
         <div class="pp-stage-h">
           <span class="pp-num">4</span>
-          <div><h4 style="margin:0">Class-need + clustering</h4>
-          <p class="muted small" style="margin:2px 0 0">CLIP text-image score for every (image, class) pair across all 40 classes; 200-cluster diversity map with auto-named phases.</p></div>
+          <div>
+            <h4 style="margin:0">Class-need + clustering <span class="pp-tag">all 40 classes</span></h4>
+            <p class="muted small" style="margin:4px 0 0">
+              Two passes: <strong>(a) class-need</strong> — encodes each class's text prompts via CLIP and computes cosine similarity vs. every image embedding (so every image gets a need-score for all 40 classes); <strong>(b) clustering</strong> — KMeans on the image embeddings into 200 visually-distinct buckets, each auto-named with phase prompts (winter, dawn, excavation, framing, busy…). Stage 5 uses these to spread picks across conditions.
+              <br/><em>Cached in <code>image_class_need</code> + <code>image_cluster_v2</code>.</em>
+            </p>
+          </div>
           <button class="btn btn-secondary btn-small" id="pp-s4-run">Run stage 4</button>
+        </div>
+        <div class="pp-progress hidden" id="pp-s4-progress">
+          <div class="pp-progress-bar"><span class="pp-progress-fill"></span></div>
+          <div class="pp-progress-text" id="pp-s4-progress-text">0 / 0</div>
         </div>
         <div class="pp-stage-result muted small" id="pp-s4-result">—</div>
       </div>
 
+      <!-- ── Stage 5 ── -->
       <div class="pp-stage" data-stage="5">
         <div class="pp-stage-h">
           <span class="pp-num">5</span>
-          <div><h4 style="margin:0">Combined rank · per-class quota</h4>
-          <p class="muted small" style="margin:2px 0 0">Picks top-N per class with leftover redistribution. Default 250/class × 40 = 10 000.</p></div>
+          <div>
+            <h4 style="margin:0">Combined rank · per-class quota <span class="pp-tag">picker</span></h4>
+            <p class="muted small" style="margin:4px 0 0">
+              For every class, ranks the (up to 2000) candidates that have <code>class-need &gt; threshold</code>, scores them with the four weights below, and picks the top N. Unused budget from under-represented classes is redistributed. Default <strong>250/class × 40 = 10 000</strong> picks.
+            </p>
+            <p class="muted small" style="margin:6px 0 0">
+              <strong>score = w·need × CLIP-text-image + w·diff × YOLO-uncertainty + w·div × cluster-bonus + w·qual × image-quality</strong>
+            </p>
+          </div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:8px">
-          <label class="text-row"><span>Per-class target</span><input id="pp-target" type="number" value="250" min="10" max="2000"/></label>
-          <label class="text-row"><span>w · need</span><input id="pp-w-need" type="number" value="50" min="0" max="100"/></label>
-          <label class="text-row"><span>w · diversity</span><input id="pp-w-div" type="number" value="30" min="0" max="100"/></label>
-          <label class="text-row"><span>w · difficulty</span><input id="pp-w-diff" type="number" value="20" min="0" max="100"/></label>
-          <label class="text-row"><span>need threshold</span><input id="pp-need-thr" type="number" value="0.18" min="0" max="1" step="0.01"/></label>
+        <div class="pp-weights">
+          <label class="text-row"><span title="How many picks per class">Per-class target</span><input id="pp-target" type="number" value="250" min="10" max="2000"/></label>
+          <label class="text-row"><span title="Weight on CLIP text-image similarity (does the image LOOK like this class?)">w · need</span><input id="pp-w-need" type="number" value="50" min="0" max="100"/></label>
+          <label class="text-row"><span title="Weight on cluster diversity (spread picks across visually-distinct conditions: winter / dusk / busy etc.)">w · diversity</span><input id="pp-w-div" type="number" value="30" min="0" max="100"/></label>
+          <label class="text-row"><span title="Weight on YOLO uncertainty (frames where the model's confidence is borderline 0.4-0.6 — most informative to label)">w · difficulty</span><input id="pp-w-diff" type="number" value="20" min="0" max="100"/></label>
+          <label class="text-row"><span title="Skip frames with class-need below this. Lower = more candidates, less specific.">need threshold</span><input id="pp-need-thr" type="number" value="0.18" min="0" max="1" step="0.01"/></label>
         </div>
         <div style="margin-top:10px;display:flex;gap:10px;align-items:center">
           <button class="btn btn-primary btn-small" id="pp-s5-run">Run picker</button>
@@ -1496,12 +1558,49 @@
         </div>
       </div>
 
+      <!-- ── Stage 6 ── -->
       <div class="pp-stage" data-stage="6">
         <div class="pp-stage-h">
           <span class="pp-num">6</span>
-          <div><h4 style="margin:0">Curator</h4>
-          <p class="muted small" style="margin:2px 0 0">Approve · reject · move-to-holdout per pick. Keyboard: <code>A</code> approve · <code>R</code> reject · <code>H</code> holdout · <code>P</code> pending · <code>J/K</code> next/prev.</p></div>
+          <div>
+            <h4 style="margin:0">Curator <span class="pp-tag">human review</span></h4>
+            <p class="muted small" style="margin:4px 0 0">
+              Triage each pick into one of three buckets, then export. Click a tile or use the keyboard.
+            </p>
+          </div>
           <span id="pp-curator-counts" class="muted small">—</span>
+        </div>
+
+        <!-- A / H / R legend so the operator knows what they're doing -->
+        <div class="pp-curator-legend">
+          <div class="pp-legend-item">
+            <span class="pp-legend-key approved" title="Keyboard: A">A</span>
+            <div>
+              <strong>Approve</strong>
+              <span class="muted small">Goes into the <strong>training set</strong>. Use this for clear, well-framed examples of the suggested class.</span>
+            </div>
+          </div>
+          <div class="pp-legend-item">
+            <span class="pp-legend-key holdout" title="Keyboard: H">H</span>
+            <div>
+              <strong>Holdout</strong>
+              <span class="muted small">Goes into a <strong>separate test set</strong> (never seen during training). Use this for representative frames you'll evaluate against later.</span>
+            </div>
+          </div>
+          <div class="pp-legend-item">
+            <span class="pp-legend-key rejected" title="Keyboard: R">R</span>
+            <div>
+              <strong>Reject</strong>
+              <span class="muted small">Drop the pick — false positive, blurry, occluded, or wrong class. Won't appear in either zip.</span>
+            </div>
+          </div>
+          <div class="pp-legend-item">
+            <span class="pp-legend-key pending" title="Keyboard: P">P</span>
+            <div>
+              <strong>Pending</strong>
+              <span class="muted small">Default state. Comes back unchanged on next load. Use <code>J / K</code> to step next / previous without deciding.</span>
+            </div>
+          </div>
         </div>
         <div class="pp-curator-toolbar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
           <select id="pp-curator-class" class="input" style="min-width:200px"><option value="">All classes</option></select>

@@ -1029,6 +1029,47 @@
     } catch(e){}
     if ($('pp-refresh-scans')) $('pp-refresh-scans').onclick = () => loadPipelinePage(_ppActiveScan);
 
+    // ─── Live progress polling helper ──────────────────────────────
+    // While a stage is running, poll /api/picker/<job>/progress every
+    // 600ms and update the matching stage's progress bar. Each .pp-stage
+    // has data-progress-key="phash|clip|classagnostic|class_need|..."
+    // matching the field name in the progress JSON.
+    let _ppProgressTimers = {};
+    function startProgress(stageNum) {
+      const stageEl = document.querySelector(`.pp-stage[data-stage="${stageNum}"]`);
+      if (!stageEl) return;
+      const key = stageEl.dataset.progressKey;
+      const wrap = $(`pp-s${stageNum}-progress`);
+      const fill = wrap?.querySelector('.pp-progress-fill');
+      const txt = $(`pp-s${stageNum}-progress-text`);
+      if (!key || !wrap || !fill || !txt) return;
+      wrap.classList.remove('hidden');
+      fill.style.width = '0%';
+      txt.textContent = 'starting…';
+      const tick = async () => {
+        try {
+          const p = await (await fetch(`/api/picker/${_ppActiveScan}/progress`)).json();
+          const total = Math.max(1, p.total || 0);
+          const done = Math.min(total, p[key] || 0);
+          const pct = Math.round((done / total) * 100);
+          fill.style.width = pct + '%';
+          txt.textContent = `${done.toLocaleString()} / ${total.toLocaleString()} (${pct}%)`;
+        } catch(_e) { /* stage will end and clear the timer */ }
+      };
+      tick();
+      _ppProgressTimers[stageNum] = setInterval(tick, 600);
+    }
+    function stopProgress(stageNum, finalPct = 100) {
+      if (_ppProgressTimers[stageNum]) {
+        clearInterval(_ppProgressTimers[stageNum]);
+        delete _ppProgressTimers[stageNum];
+      }
+      const fill = $(`pp-s${stageNum}-progress`)?.querySelector('.pp-progress-fill');
+      const txt = $(`pp-s${stageNum}-progress-text`);
+      if (fill && finalPct === 100) fill.style.width = '100%';
+      if (txt && finalPct === 100) txt.textContent = 'done';
+    }
+
     const stage = (n, ep) => {
       const btn = $(`pp-s${n}-run`);
       if (!btn) return;
@@ -1037,6 +1078,7 @@
         const r = $(`pp-s${n}-result`);
         r.textContent = `running stage ${n}…`;
         btn.disabled = true;
+        startProgress(n);
         try {
           const survivors = await _ppGetSurvivors(_ppActiveScan);
           const body = {
@@ -1054,7 +1096,7 @@
           const survSuffix = survivors ? ` · restricted to ${survivors.length} survivors` : ' · all images';
           r.textContent = JSON.stringify(data) + survSuffix;
         } catch(err) { r.textContent = 'ERROR: ' + err.message; }
-        finally { btn.disabled = false; }
+        finally { stopProgress(n); btn.disabled = false; }
       };
     };
     stage(1, 'stage1-phash');
@@ -1068,6 +1110,7 @@
         const btn = $('pp-s4-run');
         btn.disabled = true;
         r.textContent = 'computing class-need scores (40 classes × N images)…';
+        startProgress(4);
         try {
           const survivors = await _ppGetSurvivors(_ppActiveScan);
           const body = { model_path: $('pp-cag-model').value, clip_model: $('pp-clip').value, n_clusters: 200, path_filter: survivors };
@@ -1081,9 +1124,24 @@
           const survSuffix = survivors ? ` · restricted to ${survivors.length} survivors` : ' · all images';
           r.textContent = 'need: ' + JSON.stringify(a) + ' · cluster: ' + JSON.stringify(b) + survSuffix;
         } catch(e){ r.textContent = 'ERROR: ' + e; }
-        finally { btn.disabled = false; }
+        finally { stopProgress(4); btn.disabled = false; }
       };
     }
+
+    // Populate the Stage 3 model dropdown with the user's registered models.
+    (async () => {
+      const grp = $('pp-cag-model-mine');
+      if (!grp) return;
+      try {
+        const models = await (await fetch('/api/models')).json();
+        const detect = (models || []).filter(m =>
+          (m.task || '').includes('detect') || (m.name || '').endsWith('.pt'));
+        if (!detect.length) return;
+        grp.innerHTML = detect.map(m =>
+          `<option value="${m.path || m.name}">${m.name} — ${(m.classes || []).length || '?'} classes</option>`
+        ).join('');
+      } catch(_e) { /* keep the stock options only */ }
+    })();
 
     // Stage 5: run picker
     if ($('pp-s5-run')) {
