@@ -1595,28 +1595,210 @@
         <div class="pp-stage-result muted small" id="pp-s4-result">—</div>
       </div>
 
-      <!-- ── Stage 5 ── -->
-      <div class="pp-stage" data-stage="5">
+      <!-- ════════════════════════════════════════════════════════════
+           Stage 5 · Smart picker — combine signals, rank, pick top-N
+           Reads from earlier stages — no recompute. Fully reconfigurable.
+           ════════════════════════════════════════════════════════════ -->
+      <div class="pp-stage pp-stage-s5" data-stage="5">
         <div class="pp-stage-h">
           <span class="pp-num">5</span>
           <div>
-            <h4 style="margin:0">Combined rank · per-class quota <span class="pp-tag">picker</span></h4>
+            <h4 style="margin:0">Smart picker <span class="pp-tag">ranks &amp; picks</span></h4>
             <p class="muted small" style="margin:4px 0 0">
-              For every class, ranks the (up to 2000) candidates that have <code>class-need &gt; threshold</code>, scores them with the four weights below, and picks the top N. Unused budget from under-represented classes is redistributed. Default <strong>250/class × 40 = 10 000</strong> picks.
-            </p>
-            <p class="muted small" style="margin:6px 0 0">
-              <strong>score = w·need × CLIP-text-image + w·diff × YOLO-uncertainty + w·div × cluster-bonus + w·qual × image-quality</strong>
+              Combines what stages 2–4 already learned and picks a balanced training set. <strong>No re-computation</strong> — just reads the cached signals and ranks them per class.
             </p>
           </div>
         </div>
-        <div class="pp-weights">
-          <label class="text-row"><span title="How many picks per class">Per-class target</span><input id="pp-target" type="number" value="250" min="10" max="2000"/></label>
-          <label class="text-row"><span title="Weight on CLIP text-image similarity (does the image LOOK like this class?)">w · need</span><input id="pp-w-need" type="number" value="50" min="0" max="100"/></label>
-          <label class="text-row"><span title="Weight on cluster diversity (spread picks across visually-distinct conditions: winter / dusk / busy etc.)">w · diversity</span><input id="pp-w-div" type="number" value="30" min="0" max="100"/></label>
-          <label class="text-row"><span title="Weight on YOLO uncertainty (frames where the model's confidence is borderline 0.4-0.6 — most informative to label)">w · difficulty</span><input id="pp-w-diff" type="number" value="20" min="0" max="100"/></label>
-          <label class="text-row"><span title="Skip frames with class-need below this. Lower = more candidates, less specific.">need threshold</span><input id="pp-need-thr" type="number" value="0.18" min="0" max="1" step="0.01"/></label>
+
+        <!-- Visual flow: input signals → combine → output -->
+        <details class="pp-explainer" id="pp-s5-explainer" open>
+          <summary>How the picker decides which frames to keep</summary>
+          <div class="pp-explainer-body">
+
+            <!-- Input signals (already computed in earlier stages) -->
+            <div class="pp-signals">
+              <div class="pp-signals-title">Inputs (already computed — Stage 5 doesn't recompute these)</div>
+              <div class="pp-signals-grid">
+                <div class="pp-signal pp-signal-need">
+                  <span class="pp-signal-stage">Stage 4a</span>
+                  <strong>CLIP class-need</strong>
+                  <p class="muted small">Per (image × class) cosine similarity. "Does this frame look like an excavator?" Score 0–1.</p>
+                </div>
+                <div class="pp-signal pp-signal-diff">
+                  <span class="pp-signal-stage">Filter scan</span>
+                  <strong>YOLO uncertainty</strong>
+                  <p class="muted small">Per detection confidence. Borderline frames (0.4–0.6) are the most useful for retraining.</p>
+                </div>
+                <div class="pp-signal pp-signal-div">
+                  <span class="pp-signal-stage">Stage 4b</span>
+                  <strong>Phase cluster</strong>
+                  <p class="muted small">Auto-named cluster id (busy / winter / dawn / …). Bonus when picking from a NEW cluster.</p>
+                </div>
+                <div class="pp-signal pp-signal-qual">
+                  <span class="pp-signal-stage">Filter scan</span>
+                  <strong>Image quality</strong>
+                  <p class="muted small">Sharpness + brightness. Penalises blurry / dark frames.</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- 4-step flow -->
+            <div class="pp-flow">
+              <div class="pp-flow-step">
+                <span class="pp-flow-num">1</span>
+                <strong>Find candidates</strong>
+                <p class="muted small">For each class, keep frames with CLIP need-score above the threshold (default 0.18).</p>
+              </div>
+              <div class="pp-flow-arrow" aria-hidden="true">↓</div>
+              <div class="pp-flow-step">
+                <span class="pp-flow-num">2</span>
+                <strong>Rank by composite score</strong>
+                <p class="muted small">
+                  <code>score = w·need × need + w·diff × difficulty + w·div × diversity + w·qual × quality</code>
+                </p>
+              </div>
+              <div class="pp-flow-arrow" aria-hidden="true">↓</div>
+              <div class="pp-flow-step">
+                <span class="pp-flow-num">3</span>
+                <strong>Pick top N per class</strong>
+                <p class="muted small">Default 250 per class. Same frame is never picked twice (deduped on path).</p>
+              </div>
+              <div class="pp-flow-arrow" aria-hidden="true">↓</div>
+              <div class="pp-flow-step">
+                <span class="pp-flow-num">4</span>
+                <strong>Redistribute leftover</strong>
+                <p class="muted small">Rare class only had 80 candidates? Give the remaining 170 to common classes that have more.</p>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- Quick-preset buttons -->
+        <div class="pp-presets-row">
+          <span class="pp-presets-label muted small">Quick goals:</span>
+          <button type="button" class="btn btn-ghost btn-small" data-pp-preset="standard"
+            title="250 per class · all weights default · need ≥ 0.18">Standard balanced</button>
+          <button type="button" class="btn btn-ghost btn-small" data-pp-preset="aggressive"
+            title="1000 per class · need ≥ 0.12 · pool 10000 — aim for ~40k picks">Aggressive (~40k)</button>
+          <button type="button" class="btn btn-ghost btn-small" data-pp-preset="quality"
+            title="Boost image-quality weight · keep need at 0.20">Quality-focused</button>
+          <button type="button" class="btn btn-ghost btn-small" data-pp-preset="diversity"
+            title="Boost cluster-diversity weight · 150 per class">Diversity-focused</button>
+          <button type="button" class="btn btn-ghost btn-small" data-pp-preset="edge"
+            title="Boost YOLO-uncertainty weight · low threshold">Edge cases</button>
+          <button type="button" class="btn btn-ghost btn-small" data-pp-preset="max"
+            title="Maximum: 5000 per class · pool 10000 · low threshold — up to 200k picks">Max selection</button>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-ghost btn-small" data-pp-preset="reset" title="Reset to defaults">Reset</button>
         </div>
-        <div style="margin-top:10px;display:flex;gap:10px;align-items:center">
+
+        <!-- Core controls (always visible) -->
+        <div class="pp-controls-grid">
+          <label class="text-row pp-control-target">
+            <span>Per-class target</span>
+            <div class="slider-with-value">
+              <input type="range" id="pp-target" min="10" max="5000" step="10" value="250" />
+              <input type="number" id="pp-target-num" min="10" max="5000" step="10" value="250" class="input" style="width:90px"/>
+            </div>
+            <span class="muted small pp-control-help">How many picks each class can have, before redistribution.</span>
+          </label>
+
+          <label class="text-row">
+            <span>Weight · NEED <small class="muted">CLIP look-alike</small></span>
+            <div class="slider-with-value">
+              <input type="range" id="pp-w-need" min="0" max="100" step="5" value="50" />
+              <span class="slider-value" id="pp-w-need-v">50</span>
+            </div>
+          </label>
+
+          <label class="text-row">
+            <span>Weight · DIFFICULTY <small class="muted">YOLO unsure</small></span>
+            <div class="slider-with-value">
+              <input type="range" id="pp-w-diff" min="0" max="100" step="5" value="20" />
+              <span class="slider-value" id="pp-w-diff-v">20</span>
+            </div>
+          </label>
+
+          <label class="text-row">
+            <span>Weight · DIVERSITY <small class="muted">new cluster</small></span>
+            <div class="slider-with-value">
+              <input type="range" id="pp-w-div" min="0" max="100" step="5" value="30" />
+              <span class="slider-value" id="pp-w-div-v">30</span>
+            </div>
+          </label>
+
+          <label class="text-row">
+            <span>Weight · QUALITY <small class="muted">sharpness</small></span>
+            <div class="slider-with-value">
+              <input type="range" id="pp-w-qual" min="0" max="100" step="5" value="0" />
+              <span class="slider-value" id="pp-w-qual-v">0</span>
+            </div>
+          </label>
+
+          <label class="text-row">
+            <span>Need threshold <small class="muted">0–1</small></span>
+            <div class="slider-with-value">
+              <input type="range" id="pp-need-thr" min="0" max="100" step="1" value="18" />
+              <span class="slider-value" id="pp-need-thr-v">0.18</span>
+            </div>
+          </label>
+        </div>
+
+        <!-- Advanced controls (collapsed) -->
+        <details class="pp-advanced" id="pp-s5-advanced">
+          <summary>Advanced — total budget · floors · uncertainty band · candidate pool</summary>
+          <div class="pp-advanced-body">
+
+            <label class="text-row">
+              <span>Total budget cap</span>
+              <input type="number" id="pp-total-budget" class="input" min="0" max="500000" step="100" value="0" style="width:120px"/>
+              <span class="muted small pp-control-help">Hard ceiling on total picks. <strong>0 = no cap</strong> (use per-class target × N classes).</span>
+            </label>
+
+            <label class="text-row">
+              <span>Min per class</span>
+              <input type="number" id="pp-min-per-class" class="input" min="0" max="1000" step="10" value="0" style="width:120px"/>
+              <span class="muted small pp-control-help">Floor — never zero out rare classes. <strong>0 = disabled</strong>.</span>
+            </label>
+
+            <label class="text-row">
+              <span>Candidate pool size</span>
+              <input type="number" id="pp-candidate-pool" class="input" min="0" max="50000" step="500" value="5000" style="width:120px"/>
+              <span class="muted small pp-control-help">SQL <code>LIMIT</code> per class on candidates above threshold. <strong>0 = no limit</strong>.</span>
+            </label>
+
+            <div class="pp-uncertainty-row">
+              <label class="text-row" style="flex:1">
+                <span>Uncertainty lo</span>
+                <div class="slider-with-value">
+                  <input type="range" id="pp-unc-lo" min="0" max="100" step="1" value="20" />
+                  <span class="slider-value" id="pp-unc-lo-v">0.20</span>
+                </div>
+              </label>
+              <label class="text-row" style="flex:1">
+                <span>Uncertainty hi</span>
+                <div class="slider-with-value">
+                  <input type="range" id="pp-unc-hi" min="0" max="100" step="1" value="60" />
+                  <span class="slider-value" id="pp-unc-hi-v">0.60</span>
+                </div>
+              </label>
+              <span class="muted small pp-control-help" style="grid-column:1/-1">YOLO confidence band that counts as "model unsure". Frames inside [lo, hi] get the difficulty bonus.</span>
+            </div>
+          </div>
+        </details>
+
+        <!-- Live estimate — updates as the operator changes any control -->
+        <div class="pp-estimate" id="pp-s5-estimate">
+          <div class="pp-estimate-row">
+            <strong id="pp-estimate-projected">—</strong>
+            <span class="muted small" id="pp-estimate-meta">click a preset or change a control to see the projection</span>
+          </div>
+          <div class="pp-estimate-bar"><span id="pp-estimate-fill"></span></div>
+          <div class="pp-estimate-detail muted small" id="pp-estimate-detail"></div>
+        </div>
+
+        <!-- Run button + result -->
+        <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
           <button class="btn btn-primary btn-small" id="pp-s5-run">Run picker</button>
           <span id="pp-s5-result" class="muted small">—</span>
         </div>
@@ -3666,7 +3848,7 @@ _data/util_report_schedules.json       ← weekly PDF schedules</pre>
   </div>
 </div>
 
-<script src="/static/app.js?v=2026-04-30-h-limit"></script>
-<script src="/static/shell-v2.js?v=2026-04-30-h-limit"></script>
+<script src="/static/app.js?v=2026-04-30-j-stage5"></script>
+<script src="/static/shell-v2.js?v=2026-04-30-j-stage5"></script>
 </body>
 </html>

@@ -3229,6 +3229,101 @@ class PickerRunReq(BaseModel):
     uncertainty_lo: float = 0.20
     uncertainty_hi: float = 0.60
     path_filter: list[str] | None = None
+    # ─── New (2026-04-30) — extended controls for max selection ─────
+    candidate_pool_size: int = 5000   # SQL LIMIT per class. 0 = no limit
+    total_budget: int = 0              # Global cap. 0 = unbounded
+    min_per_class: int = 0             # Floor. 0 = disabled
+
+
+class PickerEstimateReq(BaseModel):
+    """Live-preview request for Stage 5. Returns "if you run with these
+    settings, here's what you'd get" — without actually running the
+    ranker. Powers the live counter under the controls."""
+    per_class_target: int = 250
+    need_threshold: float = 0.18
+    candidate_pool_size: int = 5000
+    total_budget: int = 0
+    min_per_class: int = 0
+    path_filter: list[str] | None = None
+
+
+@app.post("/api/picker/{job_id}/estimate")
+def picker_estimate(job_id: str, req: PickerEstimateReq):
+    """Return: candidate counts per class (above threshold, within scope)
+    + projected pick count given the operator's settings.
+
+    This is fast — it's a single GROUP BY on image_class_need with
+    optional path-filter scope. No scoring, no ranking, no I/O.
+    """
+    db_path = _scan_db_for_job(job_id)
+    conn = picker_core._open_v2(db_path)
+    try:
+        # Path-filter scope (Filter wizard "what-to-keep" survivors)
+        path_clause = ""
+        params: list = [req.need_threshold]
+        if req.path_filter:
+            ph = ",".join("?" * len(req.path_filter))
+            path_clause = f" AND n.path IN ({ph})"
+            params.extend(req.path_filter)
+
+        # Per-class candidate count above threshold
+        rows = conn.execute(
+            f"SELECT n.class_id, COUNT(*) AS n_cands "
+            f"FROM image_class_need n "
+            f"WHERE n.score > ? {path_clause} "
+            f"GROUP BY n.class_id ORDER BY n.class_id",
+            params,
+        ).fetchall()
+        per_class = {int(cid): int(n) for cid, n in rows}
+
+        # Project the pick count: per class, take min(target, candidates)
+        # capped by candidate_pool_size if set.
+        target = int(req.per_class_target)
+        pool = int(req.candidate_pool_size) if req.candidate_pool_size else None
+        per_class_projected: dict[int, int] = {}
+        for cid, n_cands in per_class.items():
+            avail = min(n_cands, pool) if pool else n_cands
+            per_class_projected[cid] = min(target, avail)
+        projected_total = sum(per_class_projected.values())
+        # Apply total_budget ceiling
+        if req.total_budget and req.total_budget > 0:
+            projected_total = min(projected_total, req.total_budget)
+        # Apply min_per_class floor — if a class has < min_per_class but
+        # has SOME candidates, we'd boost it to min(min_per_class, n_cands).
+        # This may push total slightly above the simple sum.
+        if req.min_per_class and req.min_per_class > 0:
+            for cid, n_cands in per_class.items():
+                cur = per_class_projected.get(cid, 0)
+                if cur < req.min_per_class and n_cands > cur:
+                    boost = min(req.min_per_class, n_cands) - cur
+                    per_class_projected[cid] = cur + boost
+            projected_total = sum(per_class_projected.values())
+            if req.total_budget and req.total_budget > 0:
+                projected_total = min(projected_total, req.total_budget)
+
+        # Total candidate pool (above threshold)
+        total_candidates = sum(per_class.values())
+        # How many distinct classes have at least 1 candidate
+        classes_with_candidates = len(per_class)
+        # How many distinct paths overall
+        path_count_row = conn.execute(
+            f"SELECT COUNT(DISTINCT n.path) FROM image_class_need n "
+            f"WHERE n.score > ? {path_clause}",
+            params,
+        ).fetchone()
+        unique_paths = int(path_count_row[0] if path_count_row else 0)
+
+        return {
+            "total_candidates": total_candidates,
+            "unique_paths": unique_paths,
+            "classes_with_candidates": classes_with_candidates,
+            "per_class_candidates": per_class,
+            "per_class_projected": per_class_projected,
+            "projected_total_picks": projected_total,
+            "scoped_to_filter": bool(req.path_filter),
+        }
+    finally:
+        conn.close()
 
 
 @app.post("/api/picker/{job_id}/run")
@@ -3247,6 +3342,9 @@ def picker_run(job_id: str, req: PickerRunReq):
         uncertainty_lo=req.uncertainty_lo,
         uncertainty_hi=req.uncertainty_hi,
         path_filter=req.path_filter,
+        candidate_pool_size=req.candidate_pool_size,
+        total_budget=req.total_budget,
+        min_per_class=req.min_per_class,
     )
     picker_core.store_pick_decisions(db_path, run_id, picks)
     summary = picker_core.get_run_summary(db_path, run_id)

@@ -1224,28 +1224,204 @@
     })();
 
     // Stage 5: run picker
+    // ─── Stage 5 — Smart picker (extended controls) ────────────────
+    // Helper that builds the request body from all the UI knobs. The
+    // /run and /estimate endpoints accept the same shape (estimate just
+    // ignores the weights / uncertainty band — they don't affect the
+    // candidate-count math).
+    function _ppS5Body() {
+      const num = (id, dflt) => parseFloat($(id)?.value) || dflt;
+      const intv = (id, dflt) => parseInt($(id)?.value) || dflt;
+      // Need threshold slider goes 0–100 → 0.00–1.00
+      const needThr = (intv('pp-need-thr', 18)) / 100;
+      return {
+        per_class_target: intv('pp-target', 250),
+        weights: {
+          need:       num('pp-w-need', 50) / 100,
+          diversity:  num('pp-w-div',  30) / 100,
+          difficulty: num('pp-w-diff', 20) / 100,
+          quality:    num('pp-w-qual',  0) / 100,
+        },
+        need_threshold: needThr,
+        uncertainty_lo: (intv('pp-unc-lo', 20)) / 100,
+        uncertainty_hi: (intv('pp-unc-hi', 60)) / 100,
+        candidate_pool_size: intv('pp-candidate-pool', 5000),
+        total_budget:        intv('pp-total-budget', 0),
+        min_per_class:       intv('pp-min-per-class', 0),
+      };
+    }
+
+    // Live estimate — fast read-only projection
+    let _ppEstTimer = null;
+    let _ppEstSeq = 0;
+    function _ppScheduleEstimate() {
+      clearTimeout(_ppEstTimer);
+      _ppEstTimer = setTimeout(_ppRunEstimate, 220);
+    }
+    async function _ppRunEstimate() {
+      if (!_ppActiveScan) return;
+      const seq = ++_ppEstSeq;
+      const projEl   = $('pp-estimate-projected');
+      const metaEl   = $('pp-estimate-meta');
+      const fillEl   = $('pp-estimate-fill');
+      const detailEl = $('pp-estimate-detail');
+      if (projEl) projEl.textContent = '…';
+      try {
+        const survivors = await _ppGetSurvivors(_ppActiveScan);
+        const scope = _resolveScope(survivors);
+        const body = _ppS5Body();
+        body.path_filter = scope.pathFilter;
+        const r = await fetch(`/api/picker/${_ppActiveScan}/estimate`, {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(body),
+        });
+        if (seq !== _ppEstSeq) return;
+        if (!r.ok) throw new Error('estimate failed');
+        const d = await r.json();
+        const projected = d.projected_total_picks || 0;
+        const cands = d.total_candidates || 0;
+        const classes = d.classes_with_candidates || 0;
+        if (projEl) projEl.textContent = projected.toLocaleString() + ' picks';
+        if (metaEl) metaEl.textContent =
+          `from ${cands.toLocaleString()} candidates across ${classes}/40 classes${scope.suffix || ''}`;
+        // Bar fills as a fraction of the per-class target × 40 ceiling
+        if (fillEl) {
+          const ceiling = Math.max(1, body.per_class_target * 40);
+          const pct = Math.min(100, 100 * projected / ceiling);
+          fillEl.style.width = pct.toFixed(1) + '%';
+        }
+        // Per-class breakdown — show top 5 best-covered + bottom 5 worst-covered
+        if (detailEl) {
+          const proj = d.per_class_projected || {};
+          const cn = await (await fetch(`/api/picker/taxonomy/${_ppActiveScan}`)).json();
+          const tax = (cn.taxonomy || []).reduce((m, c) => { m[c.id] = c.en || `cls ${c.id}`; return m; }, {});
+          const entries = Object.entries(proj)
+            .map(([cid, n]) => ({ cid, n: n, name: tax[cid] || cid }));
+          entries.sort((a, b) => b.n - a.n);
+          const top = entries.slice(0, 3).map(e => `${e.name} ${e.n}`).join(' · ');
+          const bot = entries.slice(-3).reverse().map(e => `${e.name} ${e.n}`).join(' · ');
+          detailEl.innerHTML =
+            `<span><strong>Best covered:</strong> ${top}</span> &nbsp; ` +
+            `<span><strong>Least covered:</strong> ${bot}</span>`;
+        }
+      } catch(e) {
+        if (seq !== _ppEstSeq) return;
+        if (projEl) projEl.textContent = '?';
+        if (metaEl) metaEl.textContent = 'estimate unavailable — Stage 4 may not have run yet';
+      }
+    }
+
+    // Quick-preset buttons
+    const PP_S5_PRESETS = {
+      standard:   { target: 250,  wNeed: 50, wDiff: 20, wDiv: 30, wQual: 0,  thr: 18, pool: 5000,  budget: 0, minPC: 0 },
+      aggressive: { target: 1000, wNeed: 50, wDiff: 25, wDiv: 25, wQual: 0,  thr: 12, pool: 10000, budget: 0, minPC: 0 },
+      quality:    { target: 250,  wNeed: 35, wDiff: 15, wDiv: 20, wQual: 30, thr: 20, pool: 5000,  budget: 0, minPC: 0 },
+      diversity:  { target: 150,  wNeed: 30, wDiff: 15, wDiv: 55, wQual: 0,  thr: 18, pool: 5000,  budget: 0, minPC: 50 },
+      edge:       { target: 300,  wNeed: 25, wDiff: 50, wDiv: 25, wQual: 0,  thr: 12, pool: 8000,  budget: 0, minPC: 0 },
+      max:        { target: 5000, wNeed: 50, wDiff: 20, wDiv: 30, wQual: 0,  thr: 10, pool: 10000, budget: 0, minPC: 0 },
+      reset:      { target: 250,  wNeed: 50, wDiff: 20, wDiv: 30, wQual: 0,  thr: 18, pool: 5000,  budget: 0, minPC: 0 },
+    };
+    function _ppApplyS5Preset(name) {
+      const p = PP_S5_PRESETS[name];
+      if (!p) return;
+      const setSlider = (id, val) => {
+        const el = $(id); if (!el) return;
+        el.value = String(val);
+        const labelEl = $(id + '-v');
+        if (labelEl) {
+          if (id === 'pp-need-thr' || id === 'pp-unc-lo' || id === 'pp-unc-hi') {
+            labelEl.textContent = (val / 100).toFixed(2);
+          } else {
+            labelEl.textContent = String(val);
+          }
+        }
+      };
+      const setNum = (id, val) => { const el = $(id); if (el) el.value = String(val); };
+      setSlider('pp-target', p.target);     setNum('pp-target-num', p.target);
+      setSlider('pp-w-need', p.wNeed);
+      setSlider('pp-w-diff', p.wDiff);
+      setSlider('pp-w-div',  p.wDiv);
+      setSlider('pp-w-qual', p.wQual);
+      setSlider('pp-need-thr', p.thr);
+      setNum('pp-candidate-pool', p.pool);
+      setNum('pp-total-budget',   p.budget);
+      setNum('pp-min-per-class',  p.minPC);
+      _ppScheduleEstimate();
+    }
+
+    // Wire all Stage 5 controls (sliders + numeric inputs + presets)
+    if (!document.body.dataset.s5Wired) {
+      document.body.dataset.s5Wired = '1';
+      // Slider <-> value-label sync + estimate on input
+      [
+        ['pp-w-need',  v => v],
+        ['pp-w-diff',  v => v],
+        ['pp-w-div',   v => v],
+        ['pp-w-qual',  v => v],
+        ['pp-need-thr', v => (v/100).toFixed(2)],
+        ['pp-unc-lo',   v => (v/100).toFixed(2)],
+        ['pp-unc-hi',   v => (v/100).toFixed(2)],
+      ].forEach(([id, fmt]) => {
+        const el = $(id); if (!el) return;
+        el.addEventListener('input', () => {
+          const lbl = $(id + '-v');
+          if (lbl) lbl.textContent = fmt(parseFloat(el.value));
+          _ppScheduleEstimate();
+        });
+      });
+      // Per-class target — keep the range slider + number input in sync
+      const ppTgt = $('pp-target'), ppTgtNum = $('pp-target-num');
+      if (ppTgt && ppTgtNum) {
+        ppTgt.addEventListener('input', () => { ppTgtNum.value = ppTgt.value; _ppScheduleEstimate(); });
+        ppTgtNum.addEventListener('input', () => {
+          const v = Math.max(10, Math.min(5000, parseInt(ppTgtNum.value) || 250));
+          ppTgt.value = String(v);
+          _ppScheduleEstimate();
+        });
+      }
+      // Plain numeric inputs in the Advanced section
+      ['pp-total-budget', 'pp-min-per-class', 'pp-candidate-pool'].forEach(id => {
+        const el = $(id); if (!el) return;
+        el.addEventListener('input', _ppScheduleEstimate);
+      });
+      // Enforce uncertainty lo <= hi
+      const ppLo = $('pp-unc-lo'), ppHi = $('pp-unc-hi');
+      if (ppLo && ppHi) {
+        const sync = () => {
+          let lo = parseInt(ppLo.value), hi = parseInt(ppHi.value);
+          if (lo > hi) {
+            if (document.activeElement === ppLo) hi = lo;
+            else lo = hi;
+            ppLo.value = String(lo); ppHi.value = String(hi);
+            $('pp-unc-lo-v').textContent = (lo/100).toFixed(2);
+            $('pp-unc-hi-v').textContent = (hi/100).toFixed(2);
+          }
+        };
+        ppLo.addEventListener('input', sync);
+        ppHi.addEventListener('input', sync);
+      }
+      // Quick-preset buttons
+      document.querySelectorAll('[data-pp-preset]').forEach(b => {
+        b.addEventListener('click', () => _ppApplyS5Preset(b.dataset.ppPreset));
+      });
+      // Run estimate once whenever the operator opens the picker tab,
+      // and whenever a fresh scan is selected (handled by tab change
+      // handlers elsewhere; here we just kick off if we already have one).
+      if (_ppActiveScan) setTimeout(_ppScheduleEstimate, 600);
+    }
+
     if ($('pp-s5-run')) {
       $('pp-s5-run').onclick = async () => {
         if (!_ppActiveScan) { alert('Pick a scan first.'); return; }
         const r = $('pp-s5-result');
         const btn = $('pp-s5-run');
         btn.disabled = true;
-        r.textContent = 'running per-class quota picker…';
+        r.textContent = 'running picker…';
         try {
           const survivors = await _ppGetSurvivors(_ppActiveScan);
           const scope = _resolveScope(survivors);
-          const body = {
-            per_class_target: parseInt($('pp-target').value) || 250,
-            weights: {
-              need: (parseFloat($('pp-w-need').value)||0)/100,
-              diversity: (parseFloat($('pp-w-div').value)||0)/100,
-              difficulty: (parseFloat($('pp-w-diff').value)||0)/100,
-              quality: 0.0,
-            },
-            need_threshold: parseFloat($('pp-need-thr').value) || 0.18,
-            uncertainty_lo: 0.20, uncertainty_hi: 0.60,
-            path_filter: scope.pathFilter,
-          };
+          const body = _ppS5Body();
+          body.path_filter = scope.pathFilter;
           const res = await fetch(`/api/picker/${_ppActiveScan}/run`, {
             method: 'POST', headers: {'Content-Type':'application/json'},
             body: JSON.stringify(body),
@@ -1255,8 +1431,8 @@
           _ppActiveRun = data.run_id;
           _ppPicks = data.picks || [];
           const counts = data.per_class_counts || {};
-          r.textContent = `picked ${data.n_picked} · run_id ${data.run_id} · classes covered ${Object.keys(counts).length}/40${scope.suffix}`;
-          // Pre-load curator with first 100
+          r.textContent = `picked ${data.n_picked.toLocaleString()} · run_id ${data.run_id} · classes covered ${Object.keys(counts).length}/40${scope.suffix}`;
+          // Pre-load curator
           await loadCuratorPicks();
         } catch(e){ r.textContent = 'ERROR: ' + (e.message || e); }
         finally { btn.disabled = false; }
@@ -2531,17 +2707,21 @@
       $('pp-sched-status').textContent = 'schedule cleared';
       return;
     }
+    // Schedule body — mirrors the Run-picker body so the cron job uses
+    // exactly the same weights / threshold / quality as the operator's
+    // last interactive run. Need-threshold slider is 0-100, weights are
+    // 0-100 → divide by 100.
     const body = {
       job_id: _ppActiveScan,
       every_days: days,
       weights: {
-        need: (parseFloat($('pp-w-need').value)||0)/100,
-        diversity: (parseFloat($('pp-w-div').value)||0)/100,
+        need:       (parseFloat($('pp-w-need').value)||0)/100,
+        diversity:  (parseFloat($('pp-w-div').value)||0)/100,
         difficulty: (parseFloat($('pp-w-diff').value)||0)/100,
-        quality: 0.0,
+        quality:    (parseFloat($('pp-w-qual').value)||0)/100,
       },
       per_class_target: parseInt($('pp-target').value) || 250,
-      need_threshold: parseFloat($('pp-need-thr').value) || 0.18,
+      need_threshold:   (parseInt($('pp-need-thr').value) || 18) / 100,
       enabled: true,
     };
     try {

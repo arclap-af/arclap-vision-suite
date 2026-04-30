@@ -783,10 +783,35 @@ def pick_per_class(scan_db_path, *,
                    need_threshold: float = 0.18,
                    uncertainty_lo: float = 0.20,
                    uncertainty_hi: float = 0.60,
-                   path_filter: list[str] | None = None) -> list[dict]:
+                   path_filter: list[str] | None = None,
+                   # ─── New (2026-04-30) — extended controls ────────────
+                   # candidate_pool_size  — SQL LIMIT per class. 0 = no
+                   #   limit. Was hardcoded to 2000 prior to this version
+                   #   (silently truncating high per_class_target runs).
+                   # total_budget         — global cap on total picks. 0
+                   #   means "unbounded" (per_class_target × N classes).
+                   # min_per_class        — floor below which a class
+                   #   gets a second pass before redistribution kicks in
+                   #   on common classes. 0 disables.
+                   candidate_pool_size: int = 5000,
+                   total_budget: int = 0,
+                   min_per_class: int = 0) -> list[dict]:
     """Stage 5 of the chart: per-class quota with leftover redistribution.
+
     If path_filter is given, only consider paths in that filtered subset
-    (the survivors from the Filter wizard's What-to-keep rules)."""
+    (the survivors from the Filter wizard's What-to-keep rules).
+
+    The ranking score per candidate is:
+
+        score = w_need × need_score          (CLIP class-need · stage 4a)
+              + w_diff × difficulty_signal   (YOLO uncertainty · scan)
+              + w_div  × diversity_bonus     (cluster_id · stage 4b)
+              + w_qual × image_quality       (sharpness/brightness · scan)
+
+    Stage 5 doesn't recompute any of these — it reads them from earlier
+    stage tables and combines them. The four weights are NOT normalised;
+    callers that want them to sum to 1.0 must do that on their end.
+    """
     weights = weights or {}
     w_need = float(weights.get("need", 0.5))
     w_div  = float(weights.get("diversity", 0.3))
@@ -828,6 +853,15 @@ def pick_per_class(scan_db_path, *,
         path_sql = ""
         path_params = []
 
+    # candidate_pool_size <= 0 means "no SQL LIMIT". Otherwise it caps the
+    # candidate pool per class. Must be > per_class_target or you'd
+    # silently truncate high-target runs (the old 2000 hardcode bug).
+    pool_clause = ""
+    pool_params: tuple = ()
+    if candidate_pool_size and candidate_pool_size > 0:
+        pool_clause = "LIMIT ?"
+        pool_params = (int(candidate_pool_size),)
+
     def pick_for_class(cls_id: int, target: int) -> list[dict]:
         if target <= 0: return []
         candidates = conn.execute(
@@ -836,8 +870,8 @@ def pick_per_class(scan_db_path, *,
             "LEFT JOIN detections d ON n.path = d.path AND d.class_id = ? "
             "WHERE n.class_id = ? AND n.score > ? "
             + path_sql + " "
-            "ORDER BY n.score DESC LIMIT 2000",
-            (cls_id, cls_id, need_threshold, *path_params),
+            "ORDER BY n.score DESC " + pool_clause,
+            (cls_id, cls_id, need_threshold, *path_params, *pool_params),
         ).fetchall()
         if not candidates: return []
         scored = []
@@ -855,10 +889,16 @@ def pick_per_class(scan_db_path, *,
                      + w_diff * diff
                      + w_div  * div_bonus
                      + w_qual * qual)
-            scored.append((path, float(need_score), unc, score, cluster, det_conf))
-        scored.sort(key=lambda r: r[3], reverse=True)
+            # Pack `qual` into the scored tuple — the second loop must
+            # read each path's own quality, not the loop-final value of
+            # the outer `qual` variable. Pre-fix bug (audit 2026-04-30):
+            # every pick's `quality` field was the LAST candidate's
+            # quality, making the score-vs-output mismatch.
+            scored.append((path, float(need_score), unc, qual, score, cluster, det_conf))
+        # sort by score (index 4 now, was 3 pre-fix)
+        scored.sort(key=lambda r: r[4], reverse=True)
         chosen = []
-        for path, need_score, unc, score, cluster, det_conf in scored:
+        for path, need_score, unc, qual_path, score, cluster, det_conf in scored:
             if len(chosen) >= target: break
             picked_paths_global.add(path)
             seen_clusters_global.add(cluster)
@@ -869,27 +909,79 @@ def pick_per_class(scan_db_path, *,
             chosen.append({
                 "path": path, "class_id": cls_id,
                 "score": score, "need": float(need_score),
-                "uncertainty": unc, "quality": qual,
+                "uncertainty": unc, "quality": qual_path,
                 "cluster": cluster, "det_conf": float(det_conf),
                 "reason": " · ".join(why) or "balanced sample",
             })
         return chosen
 
+    # Total-budget cap: when the operator says "I want at most N picks
+    # total", trim the per-class target so the global ceiling is honored
+    # before we even start redistributing.
+    effective_target = int(per_class_target)
+    if total_budget and total_budget > 0:
+        n_classes = max(1, len(taxonomy))
+        # Equal split is the start; redistribution still runs after.
+        effective_target = min(effective_target, total_budget // n_classes + 1)
+
+    # Helper: trim picks BEFORE extending to honour total_budget strictly.
+    # Without this, the post-extend break leaks ≤ effective_target rows
+    # over the cap (caught by audit 2026-04-30).
+    def _bounded_extend(picks_list: list[dict]) -> bool:
+        """Extend out_rows by picks_list, but never exceed total_budget.
+        Returns True iff the total_budget ceiling was reached."""
+        if total_budget and total_budget > 0:
+            room = total_budget - len(out_rows)
+            if room <= 0:
+                return True
+            if len(picks_list) > room:
+                picks_list = picks_list[:room]
+        out_rows.extend(picks_list)
+        return bool(total_budget and len(out_rows) >= total_budget)
+
     classes = sorted(taxonomy, key=lambda c: c["id"])
     for cls in classes:
-        picks = pick_for_class(cls["id"], per_class_target)
-        if len(picks) < per_class_target:
-            leftover_budget += per_class_target - len(picks)
-        out_rows.extend(picks)
+        picks = pick_for_class(cls["id"], effective_target)
+        if len(picks) < effective_target:
+            leftover_budget += effective_target - len(picks)
+        if _bounded_extend(picks):
+            break
 
-    # Redistribute leftover
-    if leftover_budget > 0:
+    # Redistribute leftover. Honors the optional total_budget cap.
+    if leftover_budget > 0 and (not total_budget or len(out_rows) < total_budget):
         for cls in classes:
             if leftover_budget <= 0: break
-            extra = pick_for_class(cls["id"], min(leftover_budget, per_class_target))
+            if total_budget and len(out_rows) >= total_budget: break
+            cap = min(leftover_budget, effective_target)
+            if total_budget:
+                cap = min(cap, total_budget - len(out_rows))
+            extra = pick_for_class(cls["id"], cap)
             if extra:
-                out_rows.extend(extra)
+                if _bounded_extend(extra):
+                    break
                 leftover_budget -= len(extra)
+
+    # Min-per-class floor — if a class still has < min_per_class after
+    # redistribution AND we have room under total_budget, give it another
+    # pass with a relaxed target. Helps ensure rare classes are never
+    # zeroed out.
+    if min_per_class and min_per_class > 0:
+        per_class_counts: dict[int, int] = {}
+        for r in out_rows:
+            per_class_counts[r["class_id"]] = per_class_counts.get(r["class_id"], 0) + 1
+        for cls in classes:
+            cur = per_class_counts.get(cls["id"], 0)
+            if cur >= min_per_class:
+                continue
+            if total_budget and len(out_rows) >= total_budget:
+                break
+            need = min_per_class - cur
+            if total_budget:
+                need = min(need, total_budget - len(out_rows))
+            extra = pick_for_class(cls["id"], need)
+            if extra:
+                if _bounded_extend(extra):
+                    break
 
     conn.close()
     return out_rows
