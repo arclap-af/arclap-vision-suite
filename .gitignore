@@ -84,3 +84,15 @@ Thumbs.db
 
 # Claude Code local config
 .claude/
+
+# Ruflo / claude-flow runtime + per-project agent config (added 2026-05-01).
+# These are operator-machine artifacts created by `ruflo init --full`:
+#   .claude-flow/   — V3 runtime: data, logs, sessions, swarm state
+#   .mcp.json       — per-project MCP server registration (operator-local)
+#   CLAUDE.md       — project-level swarm guidance (auto-generated)
+# Keep them OUT of the public arclap-vision-suite repo. Each operator
+# runs `ruflo init --full` themselves to regenerate.
+.claude-flow/
+.mcp.json
+CLAUDE.md
+.swarm/
