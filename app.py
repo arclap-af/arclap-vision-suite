@@ -360,6 +360,10 @@ from routers import similar as _routers_similar  # noqa: E402
 from routers import camera_webhook as _routers_camera_webhook  # noqa: E402
 from routers import alerts_correlate as _routers_alerts_correlate  # noqa: E402
 from routers import thresholds as _routers_thresholds  # noqa: E402
+from routers import auth as _routers_auth  # noqa: E402
+from routers import annotations as _routers_annotations  # noqa: E402
+from routers import ab_test as _routers_ab_test  # noqa: E402
+from routers import export_progress as _routers_export_progress  # noqa: E402
 app.include_router(_routers_system.router)
 app.include_router(_routers_presets.router)
 app.include_router(_routers_models.router)
@@ -404,6 +408,18 @@ app.include_router(_routers_similar.router)
 app.include_router(_routers_camera_webhook.router)
 app.include_router(_routers_alerts_correlate.router)
 app.include_router(_routers_thresholds.router)
+app.include_router(_routers_auth.router)
+app.include_router(_routers_annotations.router)
+app.include_router(_routers_ab_test.router)
+app.include_router(_routers_export_progress.router)
+
+
+# Initialise auth + Sentry (both no-op if not configured)
+from core import auth as _auth_core  # noqa: E402
+_auth_core.init(DATA / "auth.db", DATA / "auth.secret")
+
+from core.sentry_hook import maybe_init_sentry  # noqa: E402
+maybe_init_sentry()
 
 
 # Request-ID + observability + rate-limit + audit-log middleware
