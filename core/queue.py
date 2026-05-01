@@ -85,18 +85,59 @@ class JobRunner:
         self._proc: subprocess.Popen | None = None
         self._proc_lock = threading.Lock()
         self._current_job_id: str | None = None
+        # Heartbeat: worker bumps this every iteration of its loop. The
+        # watchdog uses it to detect a *wedged-but-alive* thread — when
+        # Python's queue.Condition gets stuck on Windows the thread is
+        # technically alive (so is_alive() == True) but isn't actually
+        # waking up to drain submitted jobs. Without a heartbeat the
+        # original watchdog would never respawn it.
+        self._heartbeat = time.monotonic()
         self._thread = threading.Thread(target=self._loop, name="JobRunner", daemon=True)
 
     def start(self) -> None:
         self._thread.start()
-        # Watchdog: if the worker thread ever dies (uncaught exception bubbling
-        # out of _loop, OS-level signal, etc.), respawn it so the queue never
-        # gets permanently stuck. Checks every 5 s.
+        # Watchdog: respawn the worker if EITHER
+        #   (a) it died (is_alive == False), or
+        #   (b) it's wedged — alive but heartbeat hasn't advanced for >30 s
+        #       AND there's a queued job that no one is running. (Heartbeat
+        #       gets bumped at the top of every loop iteration, including the
+        #       1 s queue.next() timeout, so a healthy idle worker always
+        #       advances the heartbeat at least once per second.)
+        # When a wedge is detected we replace the queue object too, because
+        # the wedge sits inside its Condition variable.
         def _watchdog():
             while not self._stop.is_set():
                 time.sleep(5)
+                # (a) Dead thread — respawn directly on the current queue.
                 if not self._thread.is_alive():
                     print("[queue] WORKER THREAD DIED — respawning", flush=True)
+                    self._heartbeat = time.monotonic()
+                    self._thread = threading.Thread(target=self._loop, name="JobRunner", daemon=True)
+                    self._thread.start()
+                    continue
+                # (b) Wedged thread — heartbeat stale + work pending + nothing running.
+                age = time.monotonic() - self._heartbeat
+                if (age > 30
+                        and self.is_running() is None
+                        and self.q.pending() > 0):
+                    print(f"[queue] WORKER WEDGED ({age:.0f}s no heartbeat, "
+                          f"{self.q.pending()} pending) — respawning on fresh queue",
+                          flush=True)
+                    # Replace the queue object so the new thread doesn't inherit
+                    # the wedged Condition variable. Re-submit any drained IDs.
+                    drained: list[str] = []
+                    try:
+                        while True:
+                            jid = self.q.next(timeout=0.05)
+                            if jid is None: break
+                            drained.append(jid)
+                    except Exception:
+                        pass
+                    new_q = JobQueue()
+                    for jid in drained:
+                        new_q.submit(jid)
+                    self.q = new_q
+                    self._heartbeat = time.monotonic()
                     self._thread = threading.Thread(target=self._loop, name="JobRunner", daemon=True)
                     self._thread.start()
         threading.Thread(target=_watchdog, name="JobRunnerWatchdog", daemon=True).start()
@@ -160,7 +201,13 @@ class JobRunner:
 
     def _loop(self) -> None:
         print("[queue] worker thread alive", flush=True)
+        self._heartbeat = time.monotonic()
         while not self._stop.is_set():
+            # Bump heartbeat every iteration so the watchdog can tell the
+            # difference between a wedged-but-alive thread and a healthy
+            # idle one. A healthy idle worker bumps this at least once
+            # per 1 s queue.next() timeout cycle.
+            self._heartbeat = time.monotonic()
             try:
                 jid = self.q.next(timeout=1.0)
             except Exception as e:

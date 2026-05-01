@@ -55,6 +55,20 @@ def test_runner_executes_simple_command_and_marks_done(tmp_db, tmp_path):
     assert target_output.exists()
 
 
+def test_heartbeat_advances_in_idle_loop(tmp_db, tmp_path):
+    """The worker bumps `_heartbeat` every iteration so the watchdog can
+    distinguish a wedged-but-alive thread from a healthy idle one."""
+    def builder(job): return ["python", "-c", "pass"]
+    q = JobQueue()
+    runner = JobRunner(tmp_db, q, root=tmp_path, build_cmd=builder)
+    runner.start()
+    hb1 = runner._heartbeat
+    time.sleep(2.5)  # > 2 idle loop iterations (timeout=1.0)
+    hb2 = runner._heartbeat
+    runner.stop()
+    assert hb2 > hb1, f"heartbeat did not advance ({hb1} -> {hb2})"
+
+
 def test_runner_marks_failed_when_subprocess_errors(tmp_db, tmp_path):
     def builder(job):
         return ["python", "-c", "import sys; sys.exit(7)"]

@@ -69,13 +69,17 @@ def queue_status ():
     """Diagnostic: is the worker thread alive? what's currently running?
     how many jobs queued? Use this to debug 'my job is stuck queued'."""
     import app as _app
-    import threading as _th 
+    import threading as _th
+    import time as _time
     threads ={t .name :t .is_alive ()for t in _th .enumerate ()}
+    hb = getattr(_app.runner, "_heartbeat", None)
+    heartbeat_age = (_time.monotonic() - hb) if hb is not None else None
     return {
     "worker_alive":"JobRunner"in threads and threads ["JobRunner"],
     "watchdog_alive":"JobRunnerWatchdog"in threads and threads ["JobRunnerWatchdog"],
     "current_job":_app .runner .is_running (),
     "queue_size":_app .queue .qsize ()if hasattr (_app .queue ,"qsize")else _app .queue ._q .qsize (),
+    "heartbeat_age_s": round(heartbeat_age, 2) if heartbeat_age is not None else None,
     "all_threads":threads ,
     }
 
