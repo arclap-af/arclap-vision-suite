@@ -166,15 +166,215 @@ def find_signature_end(lines: list[str], def_idx: int) -> int:
     return def_idx  # fallback
 
 
+def _rewrite_names_token_aware(src: str, names_to_qualify: set[str]) -> str:
+    """Rewrite bare references to names in `names_to_qualify` to `_app.<NAME>`,
+    but ONLY in code positions — never inside string literals or comments,
+    and never as the attribute side of an `obj.attr` access. Uses
+    tokenize so we are robust to string contents that happen to look like
+    Python identifiers.
+
+    Also avoids rewriting:
+      - the name immediately after a `def ` or `class ` keyword
+        (function/class being defined)
+      - the name in a type-annotation context: after `:` inside a parens-balanced
+        signature, or after `->`. Pydantic / FastAPI need real classes there;
+        such classes are migrated by extract_referenced_classes() instead.
+    """
+    import tokenize, io
+    out_tokens = []
+    rl = io.StringIO(src).readline
+    try:
+        toks = list(tokenize.generate_tokens(rl))
+    except tokenize.TokenizeError:
+        return src
+
+    # First pass: classify each NAME token.
+    n = len(toks)
+    # Track paren depth + 'in_signature' (between `def f(` and `):`) + 'after_colon_in_sig' state.
+    paren_depth = 0
+    in_def_paren = False
+    in_def_paren_start_depth = 0
+    annotation_active = False  # set after `:` inside a def signature OR after `->`
+    skip_next_name = False     # set after `def ` / `class ` to skip the name being defined
+
+    rewritten: list[tuple] = []
+    for idx, tok in enumerate(toks):
+        ttype, tstr, *_ = tok
+        if ttype == tokenize.OP:
+            if tstr == "(":
+                paren_depth += 1
+                # If this `(` immediately follows a NAME that follows `def`/`class`, we're entering a sig
+            elif tstr == ")":
+                paren_depth -= 1
+                if in_def_paren and paren_depth == in_def_paren_start_depth:
+                    in_def_paren = False
+                    annotation_active = False
+            elif tstr == ":":
+                if in_def_paren:
+                    annotation_active = True
+            elif tstr == ",":
+                if in_def_paren:
+                    annotation_active = False
+            elif tstr == "=":
+                if in_def_paren:
+                    annotation_active = False
+            elif tstr == "->":
+                annotation_active = True
+        elif ttype == tokenize.NEWLINE or ttype == tokenize.NL:
+            if not in_def_paren:
+                annotation_active = False
+        elif ttype == tokenize.NAME:
+            if skip_next_name:
+                # name being defined (def NAME / class NAME) — leave alone
+                skip_next_name = False
+                rewritten.append(tok)
+                continue
+            if tstr in {"def", "class"}:
+                skip_next_name = True
+                rewritten.append(tok)
+                continue
+            # Check if this is an attribute access (previous non-whitespace tok is OP '.')
+            prev = None
+            for back in range(len(rewritten) - 1, -1, -1):
+                pt, ps = rewritten[back][:2]
+                if pt in {tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.COMMENT}:
+                    continue
+                prev = (pt, ps)
+                break
+            is_attr = prev and prev[0] == tokenize.OP and prev[1] == "."
+            # Detect entry to def signature: previous tokens are `def NAME (`?
+            # Easier: if prev is OP '(' and the NAME before that was a function name
+            # following `def` or `class` — we already set skip_next_name for those,
+            # so detect signature entry by looking 2 tokens back.
+            if prev and prev[0] == tokenize.OP and prev[1] == "(":
+                # Find what came before the '('
+                for back in range(len(rewritten) - 2, -1, -1):
+                    pt, ps = rewritten[back][:2]
+                    if pt in {tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.COMMENT}:
+                        continue
+                    if pt == tokenize.NAME and ps not in {"def", "class"}:
+                        # could be a function call or signature — but we set in_def_paren
+                        # via a separate hook below; here just ignore
+                        pass
+                    break
+            if (
+                tstr in names_to_qualify
+                and not is_attr
+                and not annotation_active
+            ):
+                # rewrite to _app.<NAME> — emit two tokens worth (we'll use
+                # untokenize-friendly form by injecting the literal text)
+                rewritten.append((tokenize.NAME, "_app"))
+                rewritten.append((tokenize.OP, "."))
+                rewritten.append((tokenize.NAME, tstr))
+                continue
+        # Track def-signature start: after `def NAME` token, when we see `(`
+        rewritten.append(tok)
+        # Detect we just passed `def NAME (` to enter signature
+        if ttype == tokenize.OP and tstr == "(":
+            # Look back: is sequence ... def NAME ( ?
+            sig = []
+            for back in range(len(rewritten) - 2, -1, -1):
+                pt, ps = rewritten[back][:2]
+                if pt in {tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.COMMENT}:
+                    continue
+                sig.append((pt, ps))
+                if len(sig) >= 2:
+                    break
+            if len(sig) >= 2 and sig[0][0] == tokenize.NAME and sig[1] == (tokenize.NAME, "def"):
+                in_def_paren = True
+                in_def_paren_start_depth = paren_depth - 1
+                annotation_active = False
+
+    # Reassemble: tokenize.untokenize is finicky; just join token strings with
+    # original spacing baked in via a manual approach that respects newlines.
+    return _untokenize_simple(rewritten)
+
+
+def _untokenize_simple(toks: list) -> str:
+    """Reassemble tokens we may have synthesised. Uses tokenize.untokenize on
+    a normalised form. Falls back to a naive join."""
+    import tokenize
+    try:
+        # tokenize.untokenize accepts (type, string) tuples — synthesise positions.
+        normalised = [(t[0], t[1]) for t in toks]
+        return tokenize.untokenize(normalised)
+    except Exception:
+        return "".join(t[1] for t in toks)
+
+
+def find_referenced_class_defs(blocks: list[tuple[int, int, str]],
+                               app_text: str) -> tuple[str, set[str]]:
+    """Find class definitions in app.py that are referenced (by bare NAME) inside
+    the route blocks. Walks transitively through field-type references in the
+    inlined classes themselves so nested Pydantic models also come along.
+    Returns (concatenated source ordered by appearance in app.py, set of class
+    names)."""
+    tree = ast.parse(app_text)
+    src_lines = app_text.splitlines(keepends=True)
+    simple_bases = {"BaseModel", "Enum", "NamedTuple", "TypedDict", "IntEnum", "StrEnum"}
+    # Index every class def in app.py
+    class_nodes: dict[str, ast.ClassDef] = {}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            bases_ok = True
+            for b in node.bases:
+                bn = (b.id if isinstance(b, ast.Name)
+                      else b.attr if isinstance(b, ast.Attribute)
+                      else "")
+                if bn not in simple_bases:
+                    bases_ok = False
+                    break
+            if bases_ok:
+                class_nodes[node.name] = node
+
+    # Identifiers initially used in blocks
+    used: set[str] = set()
+    for _, _, src in blocks:
+        for m in re.finditer(r'\b([A-Z][A-Za-z0-9_]*)\b', src):
+            used.add(m.group(1))
+
+    # BFS: pull in class defs whose names are used; then scan their source for
+    # more class references and pull those in too.
+    found_names: set[str] = set()
+    queue = [n for n in used if n in class_nodes]
+    while queue:
+        name = queue.pop()
+        if name in found_names:
+            continue
+        node = class_nodes[name]
+        found_names.add(name)
+        start = (node.decorator_list[0].lineno if node.decorator_list else node.lineno) - 1
+        end = node.end_lineno
+        cls_src = "".join(src_lines[start:end])
+        for m in re.finditer(r'\b([A-Z][A-Za-z0-9_]*)\b', cls_src):
+            n2 = m.group(1)
+            if n2 in class_nodes and n2 not in found_names:
+                queue.append(n2)
+
+    if not found_names:
+        return "", set()
+
+    # Emit in app.py source order so forward references resolve naturally
+    ordered = sorted(found_names, key=lambda n: class_nodes[n].lineno)
+    found_src: list[str] = []
+    for name in ordered:
+        node = class_nodes[name]
+        start = (node.decorator_list[0].lineno if node.decorator_list else node.lineno) - 1
+        end = node.end_lineno
+        found_src.append("".join(src_lines[start:end]).rstrip() + "\n")
+    return ("\n\n".join(found_src) + "\n", found_names)
+
+
 def rewrite_block(block: str, app_names: set[str]) -> str:
     """Rewrite a single route block for use in a router file."""
-    # 1. Replace decorator
+    # 1. Replace decorator (token-aware not needed; @app. is unambiguous)
     block = re.sub(r'@app\.(get|post|put|delete|patch|head|options)\(', r'@router.\1(', block)
 
-    # 2. Rewrite all known app.py module-level names: bare `NAME` -> `_app.NAME`.
-    #    (?<![.\w]) ensures we skip obj.NAME and not part of a longer ident.
-    for name in sorted(app_names, key=len, reverse=True):
-        block = re.sub(rf'(?<![.\w]){re.escape(name)}\b', f'_app.{name}', block)
+    # 2. Rewrite known app.py module-level names — token-aware so we don't
+    #    touch string literals, comments, or attribute accesses, and we skip
+    #    type-annotation contexts (Pydantic needs real classes there).
+    block = _rewrite_names_token_aware(block, app_names)
 
     # 3. Insert `import app as _app` as the first statement of the function body
     #    (after the def signature + any docstring).
@@ -218,9 +418,15 @@ def write_router_file(prefix: str, blocks: list[tuple[int, int, str]]) -> Path:
     """Build routers/<prefix>.py from the list of blocks."""
     py_name = prefix.replace("-", "_")
     path = ROUTERS / f"{py_name}.py"
-    app_names = collect_app_module_names() - get_func_names_in_blocks(blocks)
+    app_text = APP_PY.read_text(encoding="utf-8")
+    inlined_classes_src, inlined_class_names = find_referenced_class_defs(blocks, app_text)
+    app_names = (
+        collect_app_module_names()
+        - get_func_names_in_blocks(blocks)
+        - inlined_class_names  # don't qualify: they're inlined locally
+    )
     rewritten = [rewrite_block(b, app_names) for _, _, b in blocks]
-    body = "\n\n".join(s.rstrip() for s in rewritten) + "\n"
+    body = inlined_classes_src + "\n\n".join(s.rstrip() for s in rewritten) + "\n"
     header = f'''"""/api/{prefix}/* endpoints — auto-extracted.
 
 Auto-extracted from app.py by _router_split.py 2026-05-01.
@@ -229,17 +435,27 @@ globals after app.py has finished initialisation.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import math
 import os
+import random
 import re
 import shutil
 import sqlite3 as _sqlite3
+import subprocess
+import sys
 import threading
 import time
+import urllib.parse
+import uuid
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
+import cv2
+import numpy as np
 import torch
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import (
@@ -255,12 +471,25 @@ from core import (
     disk as disk_core,
     discovery as discovery_core,
     events as events_core,
+    face_blur as face_blur_core,
+    machines as machines_core,
     machine_alerts as machine_alerts_core,
+    machine_reports as machine_reports_core,
+    machine_tracker as machine_tracker_core,
+    notify as notify_core,
+    picker_scheduler as picker_sched,
     registry as registry_core,
     swiss as swiss_core,
+    taxonomy as taxonomy_core,
+    util_report_scheduler as util_report_sched,
     watchdog as watchdog_core,
     zones as zones_core,
 )
+from core.notify import build_audit_report, send_email, send_webhook
+from core.playground import inspect_model, predict_on_image
+from core.presets import class_index as preset_class_index
+from core.presets import get_preset, list_presets
+from core.seed import SUGGESTED, install_suggested, seed_existing_models
 
 router = APIRouter(tags=["{prefix}"])
 '''

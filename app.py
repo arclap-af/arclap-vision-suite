@@ -330,6 +330,9 @@ from routers import registry as _routers_registry  # noqa: E402
 from routers import projects as _routers_projects  # noqa: E402
 from routers import alerts as _routers_alerts  # noqa: E402
 from routers import machine_alerts as _routers_machine_alerts  # noqa: E402
+from routers import picker as _routers_picker  # noqa: E402
+from routers import filter as _routers_filter  # noqa: E402
+from routers import swiss as _routers_swiss  # noqa: E402
 app.include_router(_routers_system.router)
 app.include_router(_routers_presets.router)
 app.include_router(_routers_models.router)
@@ -344,6 +347,9 @@ app.include_router(_routers_registry.router)
 app.include_router(_routers_projects.router)
 app.include_router(_routers_alerts.router)
 app.include_router(_routers_machine_alerts.router)
+app.include_router(_routers_picker.router)
+app.include_router(_routers_filter.router)
+app.include_router(_routers_swiss.router)
 
 
 
@@ -1637,141 +1643,16 @@ def _resolve_video_start_time(video_path: Path, total_frames: int, fps: float):
     return _dt.datetime.now().replace(microsecond=0)
 
 
-@app.post("/api/filter/scan")
-def filter_scan(req: FilterScanRequest):
-    src = Path(req.source_path).expanduser().resolve()
-    scan_id = uuid.uuid4().hex[:12]
-    video_meta = None
-
-    # If the user pointed at a video file, decode every frame (subject
-    # to the existing "Sample every Nth" knob) into a frames folder
-    # under _outputs/, then run the scan against that folder.
-    if src.is_file() and src.suffix.lower() in _VIDEO_EXTS:
-        import datetime as _dt
-        every = max(1, int(req.every or 1))
-        frames_dir = OUTPUTS / f"filter_frames_{scan_id}"
-        frames_dir.mkdir(parents=True, exist_ok=True)
-        cap = cv2.VideoCapture(str(src))
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
-        if total <= 0:
-            cap.release()
-            raise HTTPException(400, f"Video has no readable frames: {src}")
-        # Resolve a wall-clock start time so each extracted frame can
-        # carry a YYYY-MM-DD_HH-MM-SS timestamp in its filename — the
-        # filter scanner parses that and feeds the date-range filter.
-        video_start = _resolve_video_start_time(src, total, fps)
-        # Walk the stream sequentially — far faster than per-frame seek
-        # for full extraction. Honour `every` to optionally skip frames.
-        written = 0
-        idx = 0
-        eff_fps = fps if fps > 0 else 30.0
-        while True:
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                break
-            if idx % every == 0:
-                ts = video_start + _dt.timedelta(seconds=idx / eff_fps)
-                ts_str = ts.strftime("%Y-%m-%d_%H-%M-%S")
-                dst = frames_dir / f"{ts_str}_{src.stem}_f{written:06d}.jpg"
-                cv2.imwrite(str(dst), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
-                written += 1
-            idx += 1
-        cap.release()
-        if written == 0:
-            raise HTTPException(400, "Could not extract any frames from the video")
-        video_meta = {
-            "video_path": str(src),
-            "frames_extracted": written,
-            "frames_dir": str(frames_dir),
-            "video_total_frames": total,
-            "video_fps": fps,
-            "video_start": video_start.isoformat(),
-            "every_used": every,
-        }
-        # Hand off the frame folder as the actual scan source.
-        # Reset `every` since the frame folder already reflects the sampling.
-        src = frames_dir
-        req.every = 1
-
-    elif not src.is_dir():
-        raise HTTPException(400,
-            f"Source not found: {src}. Pass a folder of images or a video file "
-            f"({', '.join(sorted(_VIDEO_EXTS))})")
-
-    db_path = DATA / f"filter_{scan_id}.db"
-    label = req.label or (Path(video_meta["video_path"]).stem if video_meta else src.name)
-    settings = {
-        "model": req.model, "conf": req.conf, "batch": req.batch,
-        "every": req.every, "recurse": req.recurse, "classes": req.classes,
-        "label": label,
-    }
-    if video_meta:
-        settings.update(video_meta)
-    job = db.create_job(
-        kind="folder", mode="filter_scan",
-        input_ref=str(src),
-        output_path=str(db_path),
-        settings=settings,
-    )
-    queue.submit(job.id)
-    return {
-        "job_id": job.id,
-        "scan_id": scan_id,
-        "db_path": str(db_path),
-        "video": video_meta,
-    }
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.get("/api/filter/scans")
-def list_filter_scans():
-    """List every completed (or in-flight) filter-scan job."""
-    out = []
-    for j in db.list_jobs(limit=200):
-        if j.mode != "filter_scan":
-            continue
-        out.append({
-            "job_id": j.id,
-            "label": (j.settings.get("label") or Path(j.input_ref).name),
-            "source": j.input_ref,
-            "db": j.output_path,
-            "status": j.status,
-            "started_at": j.started_at,
-            "finished_at": j.finished_at,
-        })
-    return out
+
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.get("/api/filter/{job_id}/summary")
-def filter_summary(job_id: str):
-    """Class-by-class breakdown of a finished filter scan."""
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404, "Filter job not found")
-    db_path = Path(j.output_path)
-    if not db_path.is_file():
-        return {"status": j.status, "ready": False, "rows": []}
 
-    conn = _sqlite3.connect(str(db_path))
-    conn.row_factory = _sqlite3.Row
-    try:
-        total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
-        rows = conn.execute(
-            "SELECT class_id, COALESCE(class_name,'') AS class_name, "
-            "COUNT(DISTINCT path) AS n_images, SUM(count) AS total_dets, "
-            "AVG(max_conf) AS avg_conf, MAX(max_conf) AS top_conf "
-            "FROM detections GROUP BY class_id ORDER BY n_images DESC"
-        ).fetchall()
-        return {
-            "status": j.status,
-            "ready": True,
-            "total_images": total,
-            "label": j.settings.get("label") or Path(j.input_ref).name,
-            "source": j.input_ref,
-            "rows": [dict(r) for r in rows],
-        }
-    finally:
-        conn.close()
+# filter route moved to routers/filter.py on 2026-05-01
+
 
 
 def _filter_db(job_id: str) -> tuple[JobRow, str]:
@@ -1802,27 +1683,8 @@ def _path_in_scan(db_path: str, image_path: str) -> bool:
     return row is not None
 
 
-@app.get("/api/filter/{job_id}/thumb")
-def filter_thumb(job_id: str, path: str, size: int = 320):
-    """Serve a small JPEG thumbnail of one image from a scan.
-    The path must be in the scan DB — prevents reading arbitrary files."""
-    _, db_path = _filter_db(job_id)
-    if not _path_in_scan(db_path, path):
-        raise HTTPException(403, "Path not in this scan.")
-    img = cv2.imread(path)
-    if img is None:
-        raise HTTPException(404, "Image unreadable")
-    h, w = img.shape[:2]
-    scale = size / max(h, w)
-    if scale < 1:
-        img = cv2.resize(img, (int(w * scale), int(h * scale)),
-                         interpolation=cv2.INTER_AREA)
-    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
-    if not ok:
-        raise HTTPException(500, "Encode failed")
-    headers = {"Cache-Control": "public, max-age=3600"}
-    return StreamingResponse(io.BytesIO(buf.tobytes()),
-                             media_type="image/jpeg", headers=headers)
+# filter route moved to routers/filter.py on 2026-05-01
+
 
 
 # --- Filter rule -> SQL ---------------------------------------------------
@@ -2107,99 +1969,16 @@ def _hour_dow_filter(rule: FilterRule, paths: list[str]) -> list[str]:
     return out
 
 
-@app.post("/api/filter/{job_id}/match-paths")
-def filter_match_paths(job_id: str, rule: FilterRule, limit: int = 100000):
-    """Return the FULL path list of images matching the rule (up to `limit`).
-
-    Lean variant of match-preview — no thumbs, no per-image class metadata,
-    no random ordering. Used by the Smart Annotation Picker to restrict
-    every stage to the exact set the user kept in step 4 (\"What to keep\").
-    """
-    _, db_path = _filter_db(job_id)
-    sql_from, params = _build_match_sql(rule)
-    conn = _sqlite3.connect(db_path)
-    try:
-        rows = conn.execute(
-            f"SELECT i.path {sql_from} ORDER BY i.path LIMIT {int(limit)}",
-            params,
-        ).fetchall()
-        paths = [r[0] for r in rows]
-        # Hour-of-day + day-of-week filtering happens in Python (see match-count)
-        if rule.hours or rule.dow:
-            paths = _hour_dow_filter(rule, paths)
-        return {"paths": paths, "count": len(paths)}
-    finally:
-        conn.close()
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.post("/api/filter/{job_id}/match-count")
-def filter_match_count(job_id: str, rule: FilterRule):
-    """Live count: how many images match the given rule. Hour-of-day and
-    day-of-week are filtered in Python (filename parse), the rest in SQL."""
-    _, db_path = _filter_db(job_id)
-    sql_from, params = _build_match_sql(rule)
-    conn = _sqlite3.connect(db_path)
-    try:
-        if rule.hours or rule.dow:
-            paths = [r[0] for r in conn.execute(f"SELECT i.path {sql_from}", params)]
-            filtered = _hour_dow_filter(rule, paths)
-            total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
-            return {"matches": len(filtered), "total": total, "rule_sql_count": len(paths)}
-        else:
-            n = conn.execute(f"SELECT COUNT(*) {sql_from}", params).fetchone()[0]
-            total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
-            return {"matches": int(n), "total": int(total)}
-    finally:
-        conn.close()
+
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.post("/api/filter/{job_id}/match-preview")
-def filter_match_preview(job_id: str, rule: FilterRule, limit: int = 12,
-                          mode: str = "matches"):
-    """Return up to `limit` sample paths that match the rule, plus per-image
-    metadata, so the wizard can render a thumbnail grid.
 
-    mode='matches'    → matching frames
-    mode='nonmatches' → frames that fail the rule (sanity check)
-    """
-    _, db_path = _filter_db(job_id)
-    sql_from, params = _build_match_sql(rule)
-    conn = _sqlite3.connect(db_path)
-    conn.row_factory = _sqlite3.Row
-    try:
-        if mode == "nonmatches":
-            inner = f"SELECT i.path {sql_from}"
-            sql = (f"SELECT i.path, i.quality, i.brightness, i.sharpness, i.n_dets "
-                   f"FROM images i WHERE i.path NOT IN ({inner}) "
-                   f"ORDER BY RANDOM() LIMIT {int(limit)}")
-            sql_params = params
-        else:
-            sql = (f"SELECT i.path, i.quality, i.brightness, i.sharpness, i.n_dets "
-                   f"{sql_from} ORDER BY RANDOM() LIMIT {int(limit)}")
-            sql_params = params
+# filter route moved to routers/filter.py on 2026-05-01
 
-        rows = [dict(r) for r in conn.execute(sql, sql_params)]
-        # Hour-of-day + day-of-week filters live in Python (see match-count).
-        # Apply only for matches (non-matches set is the SQL inverse already).
-        if (rule.hours or rule.dow) and mode == "matches":
-            keep_paths = set(_hour_dow_filter(rule, [r["path"] for r in rows]))
-            rows = [r for r in rows if r["path"] in keep_paths]
-
-        # Pull per-row classes for the metadata overlay
-        for r in rows:
-            cls_rows = conn.execute(
-                "SELECT class_id, COALESCE(class_name,'') AS class_name, count, max_conf "
-                "FROM detections WHERE path = ? ORDER BY count DESC LIMIT 5",
-                (r["path"],),
-            ).fetchall()
-            r["classes"] = [dict(cr) for cr in cls_rows]
-            r["thumb_url"] = (
-                f"/api/filter/{job_id}/thumb?path="
-                + urllib.parse.quote(r["path"], safe='')
-            )
-        return {"rows": rows, "mode": mode}
-    finally:
-        conn.close()
 
 
 class FrameFeedbackRequest(BaseModel):
@@ -2229,22 +2008,8 @@ def _scan_db_for_job(job_id: str) -> Path:
     return p
 
 
-@app.post("/api/filter/{job_id}/annotation-pick")
-def annotation_pick(job_id: str, req: AnnotationPickRequest):
-    db_path = _scan_db_for_job(job_id)
-    info = {"job_id": job_id}
-    if req.compute_phashes:
-        info["phash"] = picker_core.ensure_phashes(db_path)
-    if req.compute_clip and req.use_clip:
-        info["clip"] = picker_core.ensure_clip_embeddings(db_path)
-    picks = picker_core.pick_top_n(
-        db_path, n=req.n, weights=req.weights or {},
-        dedup_threshold=req.dedup_threshold, use_clip=req.use_clip,
-        n_clusters=req.n_clusters,
-    )
-    info["picks"] = picks
-    info["n_picked"] = len(picks)
-    return info
+# filter route moved to routers/filter.py on 2026-05-01
+
 
 
 class CvatExportRequest(BaseModel):
@@ -2252,38 +2017,19 @@ class CvatExportRequest(BaseModel):
     include_pre_labels: bool = True
 
 
-@app.post("/api/filter/{job_id}/export-cvat")
-def export_cvat(job_id: str, req: CvatExportRequest):
-    db_path = _scan_db_for_job(job_id)
-    out_dir = OUTPUTS / "annotation_exports"
-    zip_path = picker_core.export_cvat_zip(
-        db_path, req.image_paths,
-        out_dir=out_dir,
-        include_pre_labels=req.include_pre_labels,
-    )
-    return {
-        "ok": True,
-        "zip_path": str(zip_path),
-        "size_mb": round(zip_path.stat().st_size / 1024 / 1024, 2),
-        "n_images": len(req.image_paths),
-        "download_url": f"/api/filter/download-export/{zip_path.name}",
-    }
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.get("/api/filter/download-export/{filename}")
-def download_export(filename: str):
-    p = OUTPUTS / "annotation_exports" / filename
-    if not p.is_file():
-        raise HTTPException(404, "Export not found")
-    return FileResponse(str(p), media_type="application/zip", filename=filename)
+
+# filter route moved to routers/filter.py on 2026-05-01
+
 
 
 # ───── Annotation Pipeline v2 (40-class CSI-Annotation-v3) ─────────────
 
 # ─── Picker scheduler ─────────────────────────────────────────────────
-@app.get("/api/picker/schedules")
-def picker_schedules_list():
-    return {"schedules": picker_sched.list_schedules(ROOT)}
+# picker route moved to routers/picker.py on 2026-05-01
+
 
 
 class PickerScheduleAddReq(BaseModel):
@@ -2296,19 +2042,12 @@ class PickerScheduleAddReq(BaseModel):
     label: str | None = None
 
 
-@app.post("/api/picker/schedules")
-def picker_schedules_add(req: PickerScheduleAddReq):
-    return picker_sched.add_schedule(
-        ROOT, job_id=req.job_id, every_days=req.every_days,
-        weights=req.weights, per_class_target=req.per_class_target,
-        need_threshold=req.need_threshold, enabled=req.enabled,
-        label=req.label)
+# picker route moved to routers/picker.py on 2026-05-01
 
 
-@app.delete("/api/picker/schedules/{schedule_id}")
-def picker_schedules_remove(schedule_id: str):
-    ok = picker_sched.remove_schedule(ROOT, schedule_id)
-    return {"ok": ok}
+
+# picker route moved to routers/picker.py on 2026-05-01
+
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -2564,11 +2303,8 @@ def reports_pdf(site_id: str | None = None,
                         headers={"Cache-Control": "no-store"})
 
 
-@app.get("/api/picker/face-blur-backend")
-def picker_face_blur_backend():
-    """Tells the UI which face-blur backend is available so it can show
-    a clear status (mediapipe / haar / none)."""
-    return face_blur_core.backend_info()
+# picker route moved to routers/picker.py on 2026-05-01
+
 
 
 def _path_in_any_filter_scan(path: str) -> bool:
@@ -2597,85 +2333,16 @@ def _data_dir():
     return Path(__file__).parent / "_data"
 
 
-@app.get("/api/picker/image")
-def picker_image(path: str, job_id: str | None = None):
-    """Serve a source image. Path must be registered in a filter scan
-    DB — prevents arbitrary local file disclosure.
-
-    If `job_id` is supplied, validate against THAT scan's images table
-    (fast path — single DB lookup, used by the picker UI which knows
-    its active scan). Without `job_id`, fall back to scanning every
-    filter_*.db (slower but works for callers that don't know which
-    scan a path belongs to).
-
-    Audit-fix 2026-04-30: pre-fix the endpoint accepted any filesystem
-    path with a whitelisted image extension, allowing read of any
-    .jpg/.png/etc on disk.
-    """
-    p = Path(path).resolve()
-    if not p.is_file():
-        raise HTTPException(404, "Image not found")
-    if p.suffix.lower() not in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
-        raise HTTPException(400, "Not an image")
-
-    # Scope check — must be a path registered in a filter scan
-    if job_id:
-        try:
-            _, db_path = _filter_db(job_id)
-        except HTTPException:
-            raise HTTPException(404, "Scan not found")
-        if not _path_in_scan(db_path, str(p)) and not _path_in_scan(db_path, path):
-            raise HTTPException(403, "Path not in this scan")
-    else:
-        # No scan ID supplied — search all filter scans
-        if not _path_in_any_filter_scan(str(p)) and not _path_in_any_filter_scan(path):
-            raise HTTPException(403, "Path not in any registered scan")
-
-    return FileResponse(str(p), media_type="image/jpeg")
+# picker route moved to routers/picker.py on 2026-05-01
 
 
-@app.get("/api/picker/taxonomy/{job_id}")
-def picker_taxonomy(job_id: str):
-    db_path = _scan_db_for_job(job_id)
-    taxonomy_core.ensure_taxonomy(db_path)
-    return {"taxonomy": taxonomy_core.get_taxonomy(db_path)}
+
+# picker route moved to routers/picker.py on 2026-05-01
 
 
-@app.get("/api/picker/{job_id}/progress")
-def picker_progress(job_id: str):
-    """Live progress ping for the Smart Annotation Picker UI.
 
-    Returns total image count plus how many rows already exist in each
-    stage's cache table. The JS polls this every ~500 ms while a stage
-    is running so the operator sees a real progress bar instead of a
-    silent spinner.
-    """
-    db_path = _scan_db_for_job(job_id)
-    # Use the module-level alias (`sqlite3 as _sqlite3`) — the bare
-    # `sqlite3` name is not imported in this module. Audit caught
-    # the NameError 2026-04-30.
-    conn = _sqlite3.connect(str(db_path))
-    try:
-        def _count(sql: str) -> int:
-            try:
-                row = conn.execute(sql).fetchone()
-                return int(row[0] if row else 0)
-            except Exception:
-                return 0
-        out = {
-            "total": _count("SELECT COUNT(*) FROM images"),
-            "phash": _count("SELECT COUNT(*) FROM image_phash"),
-            "clip": _count("SELECT COUNT(*) FROM image_clip"),
-            "classagnostic": _count(
-                "SELECT COUNT(DISTINCT path) FROM image_classagnostic"),
-            "class_need": _count(
-                "SELECT COUNT(DISTINCT path) FROM image_class_need"),
-            "cluster": _count(
-                "SELECT COUNT(*) FROM image_cluster_v2"),
-        }
-    finally:
-        conn.close()
-    return out
+# picker route moved to routers/picker.py on 2026-05-01
+
 
 
 class PickerStageReq(BaseModel):
@@ -2685,43 +2352,24 @@ class PickerStageReq(BaseModel):
     path_filter: list[str] | None = None  # restrict to Filter wizard survivors
 
 
-@app.post("/api/picker/{job_id}/stage1-phash")
-def picker_stage1(job_id: str, req: PickerStageReq | None = None):
-    db_path = _scan_db_for_job(job_id)
-    pf = req.path_filter if req else None
-    return picker_core.ensure_phashes(db_path, path_filter=pf)
+# picker route moved to routers/picker.py on 2026-05-01
 
 
-@app.post("/api/picker/{job_id}/stage2-clip")
-def picker_stage2(job_id: str, req: PickerStageReq):
-    db_path = _scan_db_for_job(job_id)
-    return picker_core.ensure_clip_embeddings(
-        db_path, model_name=req.clip_model, path_filter=req.path_filter)
+
+# picker route moved to routers/picker.py on 2026-05-01
 
 
-@app.post("/api/picker/{job_id}/stage3-classagnostic")
-def picker_stage3(job_id: str, req: PickerStageReq):
-    db_path = _scan_db_for_job(job_id)
-    return picker_core.detect_classagnostic(
-        db_path, model_path=req.model_path, path_filter=req.path_filter)
+
+# picker route moved to routers/picker.py on 2026-05-01
 
 
-@app.post("/api/picker/{job_id}/stage4-need")
-def picker_stage4(job_id: str, req: PickerStageReq):
-    db_path = _scan_db_for_job(job_id)
-    taxonomy_core.ensure_taxonomy(db_path)
-    tax = taxonomy_core.get_taxonomy(db_path)
-    return picker_core.score_class_need(
-        db_path, taxonomy=tax, model_name=req.clip_model,
-        path_filter=req.path_filter)
+
+# picker route moved to routers/picker.py on 2026-05-01
 
 
-@app.post("/api/picker/{job_id}/stage4-cluster")
-def picker_stage4_cluster(job_id: str, req: PickerStageReq):
-    db_path = _scan_db_for_job(job_id)
-    return picker_core.cluster_v2(db_path, n_clusters=req.n_clusters,
-                                   model_name=req.clip_model,
-                                   path_filter=req.path_filter)
+
+# picker route moved to routers/picker.py on 2026-05-01
+
 
 
 class PickerRunReq(BaseModel):
@@ -2749,143 +2397,16 @@ class PickerEstimateReq(BaseModel):
     path_filter: list[str] | None = None
 
 
-@app.post("/api/picker/{job_id}/estimate")
-def picker_estimate(job_id: str, req: PickerEstimateReq):
-    """Return: candidate counts per class (above threshold, within scope)
-    + projected pick count given the operator's settings.
-
-    This is fast — it's a single GROUP BY on image_class_need with
-    optional path-filter scope. No scoring, no ranking, no I/O.
-    """
-    db_path = _scan_db_for_job(job_id)
-    conn = picker_core._open_v2(db_path)
-    try:
-        # Path-filter scope (Filter wizard "what-to-keep" survivors)
-        path_clause = ""
-        params: list = [req.need_threshold]
-        if req.path_filter:
-            ph = ",".join("?" * len(req.path_filter))
-            path_clause = f" AND n.path IN ({ph})"
-            params.extend(req.path_filter)
-
-        # Per-class candidate count above threshold
-        rows = conn.execute(
-            f"SELECT n.class_id, COUNT(*) AS n_cands "
-            f"FROM image_class_need n "
-            f"WHERE n.score > ? {path_clause} "
-            f"GROUP BY n.class_id ORDER BY n.class_id",
-            params,
-        ).fetchall()
-        per_class = {int(cid): int(n) for cid, n in rows}
-
-        # Project the pick count: per class, take min(target, candidates)
-        # capped by candidate_pool_size if set.
-        target = int(req.per_class_target)
-        pool = int(req.candidate_pool_size) if req.candidate_pool_size else None
-        per_class_projected: dict[int, int] = {}
-        for cid, n_cands in per_class.items():
-            avail = min(n_cands, pool) if pool else n_cands
-            per_class_projected[cid] = min(target, avail)
-        projected_total = sum(per_class_projected.values())
-        # Apply total_budget ceiling
-        if req.total_budget and req.total_budget > 0:
-            projected_total = min(projected_total, req.total_budget)
-        # Apply min_per_class floor — if a class has < min_per_class but
-        # has SOME candidates, we'd boost it to min(min_per_class, n_cands).
-        # This may push total slightly above the simple sum.
-        if req.min_per_class and req.min_per_class > 0:
-            for cid, n_cands in per_class.items():
-                cur = per_class_projected.get(cid, 0)
-                if cur < req.min_per_class and n_cands > cur:
-                    boost = min(req.min_per_class, n_cands) - cur
-                    per_class_projected[cid] = cur + boost
-            projected_total = sum(per_class_projected.values())
-            if req.total_budget and req.total_budget > 0:
-                projected_total = min(projected_total, req.total_budget)
-
-        # Total candidate pool (above threshold)
-        total_candidates = sum(per_class.values())
-        # How many distinct classes have at least 1 candidate
-        classes_with_candidates = len(per_class)
-        # How many distinct paths overall — this is the HARD CEILING
-        # on total picks because of cross-class dedup (a frame can be
-        # picked for at most one class).
-        path_count_row = conn.execute(
-            f"SELECT COUNT(DISTINCT n.path) FROM image_class_need n "
-            f"WHERE n.score > ? {path_clause}",
-            params,
-        ).fetchone()
-        unique_paths = int(path_count_row[0] if path_count_row else 0)
-
-        # Apply dedup ceiling — the projection naively summed per-class
-        # picks, but cross-class dedup means total picks ≤ unique_paths.
-        # Without this cap the operator sees "9,006 picks" when their
-        # filter only has 624 survivors, which is wildly misleading.
-        projected_total_pre_dedup = projected_total
-        projected_total = min(projected_total, unique_paths)
-
-        return {
-            "total_candidates": total_candidates,
-            "unique_paths": unique_paths,
-            "classes_with_candidates": classes_with_candidates,
-            "per_class_candidates": per_class,
-            "per_class_projected": per_class_projected,
-            "projected_total_picks": projected_total,
-            "projected_total_pre_dedup": projected_total_pre_dedup,
-            "dedup_ceiling_hit": projected_total_pre_dedup > projected_total,
-            "scoped_to_filter": bool(req.path_filter),
-        }
-    finally:
-        conn.close()
+# picker route moved to routers/picker.py on 2026-05-01
 
 
-@app.post("/api/picker/{job_id}/run")
-def picker_run(job_id: str, req: PickerRunReq):
-    db_path = _scan_db_for_job(job_id)
-    taxonomy_core.ensure_taxonomy(db_path)
-    tax = taxonomy_core.get_taxonomy(db_path)
-    run_id = picker_core.start_pick_run(
-        db_path, weights=req.weights, config=req.dict(),
-    )
-    picks = picker_core.pick_per_class(
-        db_path, taxonomy=tax,
-        per_class_target=req.per_class_target,
-        weights=req.weights,
-        need_threshold=req.need_threshold,
-        uncertainty_lo=req.uncertainty_lo,
-        uncertainty_hi=req.uncertainty_hi,
-        path_filter=req.path_filter,
-        candidate_pool_size=req.candidate_pool_size,
-        total_budget=req.total_budget,
-        min_per_class=req.min_per_class,
-    )
-    picker_core.store_pick_decisions(db_path, run_id, picks)
-    summary = picker_core.get_run_summary(db_path, run_id)
-    # Group counts per class for the UI
-    class_counts: dict[int, int] = {}
-    for p in picks:
-        class_counts[p["class_id"]] = class_counts.get(p["class_id"], 0) + 1
-    return {
-        "run_id": run_id,
-        "summary": summary,
-        "n_picked": len(picks),
-        "per_class_counts": class_counts,
-        "picks": picks,
-    }
+
+# picker route moved to routers/picker.py on 2026-05-01
 
 
-@app.get("/api/picker/{job_id}/runs")
-def picker_runs(job_id: str):
-    db_path = _scan_db_for_job(job_id)
-    conn = picker_core._open_v2(db_path)
-    rows = conn.execute(
-        "SELECT run_id, started_at, finished_at, n_picked, n_approved, "
-        "n_rejected, n_holdout FROM pick_run ORDER BY started_at DESC"
-    ).fetchall()
-    conn.close()
-    cols = ["run_id", "started_at", "finished_at", "n_picked", "n_approved",
-            "n_rejected", "n_holdout"]
-    return {"runs": [dict(zip(cols, r)) for r in rows]}
+
+# picker route moved to routers/picker.py on 2026-05-01
+
 
 
 # Lazy migration: add columns + reclassify column to pick_decision tables
@@ -2906,289 +2427,20 @@ def _ensure_pick_decision_columns(db_path: str) -> None:
         conn.close()
 
 
-@app.get("/api/picker/{job_id}/runs/{run_id}/picks")
-def picker_run_picks(job_id: str, run_id: str, status: str = "pending",
-                     limit: int = 1000, offset: int = 0,
-                     sort: str = "class_score",
-                     bboxes: bool = True):
-    """Return picks for the curator UI.
-
-    Each row is enriched with:
-      - reason (already in pick_decision) — surface picker's "why"
-      - cluster_label (image_cluster_v2) — phase tag
-      - top_detections (detections table) — class_name + max_conf, top 3
-      - bboxes (image_classagnostic) — class-agnostic boxes drawn during
-        stage 3, in pixel space, so the curator can see WHERE the
-        picker thought there was something. Disable via ?bboxes=false
-        for a lighter response on slow networks.
-      - reject_reason / reclass_id (pick_decision) — set in the curator UI
-
-    sort:
-      class_score (default)  — class_id ASC, score DESC
-      score                  — score DESC across all classes
-      class                  — class_id ASC, then path
-      path                   — path ASC
-    """
-    db_path = _scan_db_for_job(job_id)
-    _ensure_pick_decision_columns(db_path)
-    conn = picker_core._open_v2(db_path)
-    order_sql = {
-        "class_score": "class_id, score DESC",
-        "score":       "score DESC",
-        "class":       "class_id, path",
-        "path":        "path",
-    }.get(sort, "class_id, score DESC")
-
-    rows = conn.execute(
-        f"SELECT path, class_id, score, reason, status, "
-        f"       COALESCE(reject_reason, ''), reclass_id "
-        f"FROM pick_decision "
-        f"WHERE run_id = ? AND (status = ? OR ? = 'all') "
-        f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
-        (run_id, status, status, limit, offset),
-    ).fetchall()
-
-    paths = [r[0] for r in rows]
-    enrich = {p: {} for p in paths}
-
-    if paths:
-        ph = ",".join("?" * len(paths))
-        # Cluster phase tag per path
-        for p, cl, lbl in conn.execute(
-            f"SELECT path, cluster_id, cluster_label FROM image_cluster_v2 "
-            f"WHERE path IN ({ph})", paths
-        ):
-            enrich[p]["cluster_id"] = cl
-            enrich[p]["cluster_label"] = lbl
-
-        # Top-3 detections per path (from main scan model — typically CSI_V1)
-        for p, cid, cname, cnt, mc in conn.execute(
-            f"SELECT path, class_id, COALESCE(class_name,''), count, max_conf "
-            f"FROM detections WHERE path IN ({ph}) "
-            f"ORDER BY path, max_conf DESC", paths
-        ):
-            d = enrich[p].setdefault("top_detections", [])
-            if len(d) < 3:
-                d.append({"class_id": cid, "class_name": cname,
-                          "count": cnt, "max_conf": float(mc or 0.0)})
-
-        # 2026-04-30: Top-3 CLIP class-need scores per path. Surfaces
-        # what ELSE the picker thought this frame might be — critical for
-        # spotting CLIP confusion in round 1 (no V2 model yet).
-        # Example: a card picked as "Tower crane 0.62" but with
-        # alternates "Mobile crane 0.58" + "Excavator 0.51" tells the
-        # operator CLIP is unsure → review before approving.
-        try:
-            # Pull class names from the taxonomy table for nice labels.
-            # Audit-fix 2026-04-30: the table is `taxonomy` with columns
-            # `class_id / name_en / name_de` — pre-fix I queried
-            # `picker_taxonomy / id / en / de` which always returned empty,
-            # so chips rendered "class 6" instead of "Tower crane".
-            taxonomy_names = {}
-            try:
-                for cid, en, de in conn.execute(
-                    "SELECT class_id, name_en, name_de FROM taxonomy"
-                ):
-                    taxonomy_names[int(cid)] = {
-                        "en": en or f"class {cid}",
-                        "de": de or "",
-                    }
-            except _sqlite3.OperationalError:
-                pass  # taxonomy table missing — fall back to id-only labels
-            # Single batched query: all class scores for all picked paths
-            for p, cid, sc in conn.execute(
-                f"SELECT path, class_id, score FROM image_class_need "
-                f"WHERE path IN ({ph}) ORDER BY path, score DESC", paths
-            ):
-                d = enrich[p].setdefault("top_classes", [])
-                if len(d) < 3:
-                    name_meta = taxonomy_names.get(int(cid), {})
-                    d.append({
-                        "class_id": int(cid),
-                        "class_name": name_meta.get("en") or f"class {cid}",
-                        "class_name_de": name_meta.get("de") or "",
-                        "score": float(sc or 0.0),
-                    })
-        except _sqlite3.OperationalError:
-            pass  # image_class_need missing — older scan, skip enrichment
-
-        # Class-agnostic boxes (only when ?bboxes=true)
-        if bboxes:
-            try:
-                for p, idx, x1, y1, x2, y2, obj in conn.execute(
-                    f"SELECT path, box_idx, x1, y1, x2, y2, objectness "
-                    f"FROM image_classagnostic WHERE path IN ({ph}) "
-                    f"AND box_idx >= 0 ORDER BY path, objectness DESC", paths
-                ):
-                    b = enrich[p].setdefault("bboxes", [])
-                    if len(b) < 8:  # cap per image to keep response small
-                        b.append({"x1": float(x1), "y1": float(y1),
-                                  "x2": float(x2), "y2": float(y2),
-                                  "obj": float(obj or 0.0)})
-            except _sqlite3.OperationalError:
-                pass  # image_classagnostic table may not exist yet
-    conn.close()
-
-    out = []
-    for r in rows:
-        e = enrich.get(r[0], {})
-        top_classes = e.get("top_classes", [])
-        # Derived: how uncertain is CLIP about this pick?
-        # - clip_top_score: best class's CLIP score (0..1)
-        # - clip_close_call: gap between #1 and #2 — small gap = ambiguous
-        # - clip_low_confidence: top-class score below a robust floor
-        # Used by the curator's "CLIP unsure" filter to surface error-prone
-        # picks first (round 1, no V2 model — CLIP confusion is common).
-        clip_top_score = float(top_classes[0]["score"]) if top_classes else 0.0
-        clip_close_call = (
-            float(top_classes[0]["score"] - top_classes[1]["score"])
-            if len(top_classes) >= 2 else 1.0
-        )
-        # V1 detection signal — did the scan model find ANYTHING?
-        # When False, the picker is relying on CLIP alone (no model
-        # uncertainty signal). These are the "V1 missed" picks worth
-        # extra scrutiny on round 1.
-        v1_detected = len(e.get("top_detections", [])) > 0
-        v1_max_conf = (
-            max((d.get("max_conf", 0) for d in e.get("top_detections", [])),
-                default=0.0)
-        )
-        out.append({
-            "path": r[0], "class_id": r[1], "score": r[2],
-            "reason": r[3], "status": r[4],
-            "reject_reason": r[5] or None,
-            "reclass_id": r[6],
-            "cluster_id": e.get("cluster_id"),
-            "cluster_label": e.get("cluster_label"),
-            "top_detections": e.get("top_detections", []),
-            "top_classes": top_classes,         # NEW: top-3 CLIP classes
-            "clip_top_score": clip_top_score,    # NEW: highest CLIP score
-            "clip_close_call": clip_close_call,  # NEW: #1 - #2 gap
-            "v1_detected": v1_detected,           # NEW: did scan model see anything?
-            "v1_max_conf": v1_max_conf,           # NEW: best V1 detection conf
-            "bboxes": e.get("bboxes", []),
-        })
-    return {"picks": out, "sort": sort, "count": len(out)}
+# picker route moved to routers/picker.py on 2026-05-01
 
 
-@app.get("/api/picker/{job_id}/runs/{run_id}/quota")
-def picker_run_quota(job_id: str, run_id: str):
-    """Per-class quota tracker — how many approved/holdout picks per class
-    against the run's per_class_target. Powers the header mini-bars."""
-    db_path = _scan_db_for_job(job_id)
-    conn = picker_core._open_v2(db_path)
-    target = 0
-    try:
-        cfg_row = conn.execute(
-            "SELECT config_json FROM pick_run WHERE run_id = ?",
-            (run_id,)).fetchone()
-        if cfg_row and cfg_row[0]:
-            try:
-                target = int(json.loads(cfg_row[0]).get("per_class_target") or 0)
-            except Exception:
-                target = 0
-    except Exception:
-        target = 0
 
-    rows = conn.execute(
-        "SELECT class_id, status, COUNT(*) FROM pick_decision "
-        "WHERE run_id = ? GROUP BY class_id, status",
-        (run_id,)).fetchall()
-    conn.close()
-
-    by_class: dict[int, dict] = {}
-    for cid, st, n in rows:
-        d = by_class.setdefault(int(cid), {"approved": 0, "rejected": 0,
-                                            "holdout": 0, "pending": 0,
-                                            "class_id": int(cid)})
-        d[st] = int(n)
-    for cid, d in by_class.items():
-        d["total"] = sum(d[s] for s in ("approved", "rejected",
-                                         "holdout", "pending"))
-        d["target"] = target
-        d["percent_approved"] = round(
-            100.0 * (d["approved"] + d["holdout"]) / max(1, target), 1
-        ) if target else None
-    return {
-        "per_class_target": target,
-        "by_class": list(by_class.values()),
-        "n_classes_covered": sum(
-            1 for d in by_class.values() if (d["approved"] + d["holdout"]) > 0),
-        "n_classes_below_half":  sum(
-            1 for d in by_class.values()
-            if target and (d["approved"] + d["holdout"]) < target / 2),
-    }
+# picker route moved to routers/picker.py on 2026-05-01
 
 
-@app.get("/api/picker/{job_id}/similar")
-def picker_similar(job_id: str, path: str, k: int = 6):
-    """Return the k nearest neighbours by CLIP cosine distance for
-    a given image. Used by the \"Similar frames\" sidebar in the curator
-    UI to bulk-decide visually-coherent groups."""
-    import numpy as np
-    db_path = _scan_db_for_job(job_id)
-    conn = picker_core._open_v2(db_path)
-    try:
-        row = conn.execute(
-            "SELECT embedding, dim FROM image_clip WHERE path = ?",
-            (path,)).fetchone()
-        if not row:
-            raise HTTPException(404,
-                "No CLIP embedding for that path — run stage 2 first")
-        target = np.frombuffer(row[0], dtype=np.float32).reshape(row[1])
-        target /= (np.linalg.norm(target) + 1e-9)
-        all_rows = conn.execute(
-            "SELECT path, embedding, dim FROM image_clip").fetchall()
-        if not all_rows:
-            return {"neighbors": []}
-        paths = [r[0] for r in all_rows]
-        X = np.stack([
-            np.frombuffer(r[1], dtype=np.float32).reshape(r[2])
-            for r in all_rows
-        ])
-        norms = np.linalg.norm(X, axis=1, keepdims=True) + 1e-9
-        X /= norms
-        sims = X @ target
-        # Skip the input path itself
-        order = np.argsort(-sims)
-        out = []
-        for idx in order:
-            p = paths[int(idx)]
-            if p == path:
-                continue
-            out.append({"path": p, "sim": float(sims[int(idx)])})
-            if len(out) >= int(k):
-                break
-        return {"neighbors": out, "input": path}
-    finally:
-        conn.close()
+
+# picker route moved to routers/picker.py on 2026-05-01
 
 
-@app.get("/api/picker/{job_id}/blur-preview")
-def picker_blur_preview(path: str, job_id: str = None):
-    """Return a face-blurred preview JPG for a single source image.
-    Used by the \"Preview blurred\" toggle in the curator UI so the
-    operator can verify the export will anonymise faces correctly."""
-    p = Path(path).resolve()
-    if not p.is_file():
-        raise HTTPException(404, "Image not found")
-    if p.suffix.lower() not in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
-        raise HTTPException(400, "Not an image")
-    try:
-        img = cv2.imread(str(p))
-        if img is None:
-            raise HTTPException(400, "Could not decode image")
-        blurred = face_blur_core.blur_faces(img)
-        ok, buf = cv2.imencode(".jpg", blurred,
-                                [cv2.IMWRITE_JPEG_QUALITY, 80])
-        if not ok:
-            raise HTTPException(500, "Could not encode preview")
-        from fastapi.responses import Response
-        return Response(content=buf.tobytes(), media_type="image/jpeg")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Blur preview failed: {e}")
+
+# picker route moved to routers/picker.py on 2026-05-01
+
 
 
 class CuratorActionReq(BaseModel):
@@ -3199,179 +2451,20 @@ class CuratorActionReq(BaseModel):
     reclass_id: int | None = None     # cross-class re-classify
 
 
-@app.post("/api/picker/{job_id}/runs/{run_id}/curator")
-def picker_curator_action(job_id: str, run_id: str, req: CuratorActionReq):
-    db_path = _scan_db_for_job(job_id)
-    _ensure_pick_decision_columns(db_path)
-    picker_core.update_decision(db_path, run_id, req.path,
-                                 req.status, req.curator)
-    # Persist the optional reject_reason / reclass_id columns ourselves
-    # since picker_core.update_decision predates them.
-    if req.reject_reason or req.reclass_id is not None:
-        conn = _sqlite3.connect(db_path)
-        try:
-            conn.execute(
-                "UPDATE pick_decision SET reject_reason = ?, reclass_id = ? "
-                "WHERE run_id = ? AND path = ?",
-                (req.reject_reason, req.reclass_id, run_id, req.path),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-    return {"ok": True}
+# picker route moved to routers/picker.py on 2026-05-01
+
 
 
 class PickerExportReq(BaseModel):
     blur_faces: bool = True
 
 
-@app.post("/api/picker/{job_id}/runs/{run_id}/export")
-def picker_export_run(job_id: str, run_id: str, req: PickerExportReq | None = None):
-    """Export the curator's APPROVED picks as a labeling-batch zip and
-    HOLDOUT picks as a benchmark zip. Includes manifest.json (full
-    provenance) and optionally blurs faces before any image leaves the box."""
-    if req is None:
-        req = PickerExportReq()
-    db_path = _scan_db_for_job(job_id)
-    conn = picker_core._open_v2(db_path)
-    approved = [r[0] for r in conn.execute(
-        "SELECT path FROM pick_decision WHERE run_id = ? AND status = 'approved'",
-        (run_id,)).fetchall()]
-    holdout = [r[0] for r in conn.execute(
-        "SELECT path FROM pick_decision WHERE run_id = ? AND status = 'holdout'",
-        (run_id,)).fetchall()]
-    # Pull every decision row + run metadata for the manifest.
-    # COALESCE reclass_id over class_id so the export reflects the
-    # curator's cross-class re-classification when present.
-    _ensure_pick_decision_columns(db_path)
-    pick_rows = conn.execute(
-        "SELECT path, "
-        "       COALESCE(reclass_id, class_id) AS effective_class, "
-        "       class_id AS original_class, "
-        "       score, reason, status, curator, decided_at, "
-        "       COALESCE(reject_reason, '') AS reject_reason "
-        "FROM pick_decision WHERE run_id = ?", (run_id,)).fetchall()
-    run_meta = conn.execute(
-        "SELECT run_id, started_at, finished_at, weights_json, config_json, "
-        "n_picked, n_approved, n_rejected, n_holdout, dataset_hash, model_path "
-        "FROM pick_run WHERE run_id = ?", (run_id,)).fetchone()
-    conn.close()
-    cols = ["run_id", "started_at", "finished_at", "weights_json",
-            "config_json", "n_picked", "n_approved", "n_rejected",
-            "n_holdout", "dataset_hash", "model_path"]
-    run_dict = dict(zip(cols, run_meta)) if run_meta else {}
-    # Audit-fix 2026-04-30 (P2): catch json.JSONDecodeError specifically
-    # so a corrupt cell still surfaces in logs instead of being swallowed
-    # by a bare `except:` that also catches KeyboardInterrupt + SystemExit.
-    if run_dict.get("weights_json"):
-        try: run_dict["weights"] = json.loads(run_dict.pop("weights_json"))
-        except (json.JSONDecodeError, TypeError) as _e:
-            run_dict["weights_parse_error"] = str(_e)
-    if run_dict.get("config_json"):
-        try: run_dict["config"] = json.loads(run_dict.pop("config_json"))
-        except (json.JSONDecodeError, TypeError) as _e:
-            run_dict["config_parse_error"] = str(_e)
-    base_manifest = {
-        "manifest_version": 1,
-        "exported_at": time.time(),
-        "run": run_dict,
-        "scan_db": str(db_path),
-    }
-
-    # Try to load face-blur backend info
-    try:
-        from core import face_blur as _fb
-        face_backend = _fb.backend_info()
-    except Exception:
-        face_backend = {"backend": "none", "available": False}
-
-    out_dir = OUTPUTS / "annotation_exports"
-    result = {"run_id": run_id, "face_blur_backend": face_backend}
-
-    def _build_manifest(image_subset: list[str], kind: str) -> dict:
-        m = dict(base_manifest)
-        m["kind"] = kind
-        m["n_images"] = len(image_subset)
-        m["face_blur_requested"] = req.blur_faces
-        m["face_blur_backend"] = face_backend
-        m["picks"] = [
-            {
-                "path": r[0],
-                "class_id": r[1],          # effective class (after re-classify)
-                "original_class_id": r[2], # what the picker originally suggested
-                "reclassified": r[1] != r[2],
-                "score": r[3], "reason": r[4],
-                "status": r[5], "curator": r[6], "decided_at": r[7],
-                "reject_reason": r[8] or None,
-            }
-            for r in pick_rows if r[0] in image_subset
-        ]
-        m["n_reclassified"] = sum(
-            1 for p in m["picks"] if p.get("reclassified"))
-        return m
-
-    if approved:
-        manifest = _build_manifest(approved, "labeling_batch")
-        zp = picker_core.export_cvat_zip(
-            db_path, approved, out_dir=out_dir,
-            blur_faces=req.blur_faces, manifest=manifest)
-        # Save sidecar manifest.json next to the zip
-        sidecar = zp.with_suffix(".manifest.json")
-        sidecar.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-        result["labeling_batch"] = {
-            "zip_path": str(zp), "filename": zp.name,
-            "n_images": len(approved),
-            "size_mb": round(zp.stat().st_size / 1024 / 1024, 2),
-            "download_url": f"/api/filter/download-export/{zp.name}",
-            "manifest_url": f"/api/filter/download-export/{sidecar.name}",
-        }
-    if holdout:
-        manifest = _build_manifest(holdout, "benchmark_holdout")
-        zp = picker_core.export_cvat_zip(
-            db_path, holdout, out_dir=out_dir,
-            blur_faces=req.blur_faces, manifest=manifest)
-        new_name = zp.name.replace("annotation_pick_", "benchmark_holdout_")
-        new_path = zp.with_name(new_name)
-        zp.rename(new_path)
-        sidecar = new_path.with_suffix(".manifest.json")
-        sidecar.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-        result["benchmark_holdout"] = {
-            "zip_path": str(new_path), "filename": new_path.name,
-            "n_images": len(holdout),
-            "size_mb": round(new_path.stat().st_size / 1024 / 1024, 2),
-            "download_url": f"/api/filter/download-export/{new_path.name}",
-            "manifest_url": f"/api/filter/download-export/{sidecar.name}",
-        }
-    if not approved and not holdout:
-        result["warning"] = "Nothing to export — curator has not approved any picks yet."
-    return result
+# picker route moved to routers/picker.py on 2026-05-01
 
 
-@app.post("/api/filter/{job_id}/feedback")
-def filter_frame_feedback(job_id: str, req: FrameFeedbackRequest):
-    """Step 5 preview thumbs up/down. 👍 writes a manual 'good' tag,
-    👎 writes a generic 'bad' tag (which we map to 'blur' since most
-    rejections-by-eye are 'this looks wrong/unusable'). Manual rows
-    override heuristic + CLIP downstream."""
-    _, db_path = _filter_db(job_id)
-    canonical = "good" if req.verdict == "good" else "blur"
-    conn = _sqlite3.connect(db_path)
-    try:
-        # Verify the path actually exists in this scan
-        existing = conn.execute(
-            "SELECT 1 FROM images WHERE path = ?", (req.path,)
-        ).fetchone()
-        if not existing:
-            raise HTTPException(404, f"Path not in this scan: {req.path}")
-        conn.execute(
-            "INSERT OR REPLACE INTO conditions(path, tag, confidence, source, reason) "
-            "VALUES (?, ?, 1.0, 'manual', ?)",
-            (req.path, canonical, req.note or "user_feedback"),
-        )
-        conn.commit()
-        return {"ok": True, "verdict": req.verdict, "tag": canonical}
-    finally:
-        conn.close()
+
+# filter route moved to routers/filter.py on 2026-05-01
+
 
 
 class ConditionOverrideRequest(BaseModel):
@@ -3394,101 +2487,12 @@ class ConditionOverrideRequest(BaseModel):
     verdict: str = Field(..., pattern="^(wrong|confirm|reset)$")
 
 
-@app.post("/api/filter/{job_id}/condition-override")
-def filter_condition_override(job_id: str, req: ConditionOverrideRequest):
-    """Single-click misclassification flag for the condition-preview popup.
-
-    The popup lets the operator browse all frames the auto-tagger gave a
-    given tag (e.g. all 339 'fog' frames) and click 'Wrong' / 'Confirm'
-    on the obvious mistakes. Writes a row to the conditions table with
-    `source='manual'` so source-priority resolution picks it over the
-    heuristic / CLIP guess.
-
-    Returns the post-write state so the UI can update the row badge.
-    """
-    _, db_path = _filter_db(job_id)
-    conn = _sqlite3.connect(db_path)
-    try:
-        existing = conn.execute(
-            "SELECT 1 FROM images WHERE path = ?", (req.path,)
-        ).fetchone()
-        if not existing:
-            raise HTTPException(404, f"Path not in this scan: {req.path}")
-
-        if req.verdict == "wrong":
-            # Override with 'good' — frame should survive clean-only filters.
-            # Also store the original tag in `reason` so we can audit later.
-            conn.execute(
-                "INSERT OR REPLACE INTO conditions(path, tag, confidence, source, reason) "
-                "VALUES (?, 'good', 1.0, 'manual', ?)",
-                (req.path, f"override:not-{req.original_tag}"),
-            )
-        elif req.verdict == "confirm":
-            # Confirm the auto-tag — same tag, confidence pinned at 1.0,
-            # source promoted to 'manual'.
-            conn.execute(
-                "INSERT OR REPLACE INTO conditions(path, tag, confidence, source, reason) "
-                "VALUES (?, ?, 1.0, 'manual', ?)",
-                (req.path, req.original_tag, f"confirm:{req.original_tag}"),
-            )
-        elif req.verdict == "reset":
-            # Drop the manual override; heuristic / CLIP take over again.
-            conn.execute(
-                "DELETE FROM conditions WHERE path = ? AND source = 'manual'",
-                (req.path,),
-            )
-
-        conn.commit()
-        # Return the current effective tag (highest source priority)
-        row = conn.execute(
-            "SELECT tag, source, confidence FROM conditions "
-            "WHERE path = ? "
-            "ORDER BY CASE source "
-            "  WHEN 'manual' THEN 4 WHEN 'clip' THEN 3 "
-            "  WHEN 'heuristic_smoothed' THEN 2 ELSE 1 END DESC, "
-            "confidence DESC LIMIT 1",
-            (req.path,),
-        ).fetchone()
-        return {
-            "ok": True,
-            "verdict": req.verdict,
-            "effective": ({"tag": row[0], "source": row[1],
-                            "confidence": row[2]} if row else None),
-        }
-    finally:
-        conn.close()
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.get("/api/filter/{job_id}/tag-status")
-def filter_tag_status(job_id: str, paths: str):
-    """Bulk-fetch the manual-override status for a comma-separated list of
-    paths. Used by the condition-preview popup to colour each thumbnail
-    with its current verdict (none / confirmed / flagged-wrong)."""
-    _, db_path = _filter_db(job_id)
-    path_list = [p.strip() for p in paths.split("|") if p.strip()]
-    if not path_list:
-        return {"statuses": {}}
-    conn = _sqlite3.connect(db_path)
-    try:
-        ph = ",".join("?" * len(path_list))
-        rows = conn.execute(
-            f"SELECT path, tag, reason FROM conditions "
-            f"WHERE source = 'manual' AND path IN ({ph})",
-            path_list,
-        ).fetchall()
-        out = {}
-        for p, tag, reason in rows:
-            if reason and reason.startswith("override:not-"):
-                out[p] = {"verdict": "wrong",
-                          "original_tag": reason.split("override:not-", 1)[1]}
-            elif reason and reason.startswith("confirm:"):
-                out[p] = {"verdict": "confirm",
-                          "original_tag": reason.split("confirm:", 1)[1]}
-            else:
-                out[p] = {"verdict": "manual", "tag": tag}
-        return {"statuses": out}
-    finally:
-        conn.close()
+
+# filter route moved to routers/filter.py on 2026-05-01
+
 
 
 class VideoRenderRequest(FilterRule):
@@ -3505,80 +2509,8 @@ class VideoRenderRequest(FilterRule):
     dedupe_threshold: float = 0.0  # 0 disables; ~0.012 from demo.py
 
 
-@app.post("/api/filter/{job_id}/render-video")
-def filter_render_video(job_id: str, req: VideoRenderRequest):
-    """Render the filtered, ordered frames as an MP4 timelapse.
-    Frames are sorted by taken_at (filename timestamp), so cameras get
-    chronological video output even if interleaved in the scan DB."""
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404, "Filter job not found")
-    if not Path(j.output_path).is_file():
-        raise HTTPException(400, "Filter scan hasn't produced a DB yet.")
+# filter route moved to routers/filter.py on 2026-05-01
 
-    # Resolve filter rule -> ordered match paths
-    rule_for_sql = FilterRule(**req.model_dump(exclude={
-        "target_name", "fps", "width", "height", "crf", "crop",
-        "burn_timestamp", "dedupe_threshold",
-    }))
-    sql_from, params = _build_match_sql(rule_for_sql)
-    _, db_path = _filter_db(job_id)
-    conn = _sqlite3.connect(db_path)
-    try:
-        rows = conn.execute(
-            f"SELECT i.path, i.taken_at {sql_from} ORDER BY i.taken_at NULLS LAST, i.path",
-            params,
-        ).fetchall()
-    finally:
-        conn.close()
-    paths = _hour_dow_filter(rule_for_sql, [r[0] for r in rows])
-    if not paths:
-        raise HTTPException(400, "No frames match the rule — nothing to render.")
-
-    target_dirname = req.target_name or f"video_{j.id}_{int(time.time())}"
-    target = OUTPUTS / target_dirname
-    target.mkdir(parents=True, exist_ok=True)
-    list_file = target / "_render_input_paths.txt"
-    list_file.write_text("\n".join(paths), encoding="utf-8")
-    out_file = target / "timelapse.mp4"
-
-    cmd = [
-        PYTHON, "filter_index.py", "render-video",
-        "--from-list", str(list_file),
-        "--out", str(out_file),
-        "--fps", str(req.fps),
-        "--width", str(req.width),
-        "--height", str(req.height),
-        "--crf", str(req.crf),
-        "--crop", req.crop,
-    ]
-    if req.burn_timestamp:
-        cmd += ["--burn-timestamp"]
-    if req.dedupe_threshold > 0:
-        cmd += ["--dedupe-threshold", f"{req.dedupe_threshold:.4f}"]
-
-    proc = subprocess.Popen(
-        cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True,
-    )
-
-    def _drain():
-        try:
-            for _ in proc.stdout:
-                pass
-        finally:
-            proc.wait()
-    threading.Thread(target=_drain, daemon=True).start()
-
-    return {
-        "ok": True,
-        "pid": proc.pid,
-        "frames": len(paths),
-        "expected_duration_sec": round(len(paths) / max(1, req.fps), 1),
-        "target": str(target),
-        "output_url": f"/files/outputs/{target_dirname}/timelapse.mp4",
-        "command_argv": cmd,
-    }
 
 
 # Track active CLIP refinement subprocesses so the UI can poll progress.
@@ -3587,658 +2519,52 @@ def filter_render_video(job_id: str, req: VideoRenderRequest):
 _clip_refine_jobs: dict[str, dict] = {}
 
 
-@app.post("/api/filter/{job_id}/refine-clip")
-def filter_refine_clip(job_id: str, only_uncertain: bool = True):
-    """Launch the CLIP refinement pass in the background. Returns once
-    the subprocess is started; the UI polls /refine-clip/progress to
-    render a real progress bar."""
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404, "Filter job not found")
-    db_path = j.output_path
-    if not Path(db_path).is_file():
-        raise HTTPException(400, "Scan DB missing — run the scan first.")
-
-    # Pre-compute the target count + current baseline so the progress
-    # endpoint can report meaningful numbers from the very first poll.
-    target = 0
-    baseline = 0
-    try:
-        conn = _sqlite3.connect(db_path)
-        try:
-            if only_uncertain:
-                # Same logic as filter_index.py refine_with_clip:
-                # frames whose heuristic max-confidence < 0.85 (or have
-                # no heuristic verdict at all) get re-checked.
-                target = conn.execute(
-                    "SELECT COUNT(*) FROM images i "
-                    "WHERE i.path NOT IN ("
-                    "  SELECT path FROM conditions "
-                    "  WHERE source = 'heuristic' "
-                    "  GROUP BY path HAVING MAX(confidence) >= 0.85)"
-                ).fetchone()[0]
-            else:
-                target = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
-            baseline = conn.execute(
-                "SELECT COUNT(DISTINCT path) FROM conditions WHERE source='clip'"
-            ).fetchone()[0]
-        finally:
-            conn.close()
-    except Exception:
-        pass
-
-    cmd = [
-        PYTHON, "filter_index.py", "refine-clip",
-        "--db", db_path,
-        "--device", "auto",
-    ]
-    if only_uncertain:
-        cmd += ["--only-uncertain"]
-    proc = subprocess.Popen(
-        cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True,
-    )
-
-    job_state = {
-        "pid": proc.pid,
-        "db_path": db_path,
-        "target": int(target),
-        "baseline": int(baseline),
-        "started_at": time.time(),
-        "finished_at": None,
-        "only_uncertain": only_uncertain,
-        "last_log": "starting…",
-        "exit_code": None,
-    }
-    _clip_refine_jobs[job_id] = job_state
-
-    def _drain():
-        last_line = ""
-        try:
-            for raw in proc.stdout:
-                line = (raw or "").rstrip()
-                if line:
-                    last_line = line
-                    job_state["last_log"] = line[-180:]
-        finally:
-            proc.wait()
-            job_state["finished_at"] = time.time()
-            job_state["exit_code"] = proc.returncode
-            if last_line:
-                job_state["last_log"] = last_line[-180:]
-    threading.Thread(target=_drain, daemon=True).start()
-
-    return {
-        "ok": True, "pid": proc.pid,
-        "target": int(target),
-        "baseline": int(baseline),
-        "command_argv": cmd,
-    }
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.get("/api/filter/{job_id}/refine-clip/progress")
-def filter_refine_clip_progress(job_id: str):
-    """Live progress for an in-flight CLIP refinement run. Returns
-    either {running: false} when nothing is tracked, or a full progress
-    dict with done / target / percent / rate / ETA."""
-    info = _clip_refine_jobs.get(job_id)
-    if not info:
-        return {"running": False, "done": 0, "target": 0, "percent": 0,
-                "started": False}
 
-    # Live count of CLIP rows in the conditions table.
-    current = 0
-    try:
-        conn = _sqlite3.connect(info["db_path"])
-        try:
-            current = conn.execute(
-                "SELECT COUNT(DISTINCT path) FROM conditions WHERE source='clip'"
-            ).fetchone()[0]
-        finally:
-            conn.close()
-    except Exception:
-        pass
-
-    done = max(0, int(current) - int(info["baseline"]))
-    target = max(1, int(info["target"]))
-    pct = round(100.0 * done / target, 1)
-    elapsed = max(0.0, time.time() - info["started_at"])
-    rate = done / max(0.5, elapsed)  # img/s, smoothed by 0.5s floor
-    eta = ((target - done) / rate) if rate > 0 else None
-
-    finished = info.get("finished_at") is not None
-    running = (not finished) and (done < target)
-
-    return {
-        "started": True,
-        "running": bool(running),
-        "finished": bool(finished),
-        "exit_code": info.get("exit_code"),
-        "done": int(done),
-        "target": int(info["target"]),
-        "percent": float(pct),
-        "elapsed_seconds": int(elapsed),
-        "rate_per_sec": round(float(rate), 2),
-        "eta_seconds": int(eta) if eta is not None else None,
-        "pid": info["pid"],
-        "only_uncertain": info["only_uncertain"],
-        "last_log": info.get("last_log", ""),
-    }
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.get("/api/filter/{job_id}/conditions")
-def filter_conditions_summary(job_id: str):
-    """Per-tag effective counts using SOURCE PRIORITY RESOLUTION.
 
-    A frame's effective tag set is determined by the highest-priority
-    source that tagged it: manual > clip > heuristic_smoothed > heuristic.
-    This makes the displayed count IDENTICAL to what the filter SQL
-    will match — fixing the bug where clicking \"fog\" returned far
-    more matches than the displayed prevalence suggested.
-
-    Also returns raw per-source counts so the UI can show
-    \"114 heuristic · 263 CLIP · 339 effective\" if it wants to.
-    """
-    _, db_path = _filter_db(job_id)
-    conn = _sqlite3.connect(db_path)
-    try:
-        # Guard against legacy scans (no conditions table)
-        try:
-            # Effective per-tag counts via priority resolution.
-            eff_rows = conn.execute(
-                f"SELECT c.tag, COUNT(DISTINCT c.path) AS n_eff, "
-                f"       AVG(c.confidence) AS avg_conf "
-                f"FROM conditions c "
-                f"WHERE NOT EXISTS ("
-                f"  SELECT 1 FROM conditions c2 WHERE c2.path = c.path "
-                f"  AND {_SOURCE_PRIORITY_SQL('c2.source')} > {_SOURCE_PRIORITY_SQL('c.source')}"
-                f") "
-                f"GROUP BY c.tag ORDER BY n_eff DESC"
-            ).fetchall()
-            # Raw per-source counts for transparency.
-            raw_rows = conn.execute(
-                "SELECT tag, source, COUNT(DISTINCT path) AS n "
-                "FROM conditions GROUP BY tag, source"
-            ).fetchall()
-        except _sqlite3.OperationalError:
-            return {"available": False, "rows": [], "total_images": 0}
-        total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
-        # Pivot raw rows into per-tag dicts
-        raw_by_tag: dict[str, dict] = {}
-        for tag, src, n in raw_rows:
-            raw_by_tag.setdefault(tag, {})[src] = int(n)
-        return {
-            "available": True,
-            "total_images": int(total),
-            "source_priority": ["manual", "clip", "heuristic_smoothed", "heuristic"],
-            "rows": [
-                {"tag": r[0], "n_images": int(r[1]),
-                 "avg_confidence": round(float(r[2] or 0), 3),
-                 "by_source": raw_by_tag.get(r[0], {})}
-                for r in eff_rows
-            ],
-        }
-    finally:
-        conn.close()
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.get("/api/filter/{job_id}/picker-meta")
-def filter_picker_meta(job_id: str):
-    """Smart-picker metadata for Section E in the Filter wizard.
 
-    Returns:
-      available           — true iff the picker has run on this scan
-      clusters            — [{label, n_images}] from image_cluster_v2
-      density_histogram   — [{bucket_lo, bucket_hi, n_images}] of frame
-                            box counts from image_classagnostic
-      density_max         — int, the largest box count seen
-      n_with_boxes        — int, frames with ≥ 1 class-agnostic box
-      class_need_quantiles — { class_id: {p50, p75, p90, p95, max} }
-    """
-    _, db_path = _filter_db(job_id)
-    conn = _sqlite3.connect(db_path)
-    out = {"available": False, "clusters": [], "density_histogram": [],
-           "density_max": 0, "n_with_boxes": 0, "class_need_quantiles": {}}
-    try:
-        # Clusters
-        try:
-            rows = conn.execute(
-                "SELECT cluster_label, COUNT(*) AS n FROM image_cluster_v2 "
-                "GROUP BY cluster_label ORDER BY n DESC"
-            ).fetchall()
-            if rows:
-                out["clusters"] = [
-                    {"label": r[0], "n_images": int(r[1])} for r in rows
-                ]
-                out["available"] = True
-        except _sqlite3.OperationalError:
-            pass
-
-        # Density histogram (per-frame box count)
-        try:
-            counts_per_path = conn.execute(
-                "SELECT n_boxes, COUNT(*) AS n_imgs FROM ("
-                "  SELECT path, COUNT(*) AS n_boxes FROM image_classagnostic "
-                "  WHERE box_idx >= 0 GROUP BY path"
-                ") GROUP BY n_boxes ORDER BY n_boxes"
-            ).fetchall()
-            if counts_per_path:
-                out["available"] = True
-                # Bucket the histogram into 0,1,2…29,30+ for compact display
-                buckets = []
-                bucket_30plus = 0
-                for nb, ni in counts_per_path:
-                    if nb <= 30:
-                        buckets.append({"bucket": int(nb), "n_images": int(ni)})
-                    else:
-                        bucket_30plus += int(ni)
-                if bucket_30plus:
-                    buckets.append({"bucket": 31, "n_images": bucket_30plus,
-                                    "is_overflow": True})
-                out["density_histogram"] = buckets
-                out["density_max"] = int(max((nb for nb, _ in counts_per_path),
-                                              default=0))
-                out["n_with_boxes"] = int(sum(int(ni) for _, ni in counts_per_path))
-        except _sqlite3.OperationalError:
-            pass
-
-        # CLIP class-need quantiles per class — used by the rule sliders
-        # to pick a sensible default min_score.
-        try:
-            rows = conn.execute(
-                "SELECT class_id, score FROM image_class_need "
-                "ORDER BY class_id, score"
-            ).fetchall()
-            if rows:
-                out["available"] = True
-                from statistics import quantiles
-                by_cls: dict[int, list[float]] = {}
-                for cid, sc in rows:
-                    by_cls.setdefault(int(cid), []).append(float(sc))
-                qs: dict[str, dict] = {}
-                for cid, scores in by_cls.items():
-                    if len(scores) < 4:
-                        continue
-                    try:
-                        q = quantiles(scores, n=20)  # 5%-step
-                        qs[str(cid)] = {
-                            "p50": round(q[9], 3),
-                            "p75": round(q[14], 3),
-                            "p90": round(q[17], 3),
-                            "p95": round(q[18], 3),
-                            "max": round(max(scores), 3),
-                            "n": len(scores),
-                        }
-                    except Exception:
-                        continue
-                out["class_need_quantiles"] = qs
-        except _sqlite3.OperationalError:
-            pass
-    finally:
-        conn.close()
-    return out
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.post("/api/filter/{job_id}/match-preview-thumbs")
-def filter_match_preview_thumbs(job_id: str, rule: FilterRule, k: int = 6):
-    """Return the path + thumbnail URL of up to `k` random sample frames
-    matching the current rule. Powers the inline preview strip next to
-    the live counter so the operator visually verifies the filter.
 
-    Order: ORDER BY RANDOM() so the strip refreshes with different
-    frames between ticks — operator gets variety, not the same 6.
-    """
-    _, db_path = _filter_db(job_id)
-    sql_from, params = _build_match_sql(rule)
-    conn = _sqlite3.connect(db_path)
-    try:
-        try:
-            rows = conn.execute(
-                f"SELECT i.path {sql_from} ORDER BY RANDOM() LIMIT {int(k)}",
-                params,
-            ).fetchall()
-        except _sqlite3.OperationalError as e:
-            return {"thumbs": [], "error": str(e)}
-        # Hour/dow filter post-pass
-        if rule.hours or rule.dow:
-            paths = [r[0] for r in rows]
-            kept = set(_hour_dow_filter(rule, paths))
-            rows = [r for r in rows if r[0] in kept]
-        thumbs = [{
-            "path": r[0],
-            "thumb_url": (f"/api/filter/{job_id}/thumb?path="
-                          + urllib.parse.quote(r[0], safe='')),
-        } for r in rows]
-        return {"thumbs": thumbs, "count": len(thumbs)}
-    finally:
-        conn.close()
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.post("/api/filter/{job_id}/top-n")
-def filter_top_n(job_id: str, rule: FilterRule):
-    """Top-N mode — return the N best frames by a weighted composite
-    score, where the score combines:
-        density       — class-agnostic box count (normalised to 0..1)
-        class_need    — max CLIP score across the rule.class_need[]
-                        classes (if provided), else max across all classes
-        uncertainty   — distance of avg detection conf from 0.5
-                        (model-unsure frames score higher)
-        quality       — image quality score from images.quality
 
-    Frames are first filtered by the existing rule (clusters / density /
-    class_need / Section A-D / etc), then scored, then sorted desc.
-
-    Weights are normalised to sum to 1. Defaults:
-        density 0.25, class_need 0.35, uncertainty 0.20, quality 0.20
-    """
-    _, db_path = _filter_db(job_id)
-    sql_from, params = _build_match_sql(rule)
-
-    # Normalise weights
-    w = dict(rule.score_weights or {})
-    keys = ["density", "class_need", "uncertainty", "quality"]
-    raw = {k: max(0.0, float(w.get(k, 0.0))) for k in keys}
-    total_w = sum(raw.values()) or 1.0
-    w_norm = {k: raw[k] / total_w for k in keys}
-
-    conn = _sqlite3.connect(db_path)
-    try:
-        # Pull max box count for normalisation (cached at scan-DB level
-        # would be nicer, but cheap enough on small DBs).
-        try:
-            density_max = conn.execute(
-                "SELECT MAX(n_boxes) FROM ("
-                "  SELECT COUNT(*) AS n_boxes FROM image_classagnostic "
-                "  WHERE box_idx >= 0 GROUP BY path)").fetchone()[0] or 1
-        except _sqlite3.OperationalError:
-            density_max = 1
-        density_max = max(1, int(density_max))
-
-        # Build score expression — uses LEFT JOINs so frames missing
-        # from a sub-table (e.g. no class-agnostic boxes) still get a
-        # 0 contribution rather than being dropped.
-        cn_classes = [int(getattr(rn, "class_id", rn["class_id"]
-                          if isinstance(rn, dict) else 0))
-                      for rn in (rule.class_need or [])]
-        cn_clause_sql = ""
-        cn_params: list = []
-        if cn_classes:
-            ph = ",".join("?" * len(cn_classes))
-            cn_clause_sql = f" AND cn.class_id IN ({ph})"
-            cn_params = list(cn_classes)
-
-        score_sql = (
-            f"({w_norm['density']} * COALESCE("
-            f"  (SELECT CAST(COUNT(*) AS REAL) / {density_max} "
-            f"   FROM image_classagnostic ca "
-            f"   WHERE ca.path = i.path AND ca.box_idx >= 0), 0) "
-            f"+ {w_norm['class_need']} * COALESCE("
-            f"  (SELECT MAX(cn.score) FROM image_class_need cn "
-            f"   WHERE cn.path = i.path{cn_clause_sql}), 0) "
-            f"+ {w_norm['uncertainty']} * (1.0 - 2.0 * ABS("
-            f"  COALESCE((SELECT AVG(d.max_conf) FROM detections d "
-            f"            WHERE d.path = i.path), 0.5) - 0.5)) "
-            f"+ {w_norm['quality']} * COALESCE(i.quality, 0)"
-            f") AS score"
-        )
-
-        try:
-            rows = conn.execute(
-                f"SELECT i.path, i.quality, i.brightness, i.sharpness, "
-                f"       i.n_dets, {score_sql} "
-                f"{sql_from} "
-                f"ORDER BY score DESC LIMIT ?",
-                cn_params + params + [int(rule.top_n)],
-            ).fetchall()
-        except _sqlite3.OperationalError as e:
-            raise HTTPException(400, f"top-n SQL failed: {e}")
-        # Hour/dow filter post-pass — applied AFTER ORDER BY/LIMIT, so
-        # if the user has hour filters, take a wider sample then trim.
-        if rule.hours or rule.dow:
-            allowed = set(_hour_dow_filter(
-                rule, [r[0] for r in rows]))
-            rows = [r for r in rows if r[0] in allowed][:int(rule.top_n)]
-        return {
-            "picks": [
-                {"path": r[0], "quality": r[1], "brightness": r[2],
-                 "sharpness": r[3], "n_dets": r[4], "score": float(r[5] or 0)}
-                for r in rows
-            ],
-            "weights": w_norm,
-            "density_max": density_max,
-            "n": len(rows),
-            "requested_n": int(rule.top_n),
-        }
-    finally:
-        conn.close()
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.get("/api/filter/{job_id}/baselines")
-def filter_camera_baselines(job_id: str):
-    """Per-camera percentile baselines for brightness + sharpness, computed
-    post-scan from filename camera-id prefix. UI uses these to show
-    'dark for THIS camera' rather than a global threshold."""
-    _, db_path = _filter_db(job_id)
-    conn = _sqlite3.connect(db_path)
-    try:
-        try:
-            rows = conn.execute(
-                "SELECT camera_id, n_frames, p10_brightness, p50_brightness, "
-                "       p90_brightness, p10_sharpness, p50_sharpness, p90_sharpness "
-                "FROM camera_baselines ORDER BY n_frames DESC"
-            ).fetchall()
-        except _sqlite3.OperationalError:
-            return {"available": False, "cameras": []}
-        return {
-            "available": True,
-            "cameras": [
-                {
-                    "camera_id": r[0],
-                    "n_frames": int(r[1]),
-                    "brightness": {"p10": r[2], "p50": r[3], "p90": r[4]},
-                    "sharpness":  {"p10": r[5], "p50": r[6], "p90": r[7]},
-                }
-                for r in rows
-            ],
-        }
-    finally:
-        conn.close()
+
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.get("/api/filter/{job_id}/date-range")
-def filter_date_range(job_id: str):
-    """Return the earliest + latest taken_at timestamps in this scan, plus
-    a count of how many images had a parseable timestamp."""
-    _, db_path = _filter_db(job_id)
-    conn = _sqlite3.connect(db_path)
-    try:
-        row = conn.execute(
-            "SELECT MIN(taken_at) AS lo, MAX(taken_at) AS hi, "
-            "       COUNT(taken_at) AS n_with, COUNT(*) AS total "
-            "FROM images"
-        ).fetchone()
-        if row is None:
-            return {"min": None, "max": None, "with_timestamp": 0, "total": 0}
-        return {
-            "min": row[0],     # epoch seconds (or None)
-            "max": row[1],
-            "min_iso": (
-                __import__("datetime").datetime.fromtimestamp(row[0]).isoformat()
-                if row[0] else None
-            ),
-            "max_iso": (
-                __import__("datetime").datetime.fromtimestamp(row[1]).isoformat()
-                if row[1] else None
-            ),
-            "with_timestamp": int(row[2] or 0),
-            "without_timestamp": int((row[3] or 0) - (row[2] or 0)),
-            "total": int(row[3] or 0),
-        }
-    finally:
-        conn.close()
+
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.get("/api/filter/{job_id}/time-of-day")
-def filter_time_of_day(job_id: str):
-    """Parse hour-of-day from each image filename (where it's in a recognisable
-    timestamp pattern) and return per-hour counts of images + total detections."""
-    _, db_path = _filter_db(job_id)
-    conn = _sqlite3.connect(db_path)
-    conn.row_factory = _sqlite3.Row
-    try:
-        per_hour_imgs = [0] * 24
-        per_hour_dets = [0] * 24
-        unknown = 0
-        for r in conn.execute("SELECT path, n_dets FROM images"):
-            h = _parse_hour(r["path"])
-            if h is None:
-                unknown += 1
-                continue
-            per_hour_imgs[h] += 1
-            per_hour_dets[h] += int(r["n_dets"] or 0)
-        return {
-            "ready": True,
-            "labels": [f"{h:02d}:00" for h in range(24)],
-            "images": per_hour_imgs,
-            "detections": per_hour_dets,
-            "unparseable": unknown,
-        }
-    finally:
-        conn.close()
+
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.get("/api/filter/{job_id}/cooccurrence")
-def filter_cooccurrence(job_id: str, top_n: int = 12):
-    """Class co-occurrence — how often class A appears in the SAME frame as
-    class B. Top-N most-frequent classes only, so the matrix is readable."""
-    _, db_path = _filter_db(job_id)
-    conn = _sqlite3.connect(db_path)
-    conn.row_factory = _sqlite3.Row
-    try:
-        top = conn.execute(
-            "SELECT class_id, COALESCE(class_name,'') AS class_name "
-            "FROM detections GROUP BY class_id ORDER BY COUNT(DISTINCT path) DESC "
-            "LIMIT ?", (top_n,),
-        ).fetchall()
-        ids = [r["class_id"] for r in top]
-        if not ids:
-            return {"classes": [], "matrix": []}
 
-        matrix = [[0] * len(ids) for _ in ids]
-        # For each pair, count images that contain both
-        for i, a in enumerate(ids):
-            for j, b in enumerate(ids):
-                if j < i:
-                    continue
-                if a == b:
-                    n = conn.execute(
-                        "SELECT COUNT(DISTINCT path) FROM detections WHERE class_id = ?",
-                        (a,),
-                    ).fetchone()[0]
-                else:
-                    n = conn.execute(
-                        "SELECT COUNT(*) FROM ("
-                        "  SELECT path FROM detections WHERE class_id = ? "
-                        "  INTERSECT "
-                        "  SELECT path FROM detections WHERE class_id = ?)",
-                        (a, b),
-                    ).fetchone()[0]
-                matrix[i][j] = matrix[j][i] = int(n)
-        return {
-            "classes": [{"id": r["class_id"], "name": r["class_name"]} for r in top],
-            "matrix": matrix,
-        }
-    finally:
-        conn.close()
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.post("/api/filter/{job_id}/source-info")
-def filter_source_info(job_id: str):
-    """Return source-folder stats + sample paths for the wizard's Step 1."""
-    j, db_path = _filter_db(job_id)
-    conn = _sqlite3.connect(db_path)
-    conn.row_factory = _sqlite3.Row
-    try:
-        total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
-        first_paths = [
-            r[0] for r in conn.execute(
-                "SELECT path FROM images ORDER BY RANDOM() LIMIT 8"
-            )
-        ]
-        # date range from filenames (best-effort)
-        hours_seen = set()
-        for r in conn.execute("SELECT path FROM images LIMIT 5000"):
-            h = _parse_hour(r[0])
-            if h is not None:
-                hours_seen.add(h)
-        return {
-            "source": j.input_ref,
-            "label": j.settings.get("label") or Path(j.input_ref).name,
-            "total": total,
-            "sample_paths": first_paths,
-            "sample_thumb_urls": [
-                f"/api/filter/{job_id}/thumb?path=" + urllib.parse.quote(p, safe='')
-                for p in first_paths
-            ],
-            "hour_coverage": sorted(hours_seen),
-        }
-    finally:
-        conn.close()
+
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.get("/api/filter/{job_id}/charts")
-def filter_charts(job_id: str):
-    """Engineering view of a finished filter scan: distributions of
-    quality / brightness / sharpness / detection density, plus
-    per-class image-coverage."""
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404, "Filter job not found")
-    if not Path(j.output_path).is_file():
-        raise HTTPException(400, "Filter scan hasn't produced a DB yet.")
 
-    conn = _sqlite3.connect(j.output_path)
-    conn.row_factory = _sqlite3.Row
-    try:
-        total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0] or 0
+# filter route moved to routers/filter.py on 2026-05-01
 
-        def histogram(column: str, lo: float, hi: float, bins: int = 20):
-            edges = [lo + i * (hi - lo) / bins for i in range(bins + 1)]
-            counts = [0] * bins
-            for row in conn.execute(
-                f"SELECT {column} FROM images WHERE {column} IS NOT NULL"
-            ):
-                v = row[0]
-                idx = min(bins - 1, max(0, int((v - lo) / (hi - lo) * bins)))
-                counts[idx] += 1
-            return {"edges": edges, "counts": counts}
-
-        return {
-            "ready": True,
-            "total_images": total,
-            "by_class": [dict(r) for r in conn.execute(
-                "SELECT class_id, COALESCE(class_name,'') AS class_name, "
-                "COUNT(DISTINCT path) AS n_images, AVG(max_conf) AS avg_conf "
-                "FROM detections GROUP BY class_id "
-                "ORDER BY n_images DESC LIMIT 30"
-            )],
-            "quality_hist":    histogram("quality",    0.0, 1.0),
-            "brightness_hist": histogram("brightness", 0.0, 255.0),
-            "sharpness_hist":  histogram("sharpness",  0.0, 1500.0),
-            "detections_hist": histogram("n_dets",     0.0, 25.0),
-            "stats": dict(conn.execute(
-                "SELECT AVG(quality) AS avg_quality, "
-                "       AVG(brightness) AS avg_brightness, "
-                "       AVG(sharpness)  AS avg_sharpness, "
-                "       AVG(n_dets)     AS avg_detections, "
-                "       SUM(CASE WHEN brightness < 60 THEN 1 ELSE 0 END) AS dark_count, "
-                "       SUM(CASE WHEN sharpness < 100 THEN 1 ELSE 0 END) AS blurry_count, "
-                "       SUM(CASE WHEN n_dets = 0 THEN 1 ELSE 0 END) AS empty_count "
-                "FROM images"
-            ).fetchone() or {}),
-        }
-    finally:
-        conn.close()
 
 
 class BestNRequest(BaseModel):
@@ -4250,109 +2576,8 @@ class BestNRequest(BaseModel):
     mode: str = Field("symlink", pattern="^(symlink|copy|hardlink|list)$")
 
 
-@app.post("/api/filter/{job_id}/pick-best")
-def filter_pick_best(job_id: str, req: BestNRequest):
-    """Pick the N highest-quality images from a scan, optionally diversified
-    across classes (one bucket per class), and materialise as a new folder.
-    The user runs this when curating annotation candidates."""
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404, "Filter job not found")
-    if not Path(j.output_path).is_file():
-        raise HTTPException(400, "Filter scan hasn't produced a DB yet.")
+# filter route moved to routers/filter.py on 2026-05-01
 
-    conn = _sqlite3.connect(j.output_path)
-    conn.row_factory = _sqlite3.Row
-
-    candidates: list[tuple[str, float, int]] = []
-    try:
-        if req.require_class is not None:
-            rows = conn.execute(
-                "SELECT i.path, i.quality, i.n_dets FROM images i "
-                "JOIN detections d ON d.path = i.path "
-                "WHERE i.quality >= ? AND d.class_id = ? "
-                "ORDER BY i.quality DESC",
-                (req.min_quality, req.require_class),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT path, quality, n_dets FROM images "
-                "WHERE quality >= ? ORDER BY quality DESC",
-                (req.min_quality,),
-            ).fetchall()
-        candidates = [(r["path"], r["quality"], r["n_dets"]) for r in rows]
-
-        if req.diversify and not req.require_class:
-            # Group by dominant class, pick top-quality from each group round-robin
-            groups: dict[int, list[tuple[str, float, int]]] = {}
-            for r in conn.execute(
-                "SELECT i.path, i.quality, i.n_dets, "
-                "(SELECT class_id FROM detections d WHERE d.path = i.path "
-                " ORDER BY count DESC, max_conf DESC LIMIT 1) AS dom "
-                "FROM images i WHERE i.quality >= ? ORDER BY i.quality DESC",
-                (req.min_quality,),
-            ):
-                groups.setdefault(r["dom"] or -1, []).append(
-                    (r["path"], r["quality"], r["n_dets"])
-                )
-            picked: list[tuple[str, float, int]] = []
-            while len(picked) < req.n and any(groups.values()):
-                for k in list(groups):
-                    if not groups[k]:
-                        continue
-                    picked.append(groups[k].pop(0))
-                    if len(picked) >= req.n:
-                        break
-            candidates = picked
-    finally:
-        conn.close()
-
-    candidates = candidates[:req.n]
-    if not candidates:
-        raise HTTPException(400, f"No images meet quality >= {req.min_quality}")
-
-    # Materialise in a background thread so the request returns instantly
-    target_dirname = req.target_name or f"annotation_pick_{j.id}_{int(time.time())}"
-    target = OUTPUTS / target_dirname
-    target.mkdir(parents=True, exist_ok=True)
-
-    def _materialise():
-        for i, (src, q, _) in enumerate(candidates):
-            sp = Path(src)
-            dst = target / f"{i:04d}_q{int(q*100):02d}_{sp.name}"
-            if dst.exists():
-                continue
-            try:
-                if req.mode == "symlink":
-                    try: dst.symlink_to(sp)
-                    except OSError: shutil.copy2(sp, dst)
-                elif req.mode == "hardlink":
-                    try: dst.hardlink_to(sp)
-                    except OSError: shutil.copy2(sp, dst)
-                elif req.mode == "list":
-                    pass  # write filtered.txt below
-                else:
-                    shutil.copy2(sp, dst)
-            except Exception:
-                pass
-        if req.mode == "list":
-            (target / "best.txt").write_text(
-                "\n".join(p for (p, _q, _n) in candidates), encoding="utf-8"
-            )
-
-    threading.Thread(target=_materialise, daemon=True).start()
-
-    return {
-        "ok": True,
-        "picked": len(candidates),
-        "min_quality": req.min_quality,
-        "target": str(target),
-        "target_url": f"/files/outputs/{target_dirname}",
-        "preview": [
-            {"path": p, "quality": q, "n_dets": n}
-            for (p, q, n) in candidates[:12]
-        ],
-    }
 
 
 class FilterExportRequest(FilterRule):
@@ -4371,143 +2596,12 @@ class LabelsImportRequest(BaseModel):
     path: str | None = None
 
 
-@app.post("/api/filter/{job_id}/labels-import")
-def filter_labels_import(job_id: str, req: LabelsImportRequest):
-    """Import a labels.json mapping (filename -> tag) as immutable manual
-    overrides in the conditions table. Manual rows beat heuristic rows in
-    UI (filtered with source priority). Use this for hand-labelled gold
-    data like F:\\timelapse\\labels.json."""
-    _, db_path = _filter_db(job_id)
-    mapping: dict[str, str] = {}
-    if req.inline:
-        mapping = {str(k): str(v).strip().lower() for k, v in req.inline.items()}
-    elif req.path:
-        p = Path(req.path).expanduser()
-        if not p.is_file():
-            raise HTTPException(400, f"labels file not found: {p}")
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except Exception as e:
-            raise HTTPException(400, f"failed to read labels JSON: {e}")
-        # Accept {filename: label} or {"images": [...]} or list-of-objects
-        if isinstance(data, dict) and "images" in data:
-            data = data["images"]
-        if isinstance(data, list):
-            for entry in data:
-                if not isinstance(entry, dict):
-                    continue
-                fn = entry.get("file") or entry.get("filename") or entry.get("name")
-                lbl = entry.get("category") or entry.get("label") or entry.get("tag")
-                if fn and lbl:
-                    mapping[str(fn)] = str(lbl).strip().lower()
-        elif isinstance(data, dict):
-            for k, v in data.items():
-                if isinstance(v, str):
-                    mapping[str(k)] = v.strip().lower()
-                elif isinstance(v, dict) and ("label" in v or "category" in v):
-                    mapping[str(k)] = str(v.get("category") or v.get("label")).strip().lower()
-    if not mapping:
-        raise HTTPException(400, "No usable filename → label entries found.")
-
-    # Map binary good/bad to canonical tags
-    BINARY = {"good": "good", "bad": "blur"}  # 'bad' → blur tag (most common bad reason)
-
-    conn = _sqlite3.connect(db_path)
-    try:
-        all_paths = {Path(r[0]).name: r[0] for r in conn.execute("SELECT path FROM images")}
-        if not all_paths:
-            raise HTTPException(400, "Scan has no images yet — run the scan first.")
-
-        rows = []
-        matched = 0
-        for fname, tag in mapping.items():
-            base = Path(fname).name  # in case fname is full path
-            full = all_paths.get(base)
-            if not full:
-                continue
-            canonical = BINARY.get(tag, tag)
-            rows.append((full, canonical, 1.0, "manual", "labels.json import"))
-            matched += 1
-        if rows:
-            conn.executemany(
-                "INSERT OR REPLACE INTO conditions(path, tag, confidence, source, reason) "
-                "VALUES (?, ?, ?, ?, ?)", rows,
-            )
-            conn.commit()
-        return {
-            "ok": True,
-            "imported": matched,
-            "skipped_unknown": len(mapping) - matched,
-            "total_mapping_entries": len(mapping),
-        }
-    finally:
-        conn.close()
+# filter route moved to routers/filter.py on 2026-05-01
 
 
-@app.post("/api/filter/{job_id}/export")
-def filter_export(job_id: str, req: FilterExportRequest):
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404, "Filter job not found")
-    if not Path(j.output_path).is_file():
-        raise HTTPException(400, "Filter scan hasn't produced a DB yet.")
 
-    target_dirname = req.target_name or f"filtered_{j.id}_{int(time.time())}"
-    target = OUTPUTS / target_dirname
+# filter route moved to routers/filter.py on 2026-05-01
 
-    # Resolve match paths in-process so the rule (incl. hours / dow / quality
-    # / brightness / date) is honoured exactly. Then write to a tiny list
-    # file that filter_index.py reads via --from-list.
-    rule_for_sql = FilterRule(**req.model_dump(exclude={"mode", "target_name", "annotated"}))
-    sql_from, params = _build_match_sql(rule_for_sql)
-    _, db_path = _filter_db(job_id)
-    conn = _sqlite3.connect(db_path)
-    try:
-        paths = [r[0] for r in conn.execute(f"SELECT i.path {sql_from}", params)]
-    finally:
-        conn.close()
-    paths = _hour_dow_filter(rule_for_sql, paths)
-
-    target.mkdir(parents=True, exist_ok=True)
-    list_file = target / "_filter_match_paths.txt"
-    list_file.write_text("\n".join(paths), encoding="utf-8")
-
-    # The model used during the scan — we'll re-run it for annotation.
-    scan_model = j.settings.get("model") if j.settings else None
-
-    cmd = [
-        PYTHON, "filter_index.py", "export",
-        "--db", j.output_path,
-        "--target", str(target),
-        "--mode", "copy" if req.annotated else req.mode,
-        "--from-list", str(list_file),
-    ]
-    if req.annotated:
-        cmd += ["--annotated"]
-        if scan_model:
-            cmd += ["--model", scan_model]
-
-    proc = subprocess.Popen(
-        cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True,
-    )
-
-    def _drain():
-        try:
-            for line in proc.stdout:
-                pass
-        finally:
-            proc.wait()
-    threading.Thread(target=_drain, daemon=True).start()
-
-    return {
-        "ok": True,
-        "target": str(target),
-        "target_url": f"/files/outputs/{target_dirname}",
-        "matches": len(paths),
-        "annotated": req.annotated,
-        "command_argv": cmd,
-    }
 
 
 # ----------------------------------------------------------------------------
@@ -4526,118 +2620,8 @@ def filter_export(job_id: str, req: FilterExportRequest):
 
 
 
-@app.get("/api/filter/{job_id}/preset-summary")
-def filter_preset_summary(job_id: str, preset: str = "arclap_construction"):
-    """Class-by-class breakdown enriched with the preset's bilingual labels,
-    colours, and grouped by layer. Plus a PPE-compliance estimate."""
-    j, db_path = _filter_db(job_id)
-    try:
-        p = get_preset(preset)
-    except FileNotFoundError:
-        raise HTTPException(404, f"Preset not found: {preset}")
+# filter route moved to routers/filter.py on 2026-05-01
 
-    cidx = preset_class_index(p)
-    layers_meta = p.get("layers", [])
-    ppe_roles = p.get("ppe_roles", {}) or {}
-    person_id = ppe_roles.get("person")
-    helmet_id = ppe_roles.get("helmet")
-    vest_id = ppe_roles.get("vest")
-
-    conn = _sqlite3.connect(db_path)
-    conn.row_factory = _sqlite3.Row
-    try:
-        total = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
-        rows = conn.execute(
-            "SELECT class_id, COUNT(DISTINCT path) AS n_images, "
-            "SUM(count) AS total_dets, AVG(max_conf) AS avg_conf "
-            "FROM detections GROUP BY class_id"
-        ).fetchall()
-
-        # Group by layer
-        layers: dict[int, list[dict]] = {layer["id"]: [] for layer in layers_meta}
-        unknown: list[dict] = []
-        for r in rows:
-            cid = int(r["class_id"])
-            meta = cidx.get(cid)
-            entry = {
-                "class_id": cid,
-                "en": meta["en"] if meta else f"class {cid}",
-                "de": meta["de"] if meta else "",
-                "color": meta["color"] if meta else "#888888",
-                "category": meta.get("category") if meta else None,
-                "n_images": int(r["n_images"]),
-                "total_dets": int(r["total_dets"] or 0),
-                "avg_conf": float(r["avg_conf"] or 0),
-                "pct_of_total": round(100 * (r["n_images"] / total), 1) if total else 0,
-            }
-            if meta and meta.get("layer") in layers:
-                layers[meta["layer"]].append(entry)
-            else:
-                unknown.append(entry)
-
-        # PPE compliance approximation: how many frames containing class=person
-        # also contain class=helmet and class=vest? (Frame-level; per-instance
-        # IoU compliance lives in the dedicated PPE pipeline.)
-        ppe_summary: dict | None = None
-        if person_id is not None:
-            person_frames = conn.execute(
-                "SELECT COUNT(DISTINCT path) FROM detections WHERE class_id = ?",
-                (person_id,),
-            ).fetchone()[0]
-            with_helmet = with_vest = with_both = 0
-            if helmet_id is not None and person_frames:
-                with_helmet = conn.execute(
-                    "SELECT COUNT(*) FROM ("
-                    "  SELECT path FROM detections WHERE class_id = ? "
-                    "  INTERSECT "
-                    "  SELECT path FROM detections WHERE class_id = ?)",
-                    (person_id, helmet_id),
-                ).fetchone()[0]
-            if vest_id is not None and person_frames:
-                with_vest = conn.execute(
-                    "SELECT COUNT(*) FROM ("
-                    "  SELECT path FROM detections WHERE class_id = ? "
-                    "  INTERSECT "
-                    "  SELECT path FROM detections WHERE class_id = ?)",
-                    (person_id, vest_id),
-                ).fetchone()[0]
-            if helmet_id is not None and vest_id is not None and person_frames:
-                with_both = conn.execute(
-                    "SELECT COUNT(*) FROM ("
-                    "  SELECT path FROM detections WHERE class_id = ? "
-                    "  INTERSECT "
-                    "  SELECT path FROM detections WHERE class_id = ? "
-                    "  INTERSECT "
-                    "  SELECT path FROM detections WHERE class_id = ?)",
-                    (person_id, helmet_id, vest_id),
-                ).fetchone()[0]
-            ppe_summary = {
-                "person_frames": int(person_frames or 0),
-                "with_helmet": int(with_helmet),
-                "with_vest": int(with_vest),
-                "with_both": int(with_both),
-                "pct_with_helmet": round(100 * with_helmet / person_frames, 1) if person_frames else 0,
-                "pct_with_vest": round(100 * with_vest / person_frames, 1) if person_frames else 0,
-                "pct_with_both": round(100 * with_both / person_frames, 1) if person_frames else 0,
-            }
-
-        return {
-            "preset": p,
-            "total_images": total,
-            "layers": [
-                {
-                    "id": L["id"],
-                    "title": L["title"],
-                    "classes": layers[L["id"]],
-                    "n_images_in_layer": sum(c["n_images"] for c in layers[L["id"]]),
-                }
-                for L in layers_meta
-            ],
-            "unknown_classes": unknown,
-            "ppe": ppe_summary,
-        }
-    finally:
-        conn.close()
 
 
 # ----------------------------------------------------------------------------
@@ -4759,24 +2743,8 @@ def open_browser_when_ready():
 swiss_core.ensure_initialized(ROOT)
 
 
-@app.get("/api/swiss/state")
-def swiss_state():
-    """Everything the Swiss Detector tab needs in one shot: active version,
-    classes, dataset stats, recent ingestion log, list of versions."""
-    swiss_core.ensure_initialized(ROOT)
-    classes = swiss_core.load_classes(ROOT)
-    versions = swiss_core.list_versions(ROOT)
-    active = swiss_core.active_version(ROOT)
-    stats = swiss_core.dataset_stats(ROOT)
-    log = swiss_core.read_ingestion(ROOT)
-    return {
-        "dataset_root": str(swiss_core.dataset_root(ROOT)),
-        "active": active,
-        "classes": [asdict_safe(c) for c in classes],
-        "versions": [asdict_safe(v) for v in versions],
-        "stats": stats,
-        "ingestion_log": log[-30:],  # last 30 entries
-    }
+# swiss route moved to routers/swiss.py on 2026-05-01
+
 
 
 def asdict_safe(obj):
@@ -4796,18 +2764,8 @@ class SwissAddClassRequest(BaseModel):
     queries: list[str] = Field(default_factory=list)
 
 
-@app.post("/api/swiss/classes")
-def swiss_add_class(req: SwissAddClassRequest):
-    if not req.en.strip():
-        raise HTTPException(400, "Class name (English) cannot be empty.")
-    cls = swiss_core.add_class(
-        ROOT, en=req.en, de=req.de, color=req.color, category=req.category,
-        description=req.description, queries=req.queries,
-    )
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "class_added", "class_id": cls.id, "en": cls.en, "de": cls.de,
-    })
-    return asdict_safe(cls)
+# swiss route moved to routers/swiss.py on 2026-05-01
+
 
 
 class SwissEditClassRequest(BaseModel):
@@ -4820,37 +2778,16 @@ class SwissEditClassRequest(BaseModel):
     active: bool | None = None
 
 
-@app.put("/api/swiss/classes/{class_id}")
-def swiss_edit_class(class_id: int, req: SwissEditClassRequest):
-    fields = {k: v for k, v in req.model_dump().items() if v is not None}
-    try:
-        cls = swiss_core.update_class(ROOT, class_id, **fields)
-    except KeyError:
-        raise HTTPException(404, f"No class with id {class_id}")
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "class_edited", "class_id": class_id, "fields": list(fields),
-    })
-    return asdict_safe(cls)
+# swiss route moved to routers/swiss.py on 2026-05-01
 
 
-@app.delete("/api/swiss/classes/{class_id}")
-def swiss_deactivate_class(class_id: int):
-    try:
-        cls = swiss_core.deactivate_class(ROOT, class_id)
-    except KeyError:
-        raise HTTPException(404, f"No class with id {class_id}")
-    swiss_core.append_ingestion(ROOT, {"kind": "class_deactivated", "class_id": class_id})
-    return asdict_safe(cls)
+
+# swiss route moved to routers/swiss.py on 2026-05-01
 
 
-@app.post("/api/swiss/versions/{version_name}/activate")
-def swiss_activate_version(version_name: str):
-    try:
-        result = swiss_core.set_active(ROOT, version_name)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
-    swiss_core.append_ingestion(ROOT, {"kind": "version_activated", "version": version_name})
-    return result
+
+# swiss route moved to routers/swiss.py on 2026-05-01
+
 
 
 # ----------------------------------------------------------------------------
@@ -4868,41 +2805,8 @@ class SwissWebCollectRequest(BaseModel):
     max_results: int = 50
 
 
-@app.post("/api/swiss/web-collect")
-def swiss_web_collect_start(req: SwissWebCollectRequest):
-    classes = swiss_core.load_classes(ROOT)
-    cls = next((c for c in classes if c.id == req.class_id), None)
-    if cls is None:
-        raise HTTPException(404, f"No class with id {req.class_id}")
-    queries = req.queries or cls.queries
-    if not queries:
-        raise HTTPException(400,
-                            "Class has no search queries. Edit the class to add some, "
-                            "or pass `queries` in the request body.")
+# swiss route moved to routers/swiss.py on 2026-05-01
 
-    job_id = uuid.uuid4().hex[:12]
-    job_dir = swiss_core.web_jobs_root(ROOT) / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    _swiss_web_jobs[job_id] = {
-        "id": job_id,
-        "class_id": cls.id,
-        "class_name": cls.en,
-        "queries": queries,
-        "status": "running",
-        "progress": 0,
-        "downloaded": 0,
-        "target": req.max_results,
-        "started_at": time.time(),
-        "dir": str(job_dir),
-        "candidates": [],   # [{filename, url, query}]
-        "error": None,
-    }
-    threading.Thread(
-        target=_swiss_web_collect_thread,
-        args=(job_id, queries, req.max_results, job_dir),
-        daemon=True,
-    ).start()
-    return {"ok": True, "job_id": job_id, "queue_size": len(queries)}
 
 
 # ---- Source: DuckDuckGo ----------------------------------------------------
@@ -5144,35 +3048,12 @@ def _swiss_web_collect_thread(job_id: str, queries: list[str],
         job["error"] = f"{type(e).__name__}: {e}"
 
 
-@app.get("/api/swiss/web-collect/{job_id}")
-def swiss_web_collect_status(job_id: str):
-    job = _swiss_web_jobs.get(job_id)
-    if not job:
-        raise HTTPException(404, "Web-collect job not found")
-    # Strip raw URLs from response (just to keep payload tight); keep filenames
-    return {
-        "id": job_id,
-        "class_id": job["class_id"],
-        "class_name": job["class_name"],
-        "status": job["status"],
-        "progress": job["progress"],
-        "downloaded": job["downloaded"],
-        "target": job["target"],
-        "candidates": job["candidates"],
-        "error": job.get("error"),
-        "warnings": job.get("warnings", []),
-    }
+# swiss route moved to routers/swiss.py on 2026-05-01
 
 
-@app.get("/api/swiss/web-collect/{job_id}/thumb/{filename}")
-def swiss_web_collect_thumb(job_id: str, filename: str):
-    job = _swiss_web_jobs.get(job_id)
-    if not job:
-        raise HTTPException(404)
-    p = Path(job["dir"]) / filename
-    if not p.is_file():
-        raise HTTPException(404)
-    return FileResponse(p)
+
+# swiss route moved to routers/swiss.py on 2026-05-01
+
 
 
 # ----------------------------------------------------------------------------
@@ -5188,50 +3069,8 @@ class SwissBulkWebRequest(BaseModel):
     auto_accept: bool = True             # default: skip review, push straight to staging
 
 
-@app.post("/api/swiss/web-collect-bulk")
-def swiss_bulk_web_collect_start(req: SwissBulkWebRequest):
-    """Bulk: scrape N images for every chosen class (or all active classes)
-    in sequence. When `auto_accept` is true, accepted images go straight
-    into the per-class staging folder — no per-class review modal."""
-    classes = swiss_core.load_classes(ROOT)
-    if req.class_ids:
-        chosen = [c for c in classes if c.id in set(req.class_ids) and c.active]
-    else:
-        chosen = [c for c in classes if c.active]
-    if not chosen:
-        raise HTTPException(400, "No classes selected.")
-    # Skip classes with no search queries
-    chosen = [c for c in chosen if c.queries]
-    if not chosen:
-        raise HTTPException(400,
-                             "None of the selected classes have search queries. "
-                             "Edit a class to add some.")
+# swiss route moved to routers/swiss.py on 2026-05-01
 
-    bulk_id = uuid.uuid4().hex[:12]
-    _swiss_bulk_jobs[bulk_id] = {
-        "id": bulk_id,
-        "started_at": time.time(),
-        "status": "running",
-        "auto_accept": req.auto_accept,
-        "per_class": req.per_class,
-        "n_classes": len(chosen),
-        "current_idx": 0,
-        "current_class": None,
-        "completed": [],   # [{class_id, class_name, downloaded, accepted, error?}]
-        "total_accepted": 0,
-        "error": None,
-    }
-    threading.Thread(
-        target=_swiss_bulk_thread,
-        args=(bulk_id, chosen, req.per_class, req.auto_accept),
-        daemon=True,
-    ).start()
-    return {
-        "ok": True,
-        "bulk_id": bulk_id,
-        "n_classes": len(chosen),
-        "estimated_minutes": round(len(chosen) * req.per_class * 0.3 / 60, 1),
-    }
 
 
 def _swiss_bulk_thread(bulk_id: str, classes_list, per_class: int,
@@ -5321,329 +3160,32 @@ def _swiss_bulk_thread(bulk_id: str, classes_list, per_class: int,
         bulk["error"] = f"{type(e).__name__}: {e}"
 
 
-@app.get("/api/swiss/web-collect-bulk/{bulk_id}")
-def swiss_bulk_web_collect_status(bulk_id: str):
-    bulk = _swiss_bulk_jobs.get(bulk_id)
-    if not bulk:
-        raise HTTPException(404, "Bulk job not found")
-    return {
-        "id": bulk_id,
-        "status": bulk["status"],
-        "auto_accept": bulk["auto_accept"],
-        "per_class": bulk["per_class"],
-        "n_classes": bulk["n_classes"],
-        "current_idx": bulk["current_idx"],
-        "current_class": bulk.get("current_class"),
-        "completed": bulk["completed"],
-        "total_accepted": bulk["total_accepted"],
-        "error": bulk.get("error"),
-        "started_at": bulk.get("started_at"),
-        "finished_at": bulk.get("finished_at"),
-    }
+# swiss route moved to routers/swiss.py on 2026-05-01
 
 
-@app.post("/api/swiss/web-collect-bulk/{bulk_id}/stop")
-def swiss_bulk_web_collect_stop(bulk_id: str):
-    bulk = _swiss_bulk_jobs.get(bulk_id)
-    if not bulk:
-        raise HTTPException(404)
-    bulk["status"] = "stopped"
-    return {"ok": True}
+
+# swiss route moved to routers/swiss.py on 2026-05-01
+
 
 
 class SwissWebAcceptRequest(BaseModel):
     accepted: list[str]   # list of filenames the user wants to keep
 
 
-@app.post("/api/swiss/web-collect/{job_id}/accept")
-def swiss_web_collect_accept(job_id: str, req: SwissWebAcceptRequest):
-    """Move accepted candidates from the web-job temp dir into the class's
-    staging folder. From there auto-annotation or manual labelling can pick
-    them up for inclusion in the next training run."""
-    job = _swiss_web_jobs.get(job_id)
-    if not job:
-        raise HTTPException(404, "Web-collect job not found")
-    classes = swiss_core.load_classes(ROOT)
-    cls = next((c for c in classes if c.id == job["class_id"]), None)
-    if cls is None:
-        raise HTTPException(400, f"Class {job['class_id']} no longer exists")
+# swiss route moved to routers/swiss.py on 2026-05-01
 
-    staging_dir = swiss_core.staging_root(ROOT) / cls.de
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    src_dir = Path(job["dir"])
-    moved = 0
-    for fname in req.accepted:
-        src = src_dir / fname
-        if not src.is_file():
-            continue
-        # Stable per-class numbered filenames
-        existing = sum(1 for _ in staging_dir.iterdir())
-        ext = src.suffix.lower() or ".jpg"
-        dst = staging_dir / f"{cls.de}_web_{existing:05d}{ext}"
-        try:
-            shutil.copy2(src, dst)
-            moved += 1
-        except Exception:
-            continue
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "web_collect_accepted",
-        "class_id": cls.id,
-        "n_accepted": moved,
-        "staging_dir": str(staging_dir),
-    })
-    return {"ok": True, "moved": moved, "staging_dir": str(staging_dir)}
 
 
 # ----------------------------------------------------------------------------
 # Dataset import (Roboflow zip / YOLO-format folder)
 # ----------------------------------------------------------------------------
 
-@app.post("/api/swiss/dataset/import-zip")
-def swiss_import_zip(file: UploadFile = File(...)):
-    """Import a Roboflow YOLOv8 zip or any zip with the standard
-    images/{train,val} + labels/{train,val} layout. Files merge into the
-    persistent dataset; class IDs in the import must match the registry."""
-    swiss_core.ensure_initialized(ROOT)
-    droot = swiss_core.dataset_root(ROOT)
-    tmp_zip = droot / f"_import_{int(time.time())}.zip"
-    # Audit-fix 2026-04-30: chunked write with size cap (was copyfileobj
-    # with NO limit — could fill disk on a large upload).
-    written = 0
-    try:
-        with tmp_zip.open("wb") as f:
-            while True:
-                chunk = file.file.read(1 << 20)  # 1 MB
-                if not chunk:
-                    break
-                written += len(chunk)
-                if written > MAX_UPLOAD_BYTES:
-                    f.close()
-                    tmp_zip.unlink(missing_ok=True)
-                    raise HTTPException(
-                        413,
-                        f"Zip exceeds {MAX_UPLOAD_BYTES // (1024**3)} GB upload limit "
-                        f"(read {written // (1024*1024)} MB so far)."
-                    )
-                f.write(chunk)
-    except HTTPException:
-        raise
-    except Exception as e:
-        tmp_zip.unlink(missing_ok=True)
-        raise HTTPException(500, f"Upload write failed: {e}")
-
-    extract_root = droot / "_extract" / tmp_zip.stem
-    extract_root.mkdir(parents=True, exist_ok=True)
-    try:
-        # Audit-fix 2026-04-30: safe extractor (zip-slip protection).
-        _safe_extract_zip(tmp_zip, extract_root)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(400, f"Bad zip: {e}")
-
-    # Detect layout — find images/train (Roboflow) or train/images (CVAT)
-    sources = []
-    for split in ("train", "val", "valid"):
-        split_canon = "val" if split == "valid" else split
-        for img_dir in [extract_root.rglob(f"images/{split}"),
-                        extract_root.rglob(f"{split}/images")]:
-            for d in img_dir:
-                # find sibling labels
-                if (d.parent / f"labels" / split).is_dir():
-                    sources.append((d, d.parent / "labels" / split, split_canon))
-                elif (d.parent.parent / "labels" / split).is_dir():
-                    sources.append((d, d.parent.parent / "labels" / split, split_canon))
-
-    n_imgs = 0
-    n_lbls = 0
-    for img_dir, lbl_dir, split in sources:
-        dst_img = droot / "images" / split
-        dst_lbl = droot / "labels" / split
-        dst_img.mkdir(parents=True, exist_ok=True)
-        dst_lbl.mkdir(parents=True, exist_ok=True)
-        for img in img_dir.iterdir():
-            if img.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
-                continue
-            target = dst_img / img.name
-            if not target.exists():
-                shutil.copy2(img, target)
-                n_imgs += 1
-        for lbl in lbl_dir.iterdir():
-            if lbl.suffix.lower() != ".txt":
-                continue
-            target = dst_lbl / lbl.name
-            if not target.exists():
-                shutil.copy2(lbl, target)
-                n_lbls += 1
-
-    # Cleanup
-    try:
-        shutil.rmtree(extract_root)
-    except Exception:
-        pass
-    tmp_zip.unlink(missing_ok=True)
-
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "dataset_zip_imported",
-        "filename": file.filename,
-        "n_images": n_imgs,
-        "n_labels": n_lbls,
-    })
-    return {"ok": True, "imported_images": n_imgs, "imported_labels": n_lbls}
+# swiss route moved to routers/swiss.py on 2026-05-01
 
 
-@app.get("/api/swiss/dataset/inspect-folder")
-def swiss_inspect_folder(path: str):
-    """Look at a folder WITHOUT importing anything — return what's in there
-    so the UI can show 'detected 1,234 images, 1,234 labels, Ultralytics
-    layout, 80% train / 20% val' before the user commits to copying files."""
-    src = Path(path).expanduser()
-    try:
-        src = src.resolve()
-    except OSError as e:
-        raise HTTPException(400, f"Cannot resolve: {e}")
-    if not src.is_dir():
-        raise HTTPException(400, f"Not a directory: {src}")
 
-    img_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+# swiss route moved to routers/swiss.py on 2026-05-01
 
-    def _count_in(d: Path, exts: set[str]) -> int:
-        if not d.is_dir():
-            return 0
-        try:
-            return sum(1 for f in d.iterdir()
-                        if f.is_file() and f.suffix.lower() in exts)
-        except (PermissionError, OSError):
-            return 0
-
-    layouts_found = []
-    splits = {}
-
-    # Layout 1: Ultralytics standard <root>/images/{train,val}/  + <root>/labels/{train,val}/
-    for split in ("train", "val", "valid"):
-        canon = "val" if split == "valid" else split
-        img_dir = src / "images" / split
-        lbl_dir = src / "labels" / split
-        n_img = _count_in(img_dir, img_exts)
-        n_lbl = _count_in(lbl_dir, {".txt"})
-        if n_img > 0 or n_lbl > 0:
-            splits.setdefault(canon, {"n_images": 0, "n_labels": 0,
-                                       "img_path": "", "lbl_path": ""})
-            splits[canon]["n_images"] += n_img
-            splits[canon]["n_labels"] += n_lbl
-            splits[canon]["img_path"] = str(img_dir)
-            splits[canon]["lbl_path"] = str(lbl_dir)
-            if "ultralytics" not in layouts_found:
-                layouts_found.append("ultralytics")
-
-    # Layout 2: CVAT-ish <root>/{train,val}/{images,labels}/
-    if not splits:
-        for split in ("train", "val", "valid"):
-            canon = "val" if split == "valid" else split
-            img_dir = src / split / "images"
-            lbl_dir = src / split / "labels"
-            n_img = _count_in(img_dir, img_exts)
-            n_lbl = _count_in(lbl_dir, {".txt"})
-            if n_img > 0 or n_lbl > 0:
-                splits.setdefault(canon, {"n_images": 0, "n_labels": 0,
-                                          "img_path": "", "lbl_path": ""})
-                splits[canon]["n_images"] += n_img
-                splits[canon]["n_labels"] += n_lbl
-                splits[canon]["img_path"] = str(img_dir)
-                splits[canon]["lbl_path"] = str(lbl_dir)
-                if "cvat" not in layouts_found:
-                    layouts_found.append("cvat")
-
-    # Layout 3: flat bag of images at the root
-    flat = 0
-    if not splits:
-        try:
-            flat = sum(1 for f in src.iterdir()
-                        if f.is_file() and f.suffix.lower() in img_exts)
-        except (PermissionError, OSError):
-            flat = 0
-        if flat > 0:
-            layouts_found.append("flat")
-            splits["train"] = {
-                "n_images": flat,
-                "n_labels": _count_in(src, {".txt"}),
-                "img_path": str(src),
-                "lbl_path": str(src),
-            }
-
-    # Layout 4: recursive (just count everything if nothing detected)
-    rec_count = 0
-    if not splits:
-        try:
-            rec_count = sum(1 for p in src.rglob("*")
-                             if p.is_file() and p.suffix.lower() in img_exts)
-        except (PermissionError, OSError):
-            rec_count = 0
-        if rec_count > 0:
-            layouts_found.append("recursive_unsplit")
-
-    total_images = sum(s["n_images"] for s in splits.values()) or rec_count
-    total_labels = sum(s["n_labels"] for s in splits.values())
-
-    # Detect a results.csv hinting at training-run artifacts
-    has_artifacts = (src / "results.csv").is_file()
-    n_artifacts = 0
-    if has_artifacts:
-        artifact_exts = {".csv", ".png", ".jpg", ".jpeg", ".yaml", ".yml", ".json"}
-        try:
-            n_artifacts = sum(1 for f in src.iterdir()
-                               if f.is_file() and f.suffix.lower() in artifact_exts)
-        except (PermissionError, OSError):
-            n_artifacts = 0
-
-    # Sample 3 image filenames to display
-    samples = []
-    for s in splits.values():
-        if not s["img_path"]:
-            continue
-        try:
-            for f in Path(s["img_path"]).iterdir():
-                if f.is_file() and f.suffix.lower() in img_exts:
-                    samples.append(f.name)
-                if len(samples) >= 3:
-                    break
-        except (PermissionError, OSError):
-            pass
-        if len(samples) >= 3:
-            break
-    if not samples and rec_count > 0:
-        try:
-            for p in src.rglob("*"):
-                if p.is_file() and p.suffix.lower() in img_exts:
-                    samples.append(p.name)
-                if len(samples) >= 3:
-                    break
-        except (PermissionError, OSError):
-            pass
-
-    return {
-        "ok": True,
-        "path": str(src),
-        "layouts_detected": layouts_found,
-        "splits": splits,
-        "total_images": total_images,
-        "total_labels": total_labels,
-        "has_run_artifacts": has_artifacts,
-        "n_run_artifacts": n_artifacts,
-        "samples": samples[:3],
-        "importable": total_images > 0,
-        "warning": (
-            "No standard layout detected — files are loose at the root. They "
-            "will be imported into 'train' as a flat bag (matched by filename "
-            "stem to .txt labels)."
-            if "flat" in layouts_found else
-            "Recursive search found images but no train/val structure. Cannot "
-            "import directly — restructure the folder as <root>/images/train/, "
-            "<root>/images/val/, etc., or move files to a flat root directory."
-            if "recursive_unsplit" in layouts_found else
-            None
-        ),
-    }
 
 
 class SwissImportFolderRequest(BaseModel):
@@ -5653,216 +3195,12 @@ class SwissImportFolderRequest(BaseModel):
     labels_subdir: str = "labels"
 
 
-@app.post("/api/swiss/dataset/import-folder")
-def swiss_import_folder(req: SwissImportFolderRequest):
-    """Import a YOLO-format dataset from ANY folder you choose. The folder
-    can be on a local disk, a network share, an external SSD, OneDrive —
-    anywhere the server can read.
-
-    Expected layout (the standard Ultralytics format):
-        <root>/<images_subdir>/{train,val}/*.jpg
-        <root>/<images_subdir>/<images_subdir>/{train,val}/*.txt   (labels)
-        OR
-        <root>/{train,val}/images/*.jpg
-        <root>/{train,val}/labels/*.txt   (CVAT-style)
-
-    The function tries both layouts. Idempotent — files already present
-    in the managed dataset are skipped."""
-    src = Path(req.path).expanduser()
-    try:
-        src = src.resolve()
-    except OSError as e:
-        raise HTTPException(400, f"Cannot resolve path: {e}")
-    if not src.is_dir():
-        raise HTTPException(400, f"Not a directory: {src}")
-    swiss_core.ensure_initialized(ROOT)
-    droot = swiss_core.dataset_root(ROOT)
-
-    n_imgs = n_lbls = 0
-    found_any_split = False
-
-    for split in ("train", "val", "valid"):
-        split_canon = "val" if split == "valid" else split
-        # Layout 1 (Ultralytics): <root>/images/<split>/ + <root>/labels/<split>/
-        # Layout 2 (CVAT-ish):    <root>/<split>/images/ + <root>/<split>/labels/
-        layouts = [
-            (src / req.images_subdir / split, src / req.labels_subdir / split),
-            (src / split / req.images_subdir, src / split / req.labels_subdir),
-        ]
-        for img_dir, lbl_dir in layouts:
-            if not img_dir.is_dir():
-                continue
-            found_any_split = True
-            dst_img = droot / "images" / split_canon
-            dst_img.mkdir(parents=True, exist_ok=True)
-            for f in img_dir.iterdir():
-                if f.is_file() and f.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
-                    target = dst_img / f.name
-                    if target.exists():
-                        continue
-                    try:
-                        shutil.copy2(f, target)
-                        n_imgs += 1
-                    except Exception:
-                        continue
-            if lbl_dir.is_dir():
-                dst_lbl = droot / "labels" / split_canon
-                dst_lbl.mkdir(parents=True, exist_ok=True)
-                for f in lbl_dir.iterdir():
-                    if f.is_file() and f.suffix.lower() == ".txt":
-                        target = dst_lbl / f.name
-                        if target.exists():
-                            continue
-                        try:
-                            shutil.copy2(f, target)
-                            n_lbls += 1
-                        except Exception:
-                            continue
-            break  # don't try Layout 2 if Layout 1 worked for this split
-
-    if not found_any_split:
-        # Last-resort: maybe the folder is just a flat bag of images +
-        # matching .txt files (no train/val split). Drop them all into train.
-        flat_imgs = list(src.glob("*.jpg")) + list(src.glob("*.jpeg")) + \
-                    list(src.glob("*.png")) + list(src.glob("*.bmp"))
-        if flat_imgs:
-            dst_img = droot / "images" / "train"
-            dst_img.mkdir(parents=True, exist_ok=True)
-            dst_lbl = droot / "labels" / "train"
-            dst_lbl.mkdir(parents=True, exist_ok=True)
-            for img in flat_imgs:
-                target_img = dst_img / img.name
-                if not target_img.exists():
-                    try:
-                        shutil.copy2(img, target_img)
-                        n_imgs += 1
-                    except Exception:
-                        continue
-                lbl = img.with_suffix(".txt")
-                if lbl.is_file():
-                    target_lbl = dst_lbl / lbl.name
-                    if not target_lbl.exists():
-                        try:
-                            shutil.copy2(lbl, target_lbl)
-                            n_lbls += 1
-                        except Exception:
-                            pass
-
-    # Optionally also pull training-run artifacts (results.csv, PR curves)
-    # if the source folder contains them at root level
-    n_artifacts = 0
-    if req.include_artifacts:
-        artifact_exts = {".csv", ".png", ".jpg", ".jpeg", ".yaml", ".yml", ".json"}
-        # Look for a results.csv as the marker that this folder IS a run
-        # output (not just a dataset). Only pull artifacts in that case.
-        if (src / "results.csv").is_file():
-            target_run = ROOT / "_runs" / "swiss_train" / src.name
-            target_run.mkdir(parents=True, exist_ok=True)
-            for f in src.iterdir():
-                if f.is_file() and f.suffix.lower() in artifact_exts:
-                    tgt = target_run / f.name
-                    if not tgt.exists():
-                        try:
-                            shutil.copy2(f, tgt)
-                            n_artifacts += 1
-                        except Exception:
-                            continue
-
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "folder_import",
-        "source": str(src),
-        "n_images": n_imgs,
-        "n_labels": n_lbls,
-        "n_artifacts": n_artifacts,
-    })
-    return {
-        "ok": True,
-        "source": str(src),
-        "imported_images": n_imgs,
-        "imported_labels": n_lbls,
-        "imported_artifacts": n_artifacts,
-        "found_split_layout": found_any_split,
-    }
+# swiss route moved to routers/swiss.py on 2026-05-01
 
 
-@app.post("/api/swiss/dataset/import-from-f-drive")
-def swiss_import_from_f():
-    """Convenience one-click: import the existing F:\\Construction Site
-    Intelligence\\data\\training_dataset into the managed Suite dataset
-    AND copy the training-run artifacts (results.csv, confusion matrix,
-    PR curves, etc.) into _runs/swiss_train/<version>/ so the Charts
-    sub-tab works immediately for the bundled swiss_detector_v2.
-    Idempotent — skips files already present."""
-    src = Path(r"F:\Construction Site Intelligence\data\training_dataset")
-    if not src.is_dir():
-        raise HTTPException(404, f"Source not found: {src}")
-    swiss_core.ensure_initialized(ROOT)
-    droot = swiss_core.dataset_root(ROOT)
 
-    n_imgs = n_lbls = 0
-    for split in ("train", "val"):
-        for kind, ext_set in (
-            ("images", {".jpg", ".jpeg", ".png", ".webp", ".bmp"}),
-            ("labels", {".txt"}),
-        ):
-            src_dir = src / kind / split
-            if not src_dir.is_dir():
-                continue
-            dst_dir = droot / kind / split
-            dst_dir.mkdir(parents=True, exist_ok=True)
-            for f in src_dir.iterdir():
-                if f.suffix.lower() not in ext_set:
-                    continue
-                target = dst_dir / f.name
-                if target.exists():
-                    continue
-                try:
-                    shutil.copy2(f, target)
-                    if kind == "images":
-                        n_imgs += 1
-                    else:
-                        n_lbls += 1
-                except Exception:
-                    continue
+# swiss route moved to routers/swiss.py on 2026-05-01
 
-    # Also pull training-run artifacts so the Charts tab works for the bundled v2
-    n_artifacts = 0
-    fdrive_models = Path(r"F:\Construction Site Intelligence\models")
-    if fdrive_models.is_dir():
-        for run_dir in fdrive_models.iterdir():
-            if not run_dir.is_dir():
-                continue
-            # Only mirror runs whose name corresponds to a swiss_detector_v* file
-            target_run = ROOT / "_runs" / "swiss_train" / run_dir.name
-            target_run.mkdir(parents=True, exist_ok=True)
-            for f in run_dir.iterdir():
-                if not f.is_file():
-                    continue
-                if f.suffix.lower() not in {".csv", ".png", ".jpg", ".jpeg",
-                                              ".yaml", ".yml", ".json", ".txt"}:
-                    continue
-                tgt = target_run / f.name
-                if tgt.exists():
-                    continue
-                try:
-                    shutil.copy2(f, tgt)
-                    n_artifacts += 1
-                except Exception:
-                    continue
-
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "f_drive_import",
-        "source": str(src),
-        "n_images": n_imgs,
-        "n_labels": n_lbls,
-        "n_artifacts": n_artifacts,
-    })
-    return {
-        "ok": True,
-        "imported_images": n_imgs,
-        "imported_labels": n_lbls,
-        "imported_artifacts": n_artifacts,
-    }
 
 
 # ----------------------------------------------------------------------------
@@ -5876,63 +3214,8 @@ class SwissAutoAnnotateRequest(BaseModel):
     classes: list[int] | None = None
 
 
-@app.post("/api/swiss/auto-annotate")
-def swiss_auto_annotate(req: SwissAutoAnnotateRequest):
-    """Run the current active Swiss model over a folder of new images,
-    write YOLO-format labels for each detection, then merge images +
-    labels into the managed dataset for retraining."""
-    active = swiss_core.active_version(ROOT)
-    if not active:
-        raise HTTPException(400, "No active Swiss model — set one first.")
-    src = Path(req.folder).expanduser().resolve()
-    if not src.is_dir():
-        raise HTTPException(400, f"Not a directory: {src}")
+# swiss route moved to routers/swiss.py on 2026-05-01
 
-    droot = swiss_core.dataset_root(ROOT)
-    img_dst = droot / "images" / req.split
-    lbl_dst = droot / "labels" / req.split
-    img_dst.mkdir(parents=True, exist_ok=True)
-    lbl_dst.mkdir(parents=True, exist_ok=True)
-
-    from ultralytics import YOLO
-    model = YOLO(active["path"])
-
-    n_imgs = n_lbls = 0
-    for img in src.iterdir():
-        if img.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
-            continue
-        try:
-            res = model.predict(str(img), conf=req.conf, classes=req.classes,
-                                 verbose=False)[0]
-        except Exception:
-            continue
-        # Copy image
-        target_img = img_dst / img.name
-        if not target_img.exists():
-            shutil.copy2(img, target_img)
-            n_imgs += 1
-        # Write label
-        lines = []
-        boxes = getattr(res, "boxes", None)
-        if boxes is not None and len(boxes) > 0:
-            xywhn = boxes.xywhn.cpu().numpy()
-            cls = boxes.cls.cpu().numpy().astype(int)
-            for (cx, cy, w, h), c in zip(xywhn, cls):
-                lines.append(f"{int(c)} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
-        target_lbl = lbl_dst / (img.stem + ".txt")
-        target_lbl.write_text("\n".join(lines), encoding="utf-8")
-        n_lbls += 1
-
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "auto_annotated",
-        "source": str(src),
-        "split": req.split,
-        "model": active["name"],
-        "n_images": n_imgs,
-        "n_labels": n_lbls,
-    })
-    return {"ok": True, "n_images": n_imgs, "n_labels": n_lbls,
-            "model": active["name"]}
 
 
 # ----------------------------------------------------------------------------
@@ -5947,82 +3230,8 @@ class SwissTrainRequest(BaseModel):
     notes: str = ""
 
 
-@app.post("/api/swiss/train")
-def swiss_train(req: SwissTrainRequest):
-    """Trigger a new training run using the managed dataset + chosen base
-    weights. Output goes to _models/swiss_detector_v{N}.pt with metadata
-    sidecar. Becomes the active candidate after training (UI promotes
-    explicitly)."""
-    swiss_core.ensure_initialized(ROOT)
-    classes = [c for c in swiss_core.load_classes(ROOT) if c.active]
-    if not classes:
-        raise HTTPException(400, "No active classes in registry.")
-    stats = swiss_core.dataset_stats(ROOT)
-    if stats["train_images"] < 10:
-        raise HTTPException(400,
-                             "Dataset too small to train — add at least 10 "
-                             "training images (you have "
-                             f"{stats['train_images']}).")
+# swiss route moved to routers/swiss.py on 2026-05-01
 
-    # Resolve base weights
-    if req.base == "active":
-        active = swiss_core.active_version(ROOT)
-        if not active:
-            raise HTTPException(400,
-                                 "No active version to fine-tune from. Pick a "
-                                 "specific base like yolov8m.pt.")
-        base_path = active["path"]
-    elif Path(req.base).is_absolute() and Path(req.base).is_file():
-        base_path = req.base
-    else:
-        base_path = req.base   # stock filename — Ultralytics will download
-
-    next_name = swiss_core.next_version_name(ROOT)
-    out_root = ROOT / "_runs" / "swiss_train"
-    out_root.mkdir(parents=True, exist_ok=True)
-    data_yaml = swiss_core.write_data_yaml(ROOT)
-
-    cmd = [
-        PYTHON, "scripts/swiss_train.py",
-        "--base", str(base_path),
-        "--data", str(data_yaml),
-        "--out-root", str(out_root),
-        "--run-name", next_name,
-        "--models-dir", str(MODELS_DIR),
-        "--epochs", str(int(req.epochs)),
-        "--batch", str(int(req.batch)),
-        "--imgsz", str(int(req.imgsz)),
-        "--notes", req.notes or "",
-    ]
-
-    # Same fire-and-forget pattern as render-video / refine-clip
-    proc = subprocess.Popen(
-        cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True,
-    )
-
-    def _drain():
-        try:
-            for _ in proc.stdout:
-                pass
-        finally:
-            proc.wait()
-    threading.Thread(target=_drain, daemon=True).start()
-
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "train_started",
-        "version_name": next_name,
-        "base": base_path,
-        "epochs": req.epochs,
-        "pid": proc.pid,
-    })
-    return {
-        "ok": True,
-        "pid": proc.pid,
-        "version_name": next_name,
-        "expected_output": str(MODELS_DIR / f"{next_name}.pt"),
-        "command_argv": cmd,
-    }
 
 
 # ============================================================================
@@ -6057,57 +3266,8 @@ class SwissSweepRequest(BaseModel):
 _swiss_sweep_jobs: dict[str, dict] = {}
 
 
-@app.post("/api/swiss/sweep")
-def swiss_sweep_start(req: SwissSweepRequest):
-    """Spawn a background sweep that trains every combination of (epochs,
-    batch, imgsz) sequentially, recording mAP per run. Optional auto-promote
-    sets the best run as active when sweep completes."""
-    swiss_core.ensure_initialized(ROOT)
-    classes = [c for c in swiss_core.load_classes(ROOT) if c.active]
-    if not classes:
-        raise HTTPException(400, "No active classes.")
-    stats = swiss_core.dataset_stats(ROOT)
-    if stats["train_images"] < 10:
-        raise HTTPException(400, "Dataset too small (<10 train images).")
+# swiss route moved to routers/swiss.py on 2026-05-01
 
-    # Resolve base
-    if req.base == "active":
-        active = swiss_core.active_version(ROOT)
-        if not active:
-            raise HTTPException(400, "No active model to fine-tune from.")
-        base_path = active["path"]
-    elif Path(req.base).is_absolute() and Path(req.base).is_file():
-        base_path = req.base
-    else:
-        base_path = req.base
-
-    # Build the grid
-    grid = []
-    for e in req.epochs_list:
-        for b in req.batch_list:
-            for s in req.imgsz_list:
-                grid.append({"epochs": int(e), "batch": int(b), "imgsz": int(s)})
-    if not grid:
-        raise HTTPException(400, "Empty parameter grid.")
-
-    sweep_id = uuid.uuid4().hex[:12]
-    _swiss_sweep_jobs[sweep_id] = {
-        "id": sweep_id,
-        "started_at": time.time(),
-        "status": "running",
-        "base": base_path,
-        "grid": grid,
-        "current_idx": 0,
-        "results": [],   # [{params, version_name, map50, finished_at}]
-        "best": None,
-        "auto_promote_best": req.auto_promote_best,
-    }
-    threading.Thread(
-        target=_swiss_sweep_thread,
-        args=(sweep_id, base_path, grid, req.auto_promote_best),
-        daemon=True,
-    ).start()
-    return {"ok": True, "sweep_id": sweep_id, "n_runs": len(grid)}
 
 
 def _swiss_sweep_thread(sweep_id: str, base_path: str, grid: list[dict],
@@ -6187,12 +3347,8 @@ def _swiss_sweep_thread(sweep_id: str, base_path: str, grid: list[dict],
         sweep["error"] = f"{type(e).__name__}: {e}"
 
 
-@app.get("/api/swiss/sweep/{sweep_id}")
-def swiss_sweep_status(sweep_id: str):
-    sweep = _swiss_sweep_jobs.get(sweep_id)
-    if not sweep:
-        raise HTTPException(404, "Sweep not found")
-    return sweep
+# swiss route moved to routers/swiss.py on 2026-05-01
+
 
 
 # ----------------------------------------------------------------------------
@@ -6208,73 +3364,8 @@ class SwissTensorRTRequest(BaseModel):
     workspace_gb: float = 4.0    # GPU memory the builder may use
 
 
-@app.post("/api/swiss/export-tensorrt")
-def swiss_export_tensorrt(req: SwissTensorRTRequest):
-    """Native TensorRT engine export. Generates a .engine file next to the
-    .pt — much smaller and faster than ONNX at runtime, but locked to the
-    specific GPU + driver + TRT version that built it."""
-    model_path = MODELS_DIR / f"{req.version_name}.pt"
-    if not model_path.is_file():
-        raise HTTPException(404, f"Model not found: {model_path}")
-    try:
-        from ultralytics import YOLO
-    except ImportError as e:
-        raise HTTPException(500, f"ultralytics import failed: {e}")
-    try:
-        import tensorrt   # noqa: F401  — just verify it's installed
-    except ImportError:
-        raise HTTPException(
-            501,
-            "TensorRT not installed. On Windows with CUDA 12.4: "
-            "pip install tensorrt --extra-index-url "
-            "https://pypi.nvidia.com . Or use the ONNX export and run "
-            "trtexec --onnx=model.onnx --saveEngine=model.engine --fp16 "
-            "from a CUDA toolkit shell.")
+# swiss route moved to routers/swiss.py on 2026-05-01
 
-    export_kwargs = {
-        "format": "engine",
-        "imgsz": int(req.image_size),
-        "half": bool(req.half) and not bool(req.int8),
-        "int8": bool(req.int8),
-        "workspace": float(req.workspace_gb),
-    }
-    if req.int8:
-        if not req.calibration_folder:
-            raise HTTPException(400, "INT8 requires calibration_folder.")
-        # Ultralytics builds a calibration cache from a YAML data file —
-        # easiest is to pass the existing managed dataset's data.yaml so it
-        # uses val/ images for calibration
-        export_kwargs["data"] = str(swiss_core.write_data_yaml(ROOT))
-
-    try:
-        model = YOLO(str(model_path))
-        out = model.export(**export_kwargs)
-    except Exception as e:
-        raise HTTPException(500, f"TensorRT export failed: {type(e).__name__}: {e}")
-
-    out_path = Path(out) if out else model_path.with_suffix(".engine")
-    if not out_path.is_file():
-        cands = list(model_path.parent.glob(f"{model_path.stem}*.engine"))
-        if cands:
-            out_path = cands[0]
-    if not out_path.is_file():
-        raise HTTPException(500, "Engine file not produced.")
-
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "tensorrt_exported",
-        "version": req.version_name,
-        "out_path": str(out_path),
-        "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
-        "fp16": req.half and not req.int8,
-        "int8": req.int8,
-    })
-    return {
-        "ok": True,
-        "out_path": str(out_path),
-        "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
-        "fp16": req.half and not req.int8,
-        "int8": req.int8,
-    }
 
 
 # ----------------------------------------------------------------------------
@@ -6288,75 +3379,8 @@ class SwissDriftBaselineRequest(BaseModel):
     name: str = "default"
 
 
-@app.post("/api/swiss/drift/baseline")
-def swiss_drift_baseline(req: SwissDriftBaselineRequest):
-    """Sets a baseline: per-class detection rate across a representative
-    folder of images. Used to detect drift later when these rates change
-    significantly on new data."""
-    model_path = MODELS_DIR / f"{req.version_name}.pt"
-    if not model_path.is_file():
-        raise HTTPException(404, f"Model not found: {model_path}")
-    folder = Path(req.sample_folder).expanduser()
-    if not folder.is_dir():
-        raise HTTPException(400, f"Folder not found: {folder}")
+# swiss route moved to routers/swiss.py on 2026-05-01
 
-    images = [p for p in folder.rglob("*")
-              if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}]
-    if not images:
-        raise HTTPException(400, "No images in folder.")
-    if len(images) > 1000:
-        images = images[:1000]   # cap to keep this snappy
-
-    from ultralytics import YOLO
-    model = YOLO(str(model_path))
-    names = getattr(model, "names", {}) or {}
-
-    per_class_counts: dict[int, int] = {}
-    n_images_with_any = 0
-    avg_dets_per_image = 0
-    for img in images:
-        try:
-            res = model.predict(str(img), conf=req.conf_threshold, verbose=False)[0]
-        except Exception:
-            continue
-        boxes = getattr(res, "boxes", None)
-        n_dets = 0 if boxes is None else len(boxes)
-        if n_dets > 0:
-            n_images_with_any += 1
-            cls_arr = boxes.cls.cpu().numpy().astype(int)
-            for c in cls_arr:
-                per_class_counts[int(c)] = per_class_counts.get(int(c), 0) + 1
-        avg_dets_per_image += n_dets
-
-    n = max(1, len(images))
-    baseline = {
-        "name": req.name,
-        "version_name": req.version_name,
-        "sample_folder": str(folder),
-        "n_images": len(images),
-        "n_images_with_any": n_images_with_any,
-        "frac_with_any": round(n_images_with_any / n, 4),
-        "avg_dets_per_image": round(avg_dets_per_image / n, 3),
-        "per_class_rate": {
-            str(cid): {
-                "name": names.get(cid, str(cid)),
-                "rate_per_image": round(cnt / n, 4),
-                "total_count": cnt,
-            }
-            for cid, cnt in per_class_counts.items()
-        },
-        "conf_threshold": req.conf_threshold,
-        "computed_at": time.time(),
-    }
-    out = DRIFT_DIR / f"{req.version_name}__{req.name}.json"
-    out.write_text(json.dumps(baseline, indent=2), encoding="utf-8")
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "drift_baseline_set",
-        "version": req.version_name,
-        "name": req.name,
-        "n_images": len(images),
-    })
-    return {"ok": True, "baseline_file": str(out), "baseline": baseline}
 
 
 class SwissDriftCheckRequest(BaseModel):
@@ -6366,117 +3390,12 @@ class SwissDriftCheckRequest(BaseModel):
     conf_threshold: float = 0.3
 
 
-@app.post("/api/swiss/drift/check")
-def swiss_drift_check(req: SwissDriftCheckRequest):
-    """Compute per-class detection rates on a new folder and compare to the
-    baseline. Returns drift scores: positive % = class detected MORE than
-    baseline, negative = LESS. Anything beyond ±30% relative is flagged."""
-    baseline_path = DRIFT_DIR / f"{req.version_name}__{req.baseline_name}.json"
-    if not baseline_path.is_file():
-        raise HTTPException(404,
-                             f"Baseline not found: {baseline_path}. "
-                             "Set a baseline first via POST /api/swiss/drift/baseline.")
-    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-
-    # Compute current rates on the new folder
-    model_path = MODELS_DIR / f"{req.version_name}.pt"
-    if not model_path.is_file():
-        raise HTTPException(404, f"Model not found.")
-    folder = Path(req.sample_folder).expanduser()
-    if not folder.is_dir():
-        raise HTTPException(400, f"Folder not found: {folder}")
-    images = [p for p in folder.rglob("*")
-              if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}]
-    if not images:
-        raise HTTPException(400, "No images.")
-    if len(images) > 1000:
-        images = images[:1000]
-
-    from ultralytics import YOLO
-    model = YOLO(str(model_path))
-    names = getattr(model, "names", {}) or {}
-
-    per_class_counts: dict[int, int] = {}
-    n_with_any = 0
-    avg_dets = 0
-    for img in images:
-        try:
-            res = model.predict(str(img), conf=req.conf_threshold, verbose=False)[0]
-        except Exception:
-            continue
-        boxes = getattr(res, "boxes", None)
-        n = 0 if boxes is None else len(boxes)
-        if n > 0:
-            n_with_any += 1
-            cls_arr = boxes.cls.cpu().numpy().astype(int)
-            for c in cls_arr:
-                per_class_counts[int(c)] = per_class_counts.get(int(c), 0) + 1
-        avg_dets += n
-
-    n_images = max(1, len(images))
-    cur_frac_any = n_with_any / n_images
-    cur_avg_dets = avg_dets / n_images
-
-    drift_per_class = []
-    all_class_ids = set(per_class_counts.keys()) | {
-        int(k) for k in baseline.get("per_class_rate", {})
-    }
-    for cid in sorted(all_class_ids):
-        cur_rate = per_class_counts.get(cid, 0) / n_images
-        base_rate = (baseline["per_class_rate"].get(str(cid), {})
-                     .get("rate_per_image", 0))
-        delta_pp = (cur_rate - base_rate) * 100   # absolute percentage points
-        rel_delta = ((cur_rate - base_rate) / base_rate * 100
-                     if base_rate > 0 else (100 if cur_rate > 0 else 0))
-        drift_per_class.append({
-            "class_id": cid,
-            "name": names.get(cid, str(cid)),
-            "baseline_rate": round(base_rate, 4),
-            "current_rate": round(cur_rate, 4),
-            "delta_pp": round(delta_pp, 2),
-            "rel_delta_pct": round(rel_delta, 1),
-            "flagged": abs(rel_delta) >= 30 and (base_rate > 0.05 or cur_rate > 0.05),
-        })
-
-    # Overall drift score: max abs relative drift among "real" classes
-    overall_drift = max((abs(d["rel_delta_pct"]) for d in drift_per_class
-                         if d["flagged"]), default=0)
-    return {
-        "ok": True,
-        "version_name": req.version_name,
-        "baseline_name": req.baseline_name,
-        "n_images": len(images),
-        "current": {
-            "frac_with_any": round(cur_frac_any, 4),
-            "avg_dets_per_image": round(cur_avg_dets, 3),
-        },
-        "baseline": {
-            "frac_with_any": baseline.get("frac_with_any"),
-            "avg_dets_per_image": baseline.get("avg_dets_per_image"),
-            "n_images": baseline.get("n_images"),
-        },
-        "drift_per_class": drift_per_class,
-        "overall_drift_pct": overall_drift,
-        "any_flagged": any(d["flagged"] for d in drift_per_class),
-    }
+# swiss route moved to routers/swiss.py on 2026-05-01
 
 
-@app.get("/api/swiss/drift/baselines/{version_name}")
-def swiss_drift_baselines(version_name: str):
-    """List all saved baselines for a model version."""
-    out = []
-    for p in DRIFT_DIR.glob(f"{version_name}__*.json"):
-        try:
-            d = json.loads(p.read_text(encoding="utf-8"))
-            out.append({
-                "name": d.get("name"),
-                "n_images": d.get("n_images"),
-                "computed_at": d.get("computed_at"),
-                "frac_with_any": d.get("frac_with_any"),
-            })
-        except Exception:
-            continue
-    return {"baselines": out}
+
+# swiss route moved to routers/swiss.py on 2026-05-01
+
 
 
 class SwissEvalRequest(BaseModel):
@@ -6487,94 +3406,16 @@ class SwissEvalRequest(BaseModel):
     image_size: int = 640
 
 
-@app.post("/api/swiss/evaluate")
-def swiss_evaluate(req: SwissEvalRequest):
-    """Kick off held-out evaluation as a subprocess. UI polls via
-    /api/swiss/eval-status/{eval_id}."""
-    model_path = MODELS_DIR / f"{req.version_name}.pt"
-    if not model_path.is_file():
-        raise HTTPException(404, f"Model not found: {model_path}")
-    test_folder = Path(req.test_folder).expanduser()
-    if not test_folder.is_dir():
-        raise HTTPException(400, f"test_folder not found: {test_folder}")
-
-    eval_id = uuid.uuid4().hex[:12]
-    out_path = EVAL_DIR / f"{eval_id}.json"
-    cmd = [
-        PYTHON, "scripts/cv_evaluate.py",
-        "--model", str(model_path),
-        "--images", str(test_folder),
-        "--out", str(out_path),
-        "--iou", f"{req.iou_threshold:.3f}",
-        "--conf", f"{req.conf_threshold:.3f}",
-        "--imgsz", str(int(req.image_size)),
-    ]
-    if GPU_AVAILABLE:
-        cmd += ["--device", "cuda"]
-    proc = subprocess.Popen(
-        cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True,
-    )
-
-    def _drain():
-        try:
-            for _ in proc.stdout:
-                pass
-        finally:
-            proc.wait()
-    threading.Thread(target=_drain, daemon=True).start()
-
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "eval_started",
-        "eval_id": eval_id,
-        "version": req.version_name,
-        "test_folder": str(test_folder),
-    })
-    return {
-        "ok": True,
-        "eval_id": eval_id,
-        "pid": proc.pid,
-        "report_path": str(out_path),
-    }
+# swiss route moved to routers/swiss.py on 2026-05-01
 
 
-@app.get("/api/swiss/eval-status/{eval_id}")
-def swiss_eval_status(eval_id: str):
-    """Poll: returns progress + (when done) the full report payload."""
-    report_path = EVAL_DIR / f"{eval_id}.json"
-    progress_path = EVAL_DIR / f"{eval_id}.json.progress"
-    if report_path.is_file():
-        try:
-            return {"status": "done", "report": json.loads(report_path.read_text(encoding="utf-8"))}
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-    if progress_path.is_file():
-        try:
-            return {"status": "running", "progress": json.loads(progress_path.read_text(encoding="utf-8"))}
-        except Exception:
-            return {"status": "running", "progress": {}}
-    return {"status": "running", "progress": {}}
+
+# swiss route moved to routers/swiss.py on 2026-05-01
 
 
-@app.get("/api/swiss/eval-list")
-def swiss_eval_list():
-    """List historical eval reports (most-recent first)."""
-    out = []
-    for p in sorted(EVAL_DIR.glob("*.json"), key=lambda x: -x.stat().st_mtime):
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            out.append({
-                "eval_id": p.stem,
-                "model": data.get("model", ""),
-                "images": data.get("images", ""),
-                "n_images": data.get("n_images", 0),
-                "n_with_labels": data.get("n_images_with_labels", 0),
-                "map50": data.get("map50", 0),
-                "finished_at": data.get("finished_at", 0),
-            })
-        except Exception:
-            continue
-    return {"reports": out}
+
+# swiss route moved to routers/swiss.py on 2026-05-01
+
 
 
 # ----------------------------------------------------------------------------
@@ -6590,65 +3431,8 @@ class SwissFramesRequest(BaseModel):
     image_size: int = 0     # 0 = native, otherwise resize longest edge
 
 
-@app.post("/api/swiss/extract-frames")
-def swiss_extract_frames(req: SwissFramesRequest):
-    """Extract evenly-spaced frames from a video into the Swiss staging
-    folder (or target_dir if given). Uses cv2 — fast, no ffmpeg subshell
-    needed."""
-    src = Path(req.video_path).expanduser()
-    if not src.is_file():
-        raise HTTPException(404, f"video not found: {src}")
+# swiss route moved to routers/swiss.py on 2026-05-01
 
-    if req.target_dir:
-        out_dir = Path(req.target_dir).expanduser()
-    elif req.target_class:
-        # Resolve class name (DE) — accept either de or en input
-        classes = swiss_core.load_classes(ROOT)
-        cls = next((c for c in classes
-                    if c.de == req.target_class or c.en == req.target_class
-                    or c.id == (int(req.target_class) if str(req.target_class).isdigit() else -1)),
-                   None)
-        if cls is None:
-            raise HTTPException(404, f"class not found: {req.target_class}")
-        out_dir = swiss_core.staging_root(ROOT) / cls.de
-    else:
-        out_dir = swiss_core.staging_root(ROOT) / "_video_extracts"
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    cap = cv2.VideoCapture(str(src))
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    if total <= 0:
-        cap.release()
-        raise HTTPException(400, "video has no frames or codec unreadable")
-
-    n = min(int(req.n_frames), total)
-    indices = [int(i * (total - 1) / max(1, n - 1)) for i in range(n)]
-    written = 0
-    for idx in indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            continue
-        if req.image_size > 0:
-            h, w = frame.shape[:2]
-            scale = req.image_size / max(h, w)
-            if scale < 1:
-                frame = cv2.resize(frame, (int(w * scale), int(h * scale)),
-                                    interpolation=cv2.INTER_AREA)
-        existing = sum(1 for f in out_dir.iterdir() if f.is_file())
-        dst = out_dir / f"{src.stem}_f{existing:05d}.jpg"
-        cv2.imwrite(str(dst), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
-        written += 1
-    cap.release()
-
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "frames_extracted",
-        "video": str(src),
-        "n_extracted": written,
-        "out_dir": str(out_dir),
-    })
-    return {"ok": True, "n_extracted": written, "out_dir": str(out_dir)}
 
 
 # ----------------------------------------------------------------------------
@@ -6663,55 +3447,8 @@ class SwissExportOnnxRequest(BaseModel):
     simplify: bool = True
 
 
-@app.post("/api/swiss/export-onnx")
-def swiss_export_onnx(req: SwissExportOnnxRequest):
-    """Export a trained model to ONNX. The Ultralytics .export() handles
-    the conversion + simplification. Output goes next to the .pt file."""
-    model_path = MODELS_DIR / f"{req.version_name}.pt"
-    if not model_path.is_file():
-        raise HTTPException(404, f"Model not found: {model_path}")
+# swiss route moved to routers/swiss.py on 2026-05-01
 
-    try:
-        from ultralytics import YOLO
-    except ImportError as e:
-        raise HTTPException(500, f"ultralytics import failed: {e}")
-
-    try:
-        model = YOLO(str(model_path))
-        out = model.export(
-            format="onnx",
-            imgsz=int(req.image_size),
-            dynamic=bool(req.dynamic_batch),
-            simplify=bool(req.simplify),
-            half=bool(req.half),
-        )
-    except Exception as e:
-        raise HTTPException(500, f"ONNX export failed: {type(e).__name__}: {e}")
-
-    out_path = Path(out) if out else model_path.with_suffix(".onnx")
-    if not out_path.is_file():
-        # Some Ultralytics versions return None — pick the .onnx neighbour
-        candidates = list(model_path.parent.glob(f"{model_path.stem}*.onnx"))
-        if candidates:
-            out_path = candidates[0]
-    if not out_path.is_file():
-        raise HTTPException(500, "ONNX file not produced by export")
-
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "onnx_exported",
-        "version": req.version_name,
-        "out_path": str(out_path),
-        "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
-        "fp16": req.half,
-    })
-    return {
-        "ok": True,
-        "version": req.version_name,
-        "out_path": str(out_path),
-        "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
-        "fp16": req.half,
-        "imgsz": req.image_size,
-    }
 
 
 # ----------------------------------------------------------------------------
@@ -6726,70 +3463,8 @@ class SwissBenchmarkRequest(BaseModel):
     warmup: int = 5
 
 
-@app.post("/api/swiss/benchmark")
-def swiss_benchmark(req: SwissBenchmarkRequest):
-    """Time the model at a range of batch sizes. Synthetic random tensors —
-    measures pure forward-pass cost so I/O doesn't pollute the numbers."""
-    model_path = MODELS_DIR / f"{req.version_name}.pt"
-    if not model_path.is_file():
-        raise HTTPException(404, f"Model not found: {model_path}")
+# swiss route moved to routers/swiss.py on 2026-05-01
 
-    try:
-        import torch
-        from ultralytics import YOLO
-    except ImportError as e:
-        raise HTTPException(500, f"torch/ultralytics import failed: {e}")
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = YOLO(str(model_path))
-    # Force model onto device + eval mode by running a dummy inference
-    dummy = torch.zeros(1, 3, req.image_size, req.image_size).to(device)
-    _ = model.model.to(device)(dummy)
-
-    rows = []
-    for bs in req.batch_sizes:
-        x = torch.randn(bs, 3, req.image_size, req.image_size).to(device)
-        # Warmup
-        for _ in range(req.warmup):
-            _ = model.model(x)
-        if device == "cuda":
-            torch.cuda.synchronize()
-        # Time
-        t_per_iter = []
-        for _ in range(req.iterations):
-            if device == "cuda":
-                torch.cuda.synchronize()
-            t0 = time.perf_counter()
-            _ = model.model(x)
-            if device == "cuda":
-                torch.cuda.synchronize()
-            t_per_iter.append((time.perf_counter() - t0) * 1000)
-        ms = sum(t_per_iter) / len(t_per_iter)
-        ms_p99 = sorted(t_per_iter)[int(0.99 * (len(t_per_iter) - 1))]
-        rows.append({
-            "batch_size": bs,
-            "ms_per_batch": round(ms, 2),
-            "ms_p99_batch": round(ms_p99, 2),
-            "ms_per_image": round(ms / bs, 2),
-            "fps": round(1000 * bs / ms, 1),
-        })
-
-    # GPU memory
-    gpu_mem_mb = None
-    if device == "cuda":
-        try:
-            gpu_mem_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 1)
-        except Exception:
-            pass
-
-    return {
-        "version": req.version_name,
-        "device": device,
-        "image_size": req.image_size,
-        "rows": rows,
-        "gpu_max_memory_mb": gpu_mem_mb,
-        "n_parameters": int(sum(p.numel() for p in model.model.parameters())),
-    }
 
 
 # ============================================================================
@@ -6800,188 +3475,20 @@ def swiss_benchmark(req: SwissBenchmarkRequest):
 SWISS_RUNS_DIR = ROOT / "_runs" / "swiss_train"
 
 
-@app.get("/api/swiss/version/{version_name}/run-artifacts")
-def swiss_run_artifacts(version_name: str):
-    """Return parsed per-epoch metrics + list of available image artifacts
-    for one trained version. UI uses this to render Chart.js plots and a
-    gallery of static PNGs (confusion matrix, PR curves, sample images)."""
-    run_dir = SWISS_RUNS_DIR / version_name
-    if not run_dir.is_dir():
-        return {"available": False, "run_dir": str(run_dir)}
-
-    # ---- Parse results.csv ----
-    epochs: list[dict] = []
-    csv_path = run_dir / "results.csv"
-    if csv_path.is_file():
-        try:
-            import csv as _csv
-            with csv_path.open(encoding="utf-8") as fh:
-                reader = _csv.DictReader(fh)
-                for row in reader:
-                    norm = {k.strip(): v for k, v in row.items()}
-                    # Coerce numeric fields
-                    out = {}
-                    for k, v in norm.items():
-                        try:
-                            out[k] = float(v) if v not in ("", None) else None
-                        except ValueError:
-                            out[k] = v
-                    epochs.append(out)
-        except Exception as e:
-            epochs = []
-
-    # ---- List image artifacts ----
-    images = []
-    for f in run_dir.iterdir():
-        if f.suffix.lower() in {".png", ".jpg", ".jpeg"}:
-            images.append({
-                "filename": f.name,
-                "size_kb": round(f.stat().st_size / 1024, 1),
-            })
-    images.sort(key=lambda x: x["filename"])
-
-    # ---- Args.yaml ----
-    args_path = run_dir / "args.yaml"
-    args_summary = None
-    if args_path.is_file():
-        try:
-            text = args_path.read_text(encoding="utf-8")
-            picks = {}
-            for line in text.splitlines():
-                if ":" not in line:
-                    continue
-                k, _, v = line.partition(":")
-                k = k.strip(); v = v.strip()
-                if k in ("model", "data", "epochs", "batch", "imgsz",
-                         "optimizer", "lr0", "lrf", "momentum", "weight_decay",
-                         "patience", "device", "amp", "single_cls"):
-                    picks[k] = v
-            args_summary = picks
-        except Exception:
-            args_summary = None
-
-    return {
-        "available": True,
-        "run_dir": str(run_dir),
-        "version_name": version_name,
-        "epochs": epochs,
-        "images": images,
-        "args": args_summary,
-    }
+# swiss route moved to routers/swiss.py on 2026-05-01
 
 
-@app.get("/api/swiss/version/{version_name}/run-artifact")
-def swiss_run_artifact(version_name: str, filename: str):
-    """Serve a single artifact image for the run."""
-    run_dir = SWISS_RUNS_DIR / version_name
-    if not run_dir.is_dir():
-        raise HTTPException(404, f"run dir not found: {run_dir}")
-    # Prevent path traversal
-    safe = Path(filename).name
-    p = run_dir / safe
-    if not p.is_file():
-        raise HTTPException(404, f"file not found: {safe}")
-    return FileResponse(p)
+
+# swiss route moved to routers/swiss.py on 2026-05-01
+
 
 
 # ----------------------------------------------------------------------------
 # Dataset insights — class imbalance, image sizes, corrupt + duplicate detection
 # ----------------------------------------------------------------------------
 
-@app.get("/api/swiss/dataset/insights")
-def swiss_dataset_insights():
-    """Audit the managed dataset for issues + distribution stats. Pure data
-    inspection — no model needed. Used by the Data sub-tab to show health."""
-    droot = swiss_core.dataset_root(ROOT)
-    classes = swiss_core.load_classes(ROOT)
-    class_lookup = {c.id: c.en for c in classes}
+# swiss route moved to routers/swiss.py on 2026-05-01
 
-    out = {
-        "ok": True,
-        "image_size_buckets": {"<480p": 0, "480-720p": 0, "720-1080p": 0,
-                                "1080-2160p": 0, ">=2160p": 0},
-        "format_counts": {},
-        "corrupt": [],
-        "label_issues": [],
-        "per_class": {c.id: {"n": 0, "name": c.en, "de": c.de,
-                              "color": c.color}
-                       for c in classes},
-        "total_images": 0,
-        "total_labels": 0,
-    }
-
-    for split in ("train", "val"):
-        img_dir = droot / "images" / split
-        lbl_dir = droot / "labels" / split
-        if not img_dir.is_dir():
-            continue
-        for img in img_dir.iterdir():
-            if img.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
-                continue
-            out["total_images"] += 1
-            ext = img.suffix.lower()
-            out["format_counts"][ext] = out["format_counts"].get(ext, 0) + 1
-            try:
-                im = cv2.imread(str(img))
-                if im is None:
-                    out["corrupt"].append({"path": str(img), "split": split,
-                                            "reason": "cv2.imread None"})
-                    continue
-                h, w = im.shape[:2]
-                m = max(h, w)
-                if m < 480: out["image_size_buckets"]["<480p"] += 1
-                elif m < 720: out["image_size_buckets"]["480-720p"] += 1
-                elif m < 1080: out["image_size_buckets"]["720-1080p"] += 1
-                elif m < 2160: out["image_size_buckets"]["1080-2160p"] += 1
-                else: out["image_size_buckets"][">=2160p"] += 1
-            except Exception as e:
-                out["corrupt"].append({"path": str(img), "split": split,
-                                        "reason": f"{type(e).__name__}: {e}"})
-                continue
-
-            # Validate matching label
-            lbl = lbl_dir / (img.stem + ".txt")
-            if not lbl.is_file():
-                continue
-            out["total_labels"] += 1
-            try:
-                for i, line in enumerate(lbl.read_text(encoding="utf-8").splitlines()):
-                    bits = line.strip().split()
-                    if not bits:
-                        continue
-                    if len(bits) < 5:
-                        out["label_issues"].append({
-                            "path": str(lbl), "line": i + 1,
-                            "reason": "fewer than 5 fields"})
-                        continue
-                    try:
-                        cid = int(bits[0])
-                        cx, cy, bw, bh = (float(x) for x in bits[1:5])
-                    except ValueError:
-                        out["label_issues"].append({
-                            "path": str(lbl), "line": i + 1,
-                            "reason": "non-numeric value"})
-                        continue
-                    if cid not in class_lookup:
-                        out["label_issues"].append({
-                            "path": str(lbl), "line": i + 1,
-                            "reason": f"unknown class id {cid}"})
-                        continue
-                    if any(v < 0 or v > 1 for v in (cx, cy, bw, bh)):
-                        out["label_issues"].append({
-                            "path": str(lbl), "line": i + 1,
-                            "reason": "coords out of [0,1]"})
-                        continue
-                    out["per_class"][cid]["n"] += 1
-            except Exception as e:
-                out["label_issues"].append({
-                    "path": str(lbl), "line": 0,
-                    "reason": f"{type(e).__name__}: {e}"})
-
-    # Cap returned issue lists at 50 each so the response stays small
-    out["corrupt"] = out["corrupt"][:50]
-    out["label_issues"] = out["label_issues"][:50]
-    return out
 
 
 # ============================================================================
@@ -7281,56 +3788,8 @@ class SwissTensorRTInt8Request(BaseModel):
     workspace_gb: float = 4.0
 
 
-@app.post("/api/swiss/export-tensorrt-int8")
-def swiss_export_tensorrt_int8(req: SwissTensorRTInt8Request):
-    """INT8 TensorRT engine — uses the managed dataset's val/ split as
-    calibration data automatically. Smaller + faster than FP16, ~1-3pp
-    accuracy drop typically."""
-    model_path = MODELS_DIR / f"{req.version_name}.pt"
-    if not model_path.is_file():
-        raise HTTPException(404, f"Model not found: {model_path}")
-    try:
-        from ultralytics import YOLO
-    except ImportError as e:
-        raise HTTPException(500, f"ultralytics: {e}")
-    try:
-        import tensorrt   # noqa: F401
-    except ImportError:
-        raise HTTPException(501,
-                             "TensorRT not installed. Install via: "
-                             "pip install tensorrt --extra-index-url https://pypi.nvidia.com")
-    # Calibration via managed val data
-    data_yaml = swiss_core.write_data_yaml(ROOT)
-    try:
-        model = YOLO(str(model_path))
-        out = model.export(
-            format="engine",
-            imgsz=int(req.image_size),
-            int8=True,
-            data=str(data_yaml),
-            workspace=float(req.workspace_gb),
-        )
-    except Exception as e:
-        raise HTTPException(500, f"INT8 export failed: {type(e).__name__}: {e}")
-    out_path = Path(out) if out else model_path.with_suffix(".engine")
-    if not out_path.is_file():
-        cands = list(model_path.parent.glob(f"{model_path.stem}*.engine"))
-        if cands:
-            out_path = cands[0]
-    if not out_path.is_file():
-        raise HTTPException(500, "INT8 engine not produced")
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "tensorrt_int8_exported",
-        "version": req.version_name,
-        "out_path": str(out_path),
-        "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
-    })
-    return {
-        "ok": True,
-        "out_path": str(out_path),
-        "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
-        "precision": "INT8",
-    }
+# swiss route moved to routers/swiss.py on 2026-05-01
+
 
 
 # ───────── Tier 4: Alert routing rules + history ──────────────────────

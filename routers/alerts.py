@@ -6,17 +6,27 @@ globals after app.py has finished initialisation.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import math
 import os
+import random
 import re
 import shutil
 import sqlite3 as _sqlite3
+import subprocess
+import sys
 import threading
 import time
+import urllib.parse
+import uuid
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
+import cv2
+import numpy as np
 import torch
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import (
@@ -32,58 +42,79 @@ from core import (
     disk as disk_core,
     discovery as discovery_core,
     events as events_core,
+    face_blur as face_blur_core,
+    machines as machines_core,
     machine_alerts as machine_alerts_core,
+    machine_reports as machine_reports_core,
+    machine_tracker as machine_tracker_core,
+    notify as notify_core,
+    picker_scheduler as picker_sched,
     registry as registry_core,
     swiss as swiss_core,
+    taxonomy as taxonomy_core,
+    util_report_scheduler as util_report_sched,
     watchdog as watchdog_core,
     zones as zones_core,
 )
+from core.notify import build_audit_report, send_email, send_webhook
+from core.playground import inspect_model, predict_on_image
+from core.presets import class_index as preset_class_index
+from core.presets import get_preset, list_presets
+from core.seed import SUGGESTED, install_suggested, seed_existing_models
 
 router = APIRouter(tags=["alerts"])
 
-@router.get("/api/alerts/rules")
-def alerts_list():
-    import app as _app
-    return {"rules": alerts_core.list_rules(_app.ROOT)}
+class AlertRuleRequest(BaseModel):
+    id: str | None = None
+    name: str
+    enabled: bool = True
+    when: dict = {}
+    deliver: dict = {}
+    cooldown_sec: int = 60
 
-@router.post("/api/alerts/rules")
-def alerts_upsert(req: _app.AlertRuleRequest):
+@router .get ("/api/alerts/rules")
+def alerts_list ():
     import app as _app
-    return alerts_core.upsert_rule(_app.ROOT, req.dict(exclude_none=True))
+    return {"rules":alerts_core .list_rules (_app .ROOT )}
 
-@router.delete("/api/alerts/rules/{rule_id}")
-def alerts_delete(rule_id: str):
+@router .post ("/api/alerts/rules")
+def alerts_upsert (req :AlertRuleRequest ):
     import app as _app
-    alerts_core.delete_rule(_app.ROOT, rule_id)
-    return {"ok": True}
+    return alerts_core .upsert_rule (_app .ROOT ,req .dict (exclude_none =True ))
 
-@router.post("/api/alerts/test/{rule_id}")
-def alerts_test(rule_id: str):
+@router .delete ("/api/alerts/rules/{rule_id}")
+def alerts_delete (rule_id :str ):
     import app as _app
-    return alerts_core.test_rule(_app.ROOT, rule_id)
+    alerts_core .delete_rule (_app .ROOT ,rule_id )
+    return {"ok":True }
 
-@router.get("/api/alerts/history")
-def alerts_history(limit: int = 50):
+@router .post ("/api/alerts/test/{rule_id}")
+def alerts_test (rule_id :str ):
     import app as _app
-    return {"history": alerts_core.history(_app.ROOT, limit=limit)}
+    return alerts_core .test_rule (_app .ROOT ,rule_id )
 
-@router.post("/api/alerts/test-channels")
-def alerts_test_channels(payload: dict):
+@router .get ("/api/alerts/history")
+def alerts_history (limit :int =50 ):
+    import app as _app
+    return {"history":alerts_core .history (_app .ROOT ,limit =limit )}
+
+@router .post ("/api/alerts/test-channels")
+def alerts_test_channels (payload :dict ):
     """Smoke-test SMTP and/or webhook independently of any rule."""
     import app as _app
-    from core import notify
-    out = {}
-    if payload.get("email"):
-        ok, msg = notify.send_email(
-            to=payload["email"],
-            subject="[Arclap CSI] Test alert",
-            body="This is a test message from Arclap Vision Suite.",
+    from core import notify 
+    out ={}
+    if payload .get ("email"):
+        ok ,msg =notify .send_email (
+        to =payload ["email"],
+        subject ="[Arclap CSI] Test alert",
+        body ="This is a test message from Arclap Vision Suite.",
         )
-        out["email"] = {"ok": ok, "msg": msg}
-    if payload.get("webhook"):
-        ok, msg = notify.send_webhook(
-            payload["webhook"],
-            {"test": True, "ts": time.time(), "src": "arclap-csi"},
+        out ["email"]={"ok":ok ,"msg":msg }
+    if payload .get ("webhook"):
+        ok ,msg =notify .send_webhook (
+        payload ["webhook"],
+        {"test":True ,"ts":time .time (),"src":"arclap-csi"},
         )
-        out["webhook"] = {"ok": ok, "msg": msg}
+        out ["webhook"]={"ok":ok ,"msg":msg }
     return out
