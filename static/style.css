@@ -1388,12 +1388,59 @@ input[type="number"].input::-webkit-outer-spin-button {
 .test-controls label.checkbox-row input { width: 16px; height: 16px; }
 .test-result {
   width: 100%;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-2);
   border: 1px solid var(--color-border);
   background: var(--color-surface-alt);
   min-height: 200px;
+  display: block;
 }
+.test-result[hidden] { display: none !important; }
 #test-result-table { margin-top: 10px; }
+
+/* Empty-state placeholder for the result panels — replaces the broken
+   <img> icon that browsers render when src is missing. Audit-fix
+   2026-04-30: clean design-system-compliant empty state. */
+.test-result-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 200px;
+  padding: var(--space-5);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-2);
+  background: var(--color-surface-alt);
+  color: var(--color-text-subtle);
+  text-align: center;
+  font-size: 13px;
+  font-family: var(--font-ui);
+}
+.test-result-empty[hidden] { display: none !important; }
+.test-result-empty svg {
+  color: var(--color-text-subtle);
+  opacity: 0.55;
+}
+.test-result-empty span {
+  max-width: 280px;
+  line-height: 1.45;
+  color: var(--color-text-muted);
+}
+
+/* Playground grid (Models page · Try-it panel) — was undefined, falling
+   back to block layout. 2-column on wide screens, single column on
+   narrow. Audit-fix 2026-04-30. */
+.playground-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 380px) minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+.playground-grid > div { min-width: 0; }
+@media (max-width: 880px) {
+  .playground-grid { grid-template-columns: 1fr; }
+}
 
 /* History */
 /* ════════════════════════════════════════════════════════════════════

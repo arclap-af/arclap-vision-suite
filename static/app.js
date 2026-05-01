@@ -653,7 +653,12 @@ async function runQuickTest() {
     });
     if (!r.ok) throw new Error('inference failed');
     const data = await r.json();
+    // Audit-fix 2026-04-30: swap empty-state placeholder for the real
+    // result image once we have data. Pre-fix, the <img> was always
+    // rendered with no src, showing a broken-image icon.
     $('quick-result-image').src = data.annotated_url + '?t=' + Date.now();
+    $('quick-result-image').hidden = false;
+    if ($('quick-result-empty')) $('quick-result-empty').hidden = true;
     $('quick-result-table').innerHTML = `
       <strong>${data.n_detections} detection${data.n_detections === 1 ? '' : 's'}</strong>
       ${data.detections.length ? '· ' + data.detections.slice(0, 12).map(d =>
@@ -875,6 +880,8 @@ $('btn-test-run').addEventListener('click', async () => {
     }
     const data = await r.json();
     $('test-result-image').src = data.annotated_url + '?t=' + Date.now();
+    $('test-result-image').hidden = false;
+    if ($('test-result-empty')) $('test-result-empty').hidden = true;
     $('test-result-table').innerHTML = `
       <strong>${data.n_detections} detections</strong><br>
       ${data.detections.slice(0, 20).map(d =>
@@ -993,10 +1000,16 @@ if ($('btn-rf-run')) {
         throw new Error(err.detail || `HTTP ${r.status}`);
       }
       const data = await r.json();
+      // Audit-fix 2026-04-30: toggle empty-state placeholder ↔ <img>
+      // depending on whether we got an annotated image back.
       if (data.annotated_url) {
         $('rf-result-image').src = data.annotated_url + '?t=' + Date.now();
+        $('rf-result-image').hidden = false;
+        if ($('rf-result-empty')) $('rf-result-empty').hidden = true;
       } else {
         $('rf-result-image').removeAttribute('src');
+        $('rf-result-image').hidden = true;
+        if ($('rf-result-empty')) $('rf-result-empty').hidden = false;
       }
       $('rf-result-table').innerHTML = `
         <strong>${data.n_detections} detection${data.n_detections === 1 ? '' : 's'}</strong>
