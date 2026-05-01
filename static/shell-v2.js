@@ -1502,19 +1502,59 @@
           const pct = Math.min(100, 100 * projected / ceiling);
           fillEl.style.width = pct.toFixed(1) + '%';
         }
-        // Per-class breakdown — show top 5 best-covered + bottom 5 worst-covered
+        // Per-class breakdown + 2026-04-30 recall warning.
         if (detailEl) {
           const proj = d.per_class_projected || {};
+          const cands = d.per_class_candidates || {};
           const cn = await (await fetch(`/api/picker/taxonomy/${_ppActiveScan}`)).json();
-          const tax = (cn.taxonomy || []).reduce((m, c) => { m[c.id] = c.en || `cls ${c.id}`; return m; }, {});
+          const taxList = cn.taxonomy || [];
+          const tax = taxList.reduce((m, c) => {
+            m[c.id] = c.en || `cls ${c.id}`;
+            return m;
+          }, {});
+          const allClassIds = taxList.map(c => c.id);
+          // Per-class projection entries
           const entries = Object.entries(proj)
-            .map(([cid, n]) => ({ cid, n: n, name: tax[cid] || cid }));
+            .map(([cid, n]) => ({ cid: parseInt(cid), n: n, name: tax[cid] || cid }));
           entries.sort((a, b) => b.n - a.n);
           const top = entries.slice(0, 3).map(e => `${e.name} ${e.n}`).join(' · ');
           const bot = entries.slice(-3).reverse().map(e => `${e.name} ${e.n}`).join(' · ');
+
+          // RECALL WARNING — find classes that fall WAY below per-class
+          // target (less than half) AND classes with ZERO candidates above
+          // the threshold. These are the rare/under-represented classes that
+          // need the operator's attention before they spend hours curating.
+          const target = body.per_class_target || 250;
+          const lowFloor = Math.max(10, Math.floor(target * 0.5));
+          const lowRecall = [];   // < lowFloor candidates above threshold
+          const missing = [];      // 0 candidates above threshold
+          for (const cid of allClassIds) {
+            const n = cands[cid] || 0;
+            const name = tax[cid] || `cls ${cid}`;
+            if (n === 0) {
+              missing.push({ cid, n, name });
+            } else if (n < lowFloor) {
+              lowRecall.push({ cid, n, name });
+            }
+          }
+          let warningHtml = '';
+          if (missing.length || lowRecall.length) {
+            const lowList = lowRecall.slice(0, 5).map(c => `${c.name} (${c.n})`).join(' · ');
+            const moreLow = lowRecall.length > 5 ? ` +${lowRecall.length - 5} more` : '';
+            const missList = missing.slice(0, 5).map(c => c.name).join(' · ');
+            const moreMiss = missing.length > 5 ? ` +${missing.length - 5} more` : '';
+            warningHtml = `
+              <div class="pp-estimate-warning" title="Lower the need-threshold or widen the filter to bring more candidates in for these classes">
+                ${missing.length ? `<div><strong>⚠ ${missing.length} class${missing.length === 1 ? '' : 'es'} missing</strong> (zero candidates above threshold ${(body.need_threshold||0.18).toFixed(2)}): <em>${escapeText(missList)}${moreMiss}</em></div>` : ''}
+                ${lowRecall.length ? `<div><strong>⚠ ${lowRecall.length} class${lowRecall.length === 1 ? '' : 'es'} under target/2 (${lowFloor})</strong>: <em>${escapeText(lowList)}${moreLow}</em></div>` : ''}
+              </div>`;
+          }
+
           detailEl.innerHTML =
+            `<div>` +
             `<span><strong>Best covered:</strong> ${top}</span> &nbsp; ` +
-            `<span><strong>Least covered:</strong> ${bot}</span>`;
+            `<span><strong>Least covered:</strong> ${bot}</span>` +
+            `</div>` + warningHtml;
         }
       } catch(e) {
         if (seq !== _ppEstSeq) return;
@@ -2254,6 +2294,19 @@
         _ppRebuildVisible();
       });
     }
+    // 2026-04-30: round-1 confidence-flag checkboxes
+    if ($('pp-filter-clip-unsure')) {
+      $('pp-filter-clip-unsure').addEventListener('change', (e) => {
+        _ppFilters.clipUnsureOnly = !!e.target.checked;
+        _ppRebuildVisible();
+      });
+    }
+    if ($('pp-filter-v1-missed')) {
+      $('pp-filter-v1-missed').addEventListener('change', (e) => {
+        _ppFilters.v1MissedOnly = !!e.target.checked;
+        _ppRebuildVisible();
+      });
+    }
     // Reset button
     if ($('pp-filter-reset')) {
       $('pp-filter-reset').addEventListener('click', (e) => {
@@ -2397,7 +2450,16 @@
     minDensity: 0,             // bboxes.length >= this
     maxDensity: 999,           // bboxes.length <= this
     minScore: 0.0,             // pick.score >= this
+    // 2026-04-30: round-1 CLIP-confidence filters. Help the operator
+    // find the most-likely-wrong picks BEFORE approving anything.
+    clipUnsureOnly: false,     // show only picks with low top score OR close call
+    v1MissedOnly: false,       // show only picks where scan model detected nothing
   };
+
+  // Tunable thresholds — match the values used in _ppCardHTML so the
+  // chip and the filter agree.
+  const _CLIP_LOW_SCORE_THRESHOLD  = 0.30;  // top-class CLIP score < this = unsure
+  const _CLIP_CLOSE_CALL_THRESHOLD = 0.05;  // |#1 - #2| < this = ambiguous
 
   function _ppResetFilters() {
     _ppFilters.clusters.clear();
@@ -2405,10 +2467,14 @@
     _ppFilters.minDensity = 0;
     _ppFilters.maxDensity = 999;
     _ppFilters.minScore = 0.0;
+    _ppFilters.clipUnsureOnly = false;
+    _ppFilters.v1MissedOnly = false;
     // Reflect into UI controls (if mounted)
     const minD = $('pp-filter-density-min'); if (minD) { minD.value = '0'; const v = $('pp-filter-density-min-v'); if (v) v.textContent = '0'; }
     const maxD = $('pp-filter-density-max'); if (maxD) { maxD.value = '30'; const v = $('pp-filter-density-max-v'); if (v) v.textContent = '30+'; }
     const minS = $('pp-filter-min-score'); if (minS) { minS.value = '0'; const v = $('pp-filter-min-score-v'); if (v) v.textContent = '0.00'; }
+    const cu = $('pp-filter-clip-unsure'); if (cu) cu.checked = false;
+    const vm = $('pp-filter-v1-missed');   if (vm) vm.checked = false;
   }
 
   function _ppActiveFilterCount() {
@@ -2417,6 +2483,8 @@
     if (_ppFilters.reasons.size) n++;
     if (_ppFilters.minDensity > 0 || _ppFilters.maxDensity < 999) n++;
     if (_ppFilters.minScore > 0) n++;
+    if (_ppFilters.clipUnsureOnly) n++;
+    if (_ppFilters.v1MissedOnly) n++;
     return n;
   }
 
@@ -2434,6 +2502,16 @@
       if (density < _ppFilters.minDensity) return false;
       if (density > _ppFilters.maxDensity) return false;
       if ((p.score || 0) < _ppFilters.minScore) return false;
+      // CLIP-unsure filter — surfaces picks where CLIP is uncertain so
+      // the operator can review error-prone ones first. Round-1 critical.
+      if (_ppFilters.clipUnsureOnly) {
+        const isCloseCall = (p.clip_close_call || 1.0) < _CLIP_CLOSE_CALL_THRESHOLD;
+        const isLowConf   = (p.clip_top_score  || 0.0) < _CLIP_LOW_SCORE_THRESHOLD;
+        if (!(isCloseCall || isLowConf)) return false;
+      }
+      // V1-missed filter — picks where the scan model detected nothing.
+      // These are the rare/untrained classes that need extra scrutiny.
+      if (_ppFilters.v1MissedOnly && p.v1_detected) return false;
       return true;
     });
   }
@@ -2703,6 +2781,28 @@
     const detTip = (p.top_detections || []).length
       ? p.top_detections.map(d => `${d.class_name || ('cls ' + d.class_id)} ${(d.max_conf||0).toFixed(2)}`).join(' · ')
       : 'no scan detections';
+    // 2026-04-30: top-3 CLIP classes — surfaces what ELSE the picker
+    // thought this frame might be. Critical for round 1 (no V2 model)
+    // because CLIP zero-shot can confuse e.g. Tower crane / Mobile crane.
+    const tops = p.top_classes || [];
+    const topClassesChips = tops.length ? tops.map((t, idx) => {
+      const isPick = t.class_id === p.class_id;
+      const titleParts = [t.class_name];
+      if (t.class_name_de) titleParts.push(t.class_name_de);
+      titleParts.push(`CLIP score ${(t.score||0).toFixed(3)}`);
+      return `<span class="pp-clip-class ${isPick ? 'pick' : ''} ${idx === 0 ? 'top' : ''}"
+        title="${escapeAttr(titleParts.join(' · '))}">
+        ${escapeText(t.class_name)} <span class="pp-clip-score">${(t.score||0).toFixed(2)}</span>
+      </span>`;
+    }).join('') : '';
+    // CLIP-uncertainty signal — close-call (#1 - #2 < 0.05) OR low top score
+    const isCloseCall = (p.clip_close_call || 1.0) < 0.05;
+    const isLowConf   = (p.clip_top_score  || 0.0) < 0.30;
+    const clipFlag = (isCloseCall || isLowConf) ?
+      `<span class="pp-clip-flag" title="CLIP unsure: ${isCloseCall ? 'close call between top classes' : 'low top score'} — review carefully">⚠ unsure</span>` : '';
+    // V1 detection flag — was anything detected by the scan model?
+    const v1Flag = !p.v1_detected ?
+      `<span class="pp-v1-missed" title="Scan model (CSI_V1) did not detect anything in this frame — picker is relying on CLIP alone">V1 missed</span>` : '';
     // Density badge — class-agnostic box count. Colour-graded so the
     // operator can scan the grid and instantly find dense / busy frames.
     const density = (p.bboxes || []).length;
@@ -2712,7 +2812,11 @@
       : 'busy';
     const densityBadge = `<span class="pp-card-density pp-density-${densityClass}"
       title="Object density: ${density} class-agnostic box${density === 1 ? '' : 'es'} (Stage 3) · ${p.top_detections ? p.top_detections.length : 0} YOLO detection${(p.top_detections ? p.top_detections.length : 0) === 1 ? '' : 's'}">★${density}</span>`;
-    return `<div class="pp-card ${p.status||'pending'}" data-idx="${i}" data-path="${safePath}" data-classid="${p.class_id}" tabindex="0">
+    return `<div class="pp-card ${p.status||'pending'} ${isCloseCall || isLowConf ? 'clip-unsure' : ''} ${!p.v1_detected ? 'v1-missed' : ''}"
+      data-idx="${i}" data-path="${safePath}" data-classid="${p.class_id}" tabindex="0"
+      data-clip-top="${(p.clip_top_score || 0).toFixed(3)}"
+      data-clip-gap="${(p.clip_close_call || 1).toFixed(3)}"
+      data-v1-detected="${p.v1_detected ? '1' : '0'}">
       <input type="checkbox" class="pp-card-select" aria-label="Select pick" />
       <button class="pp-card-zoom" data-act="zoom" title="Open lightbox (Enter)" type="button">⤢</button>
       ${densityBadge}
@@ -2723,9 +2827,14 @@
         <b title="Suggested class">${escapeText(clsName)}</b>
         <span class="pp-card-conf">${(p.score||0).toFixed(2)}</span>
       </div>
+      <div class="pp-clip-classes" title="Top-3 CLIP classes for this frame — useful for round 1 when no V2 model exists">
+        ${topClassesChips}
+      </div>
       <div class="pp-card-tags">
         ${clusterPill}
         ${reasonChip}
+        ${clipFlag}
+        ${v1Flag}
         <span class="pp-detbadge" title="${escapeAttr(detTip)}">det ${p.top_detections ? p.top_detections.length : 0}</span>
       </div>
       <div class="pp-card-actions">

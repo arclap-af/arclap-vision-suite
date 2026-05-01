@@ -2991,3 +2991,138 @@ body.lb-open { overflow: hidden; }
                        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85),
                                    0 0 8px -2px rgba(229, 33, 60, 0.55); }
 
+/* ════════════════════════════════════════════════════════════════════
+   2026-04-30: Round-1 review aids — top-3 CLIP classes per card,
+   CLIP-unsure flag, V1-missed flag, recall warning in estimate panel.
+   These help the operator triage when no V2 model exists yet.
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Top-3 CLIP classes shown on each pick card */
+.pp-clip-classes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 4px var(--space-2) 0;
+  min-height: 22px;
+}
+.pp-clip-class {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  background: var(--color-surface-alt);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  cursor: help;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.pp-clip-class.top {
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: 600;
+  border-color: var(--color-border);
+}
+.pp-clip-class.pick {
+  background: var(--color-brand-soft);
+  color: var(--color-brand);
+  border-color: var(--color-brand-border);
+  font-weight: 700;
+}
+.pp-clip-class .pp-clip-score {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  opacity: 0.75;
+}
+
+/* CLIP-unsure flag chip */
+.pp-clip-flag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: var(--radius-pill);
+  background: var(--arc-amber-100);
+  color: var(--arc-amber-700);
+  border: 1px solid var(--arc-amber-300, var(--arc-amber-100));
+  cursor: help;
+}
+
+/* V1-missed flag chip */
+.pp-v1-missed {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: var(--radius-pill);
+  background: var(--arc-blue-100);
+  color: var(--arc-blue-700);
+  border: 1px solid var(--arc-blue-100);
+  cursor: help;
+}
+
+/* Card-level outline for unsure / V1-missed picks — subtle, only if
+   one of the two flags is set. Operator can scan the grid and spot
+   the picks needing extra attention without filtering. */
+.pp-card.clip-unsure { outline: 2px solid var(--arc-amber-300, #FBBF24); outline-offset: -2px; }
+.pp-card.v1-missed   { outline: 2px solid var(--arc-blue-300, #93C5FD); outline-offset: -2px; }
+.pp-card.clip-unsure.v1-missed {
+  outline-color: var(--color-brand);  /* both flags — needs urgent review */
+  outline-width: 2px;
+}
+
+/* Round-1 confidence-flag filter card — slightly distinct so it stands
+   apart from the data-driven filters above. */
+.pp-filter-round1 {
+  background: linear-gradient(135deg,
+    var(--color-surface-alt) 0%,
+    color-mix(in oklab, var(--arc-amber-100) 40%, var(--color-surface-alt)) 100%);
+  border-color: var(--arc-amber-100);
+}
+.pp-filter-round1 .checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.pp-filter-round1 .checkbox-row span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pp-filter-round1 .checkbox-row strong {
+  font-family: var(--font-brand);
+  font-weight: 600;
+  font-size: 13px;
+}
+.pp-filter-round1 .checkbox-row small {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Recall warning in the estimate panel — surfaces under-represented
+   classes BEFORE the operator clicks Run picker. */
+.pp-estimate-warning {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--arc-amber-100);
+  border: 1px solid var(--arc-amber-300, var(--arc-amber-100));
+  border-left: 3px solid var(--arc-amber-500);
+  border-radius: var(--radius-1);
+  font-size: 12px;
+  color: var(--arc-amber-700);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pp-estimate-warning strong { color: var(--arc-amber-700); font-weight: 700; }
+.pp-estimate-warning em {
+  font-style: normal;
+  color: var(--color-text-strong);
+}
+

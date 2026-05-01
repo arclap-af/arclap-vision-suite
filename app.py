@@ -3604,7 +3604,7 @@ def picker_run_picks(job_id: str, run_id: str, status: str = "pending",
             enrich[p]["cluster_id"] = cl
             enrich[p]["cluster_label"] = lbl
 
-        # Top-3 detections per path (from main scan model)
+        # Top-3 detections per path (from main scan model — typically CSI_V1)
         for p, cid, cname, cnt, mc in conn.execute(
             f"SELECT path, class_id, COALESCE(class_name,''), count, max_conf "
             f"FROM detections WHERE path IN ({ph}) "
@@ -3614,6 +3614,42 @@ def picker_run_picks(job_id: str, run_id: str, status: str = "pending",
             if len(d) < 3:
                 d.append({"class_id": cid, "class_name": cname,
                           "count": cnt, "max_conf": float(mc or 0.0)})
+
+        # 2026-04-30: Top-3 CLIP class-need scores per path. Surfaces
+        # what ELSE the picker thought this frame might be — critical for
+        # spotting CLIP confusion in round 1 (no V2 model yet).
+        # Example: a card picked as "Tower crane 0.62" but with
+        # alternates "Mobile crane 0.58" + "Excavator 0.51" tells the
+        # operator CLIP is unsure → review before approving.
+        try:
+            # Pull class names from the picker_taxonomy table for nice labels
+            taxonomy_names = {}
+            try:
+                for cid, en, de in conn.execute(
+                    "SELECT id, en, de FROM picker_taxonomy"
+                ):
+                    taxonomy_names[int(cid)] = {
+                        "en": en or f"class {cid}",
+                        "de": de or "",
+                    }
+            except _sqlite3.OperationalError:
+                pass  # taxonomy table missing — fall back to id-only labels
+            # Single batched query: all class scores for all picked paths
+            for p, cid, sc in conn.execute(
+                f"SELECT path, class_id, score FROM image_class_need "
+                f"WHERE path IN ({ph}) ORDER BY path, score DESC", paths
+            ):
+                d = enrich[p].setdefault("top_classes", [])
+                if len(d) < 3:
+                    name_meta = taxonomy_names.get(int(cid), {})
+                    d.append({
+                        "class_id": int(cid),
+                        "class_name": name_meta.get("en") or f"class {cid}",
+                        "class_name_de": name_meta.get("de") or "",
+                        "score": float(sc or 0.0),
+                    })
+        except _sqlite3.OperationalError:
+            pass  # image_class_need missing — older scan, skip enrichment
 
         # Class-agnostic boxes (only when ?bboxes=true)
         if bboxes:
@@ -3635,6 +3671,27 @@ def picker_run_picks(job_id: str, run_id: str, status: str = "pending",
     out = []
     for r in rows:
         e = enrich.get(r[0], {})
+        top_classes = e.get("top_classes", [])
+        # Derived: how uncertain is CLIP about this pick?
+        # - clip_top_score: best class's CLIP score (0..1)
+        # - clip_close_call: gap between #1 and #2 — small gap = ambiguous
+        # - clip_low_confidence: top-class score below a robust floor
+        # Used by the curator's "CLIP unsure" filter to surface error-prone
+        # picks first (round 1, no V2 model — CLIP confusion is common).
+        clip_top_score = float(top_classes[0]["score"]) if top_classes else 0.0
+        clip_close_call = (
+            float(top_classes[0]["score"] - top_classes[1]["score"])
+            if len(top_classes) >= 2 else 1.0
+        )
+        # V1 detection signal — did the scan model find ANYTHING?
+        # When False, the picker is relying on CLIP alone (no model
+        # uncertainty signal). These are the "V1 missed" picks worth
+        # extra scrutiny on round 1.
+        v1_detected = len(e.get("top_detections", [])) > 0
+        v1_max_conf = (
+            max((d.get("max_conf", 0) for d in e.get("top_detections", [])),
+                default=0.0)
+        )
         out.append({
             "path": r[0], "class_id": r[1], "score": r[2],
             "reason": r[3], "status": r[4],
@@ -3643,6 +3700,11 @@ def picker_run_picks(job_id: str, run_id: str, status: str = "pending",
             "cluster_id": e.get("cluster_id"),
             "cluster_label": e.get("cluster_label"),
             "top_detections": e.get("top_detections", []),
+            "top_classes": top_classes,         # NEW: top-3 CLIP classes
+            "clip_top_score": clip_top_score,    # NEW: highest CLIP score
+            "clip_close_call": clip_close_call,  # NEW: #1 - #2 gap
+            "v1_detected": v1_detected,           # NEW: did scan model see anything?
+            "v1_max_conf": v1_max_conf,           # NEW: best V1 detection conf
             "bboxes": e.get("bboxes", []),
         })
     return {"picks": out, "sort": sort, "count": len(out)}

@@ -12,7 +12,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <link rel="stylesheet" href="/static/style.css" />
-<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-k-runner" />
+<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-l-round1" />
 </head>
 <body>
 
@@ -2022,6 +2022,31 @@
               </label>
             </div>
 
+            <!-- 2026-04-30: round-1 review filters. Surface picks where
+                 the picker's confidence is shaky, so the operator can
+                 review them BEFORE bulk-approving the rest. -->
+            <div class="pp-filter-card pp-filter-round1">
+              <header class="pp-filter-card-head">
+                <span class="pp-filter-eyebrow">Review priority</span>
+                <h5 class="pp-filter-title">Round-1 confidence flags</h5>
+                <p class="muted small pp-filter-help">When you don't have a trained V2 model yet, these filters surface the most error-prone picks first. Review these manually, then bulk-approve the rest.</p>
+              </header>
+              <label class="checkbox-row">
+                <input type="checkbox" id="pp-filter-clip-unsure" />
+                <span>
+                  <strong>CLIP unsure</strong>
+                  <small class="muted">Show only picks where CLIP's top score < 0.30 OR the gap to the 2nd-best class is < 0.05 (close call between two classes)</small>
+                </span>
+              </label>
+              <label class="checkbox-row">
+                <input type="checkbox" id="pp-filter-v1-missed" />
+                <span>
+                  <strong>V1 missed</strong>
+                  <small class="muted">Show only picks where the scan model (CSI_V1) didn't detect anything — these are rare/untrained classes the picker found via CLIP alone</small>
+                </span>
+              </label>
+            </div>
+
           </div>
         </details>
 
@@ -3880,7 +3905,7 @@ _data/util_report_schedules.json       ← weekly PDF schedules</pre>
   </div>
 </div>
 
-<script src="/static/app.js?v=2026-04-30-k-runner"></script>
-<script src="/static/shell-v2.js?v=2026-04-30-k-runner"></script>
+<script src="/static/app.js?v=2026-04-30-l-round1"></script>
+<script src="/static/shell-v2.js?v=2026-04-30-l-round1"></script>
 </body>
 </html>
