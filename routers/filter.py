@@ -377,12 +377,14 @@ def filter_export_preview(job_id: str, rule: FilterRule):
     j, db_path = _app._filter_db(job_id)
     enrich_projects(db_path, source_root=(j.input_ref if j else None))
 
-    sql, params = _app._build_match_sql(rule)
+    sql_from, params = _app._build_match_sql(rule)
     conn = _sqlite3.connect(db_path)
     try:
-        paths = [r[0] for r in conn.execute(sql, params)]
+        paths = [r[0] for r in conn.execute(f"SELECT i.path {sql_from}", params)]
     finally:
         conn.close()
+    # Honour the hour/dow filter (Step 2 of the wizard) the same way /export does
+    paths = _app._hour_dow_filter(rule, paths)
     if not paths:
         return {
             "n_projects": 0, "n_files_total": 0, "n_with_no_timestamp": 0,
