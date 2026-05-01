@@ -12,7 +12,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <link rel="stylesheet" href="/static/style.css" />
-<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-l-round1" />
+<link rel="stylesheet" href="/static/shell-v2.css?v=2026-04-30-m-bboxctl" />
 </head>
 <body>
 
@@ -1895,9 +1895,17 @@
             <option value="class">Sort: class · path</option>
             <option value="path">Sort: file path</option>
           </select>
-          <label class="checkbox-row" title="Draw class-agnostic detection boxes on each thumbnail (Tier 1 #1)">
-            <input id="pp-show-bboxes" type="checkbox" checked/> Show bboxes
-          </label>
+          <select id="pp-bboxes-count" class="input" style="width:140px"
+                  title="How many class-agnostic bounding boxes to draw on each thumbnail. More = more visual context but more clutter on busy frames. Persists across sessions.">
+            <option value="0">Bboxes: Off</option>
+            <option value="1">Bboxes: Top 1</option>
+            <option value="3" selected>Bboxes: Top 3</option>
+            <option value="6">Bboxes: Top 6</option>
+            <option value="8">Bboxes: All (8)</option>
+          </select>
+          <!-- Hidden legacy checkbox kept for backend compatibility — always
+               sends bboxes=true when the dropdown is non-zero. -->
+          <input id="pp-show-bboxes" type="checkbox" checked hidden/>
           <label class="checkbox-row" title="Preview face-blur on the thumbnails so you can verify export anonymisation (Tier 3 #9)">
             <input id="pp-preview-blur" type="checkbox"/> Preview face blur
           </label>
@@ -3905,7 +3913,7 @@ _data/util_report_schedules.json       ← weekly PDF schedules</pre>
   </div>
 </div>
 
-<script src="/static/app.js?v=2026-04-30-l-round1"></script>
-<script src="/static/shell-v2.js?v=2026-04-30-l-round1"></script>
+<script src="/static/app.js?v=2026-04-30-m-bboxctl"></script>
+<script src="/static/shell-v2.js?v=2026-04-30-m-bboxctl"></script>
 </body>
 </html>

@@ -2211,9 +2211,28 @@
       }
     });
   }
+  // Legacy hidden checkbox — kept so server still gets bboxes=true and
+  // the data is in the picks payload. Visible control is the dropdown
+  // below.
   if ($('pp-show-bboxes') && !$('pp-show-bboxes').dataset.wired) {
     $('pp-show-bboxes').dataset.wired = '1';
     $('pp-show-bboxes').addEventListener('change', loadCuratorPicks);
+  }
+  // 2026-04-30: bbox-count dropdown — Off / Top 1 / Top 3 / Top 6 / All.
+  // Default Top 3 — clean for sparse scenes, still informative for busy
+  // ones. Persists to localStorage. Re-renders without a server roundtrip
+  // because all bbox data is already in the loaded picks.
+  if ($('pp-bboxes-count') && !$('pp-bboxes-count').dataset.wired) {
+    $('pp-bboxes-count').dataset.wired = '1';
+    // Hydrate from localStorage on first wire
+    const saved = localStorage.getItem('pp.bboxes.count');
+    if (saved !== null) $('pp-bboxes-count').value = saved;
+    $('pp-bboxes-count').addEventListener('change', () => {
+      const v = $('pp-bboxes-count').value;
+      localStorage.setItem('pp.bboxes.count', v);
+      // Re-render the visible cards (no fetch needed, bboxes already in cache)
+      _ppRebuildVisible();
+    });
   }
   // Limit dropdown — auto-reload on change so the operator doesn't have
   // to click "Load picks" twice. Persisted to localStorage in
@@ -2731,11 +2750,29 @@
   // Build the bbox overlay markup. `bboxes` are pixel-space (x1,y1,x2,y2)
   // from image_classagnostic. We render absolutely-positioned divs and
   // scale them once the <img> reports its natural dimensions via onload.
+  // 2026-04-30: read bbox count + objectness threshold from the dropdown.
+  // 0 = off → no overlay drawn at all.
+  function _ppMaxBboxes() {
+    const sel = $('pp-bboxes-count');
+    if (!sel) return 6;  // fallback when dropdown isn't mounted
+    const v = parseInt(sel.value);
+    return Number.isFinite(v) ? v : 3;
+  }
+
   function _ppBboxOverlay(card, bboxes) {
-    if (!bboxes || !bboxes.length) return;
-    const img = card.querySelector('img');
+    const maxN = _ppMaxBboxes();
+    // Always remove any previous layer first — needed when re-rendering
+    // due to the count dropdown changing.
     const wrap = card.querySelector('.pp-card-thumb');
+    if (wrap) {
+      const old = wrap.querySelector('.pp-bbox-layer');
+      if (old) old.remove();
+    }
+    if (maxN === 0 || !bboxes || !bboxes.length) return;
+    const img = card.querySelector('img');
     if (!img || !wrap) return;
+    // Sort by objectness DESC so "Top N" really is the highest-confidence N
+    const sorted = bboxes.slice().sort((a, b) => (b.obj || 0) - (a.obj || 0));
     const draw = () => {
       const nw = img.naturalWidth || 1;
       const nh = img.naturalHeight || 1;
@@ -2743,21 +2780,29 @@
       const rh = img.clientHeight;
       if (!nw || !nh || !rw || !rh) return;
       const sx = rw / nw, sy = rh / nh;
-      const old = wrap.querySelector('.pp-bbox-layer');
-      if (old) old.remove();
+      const oldLayer = wrap.querySelector('.pp-bbox-layer');
+      if (oldLayer) oldLayer.remove();
       const layer = document.createElement('div');
       layer.className = 'pp-bbox-layer';
-      bboxes.slice(0, 6).forEach(b => {
+      sorted.slice(0, maxN).forEach((b, i) => {
         const box = document.createElement('div');
-        box.className = 'pp-bbox';
+        // Color-grade by objectness — high (>0.7) = full red, mid = amber,
+        // low (<0.4) = thin grey. Helps the operator focus on confident
+        // boxes without losing the low-conf context.
+        const obj = b.obj || 0;
+        const tier = obj > 0.7 ? 'high' : obj > 0.4 ? 'mid' : 'low';
+        box.className = `pp-bbox pp-bbox-${tier}`;
         box.style.left   = (b.x1 * sx) + 'px';
         box.style.top    = (b.y1 * sy) + 'px';
         box.style.width  = ((b.x2 - b.x1) * sx) + 'px';
         box.style.height = ((b.y2 - b.y1) * sy) + 'px';
-        const lbl = document.createElement('span');
-        lbl.className = 'pp-bbox-label';
-        lbl.textContent = (b.obj || 0).toFixed(2);
-        box.appendChild(lbl);
+        // Only show the objectness label on the top-1 box — reduces clutter
+        if (i === 0) {
+          const lbl = document.createElement('span');
+          lbl.className = 'pp-bbox-label';
+          lbl.textContent = obj.toFixed(2);
+          box.appendChild(lbl);
+        }
         layer.appendChild(box);
       });
       wrap.appendChild(layer);

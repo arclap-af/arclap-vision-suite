@@ -154,12 +154,25 @@ check("Round-1 confidence flags filter card heading",
       "Round-1 confidence flags" in html)
 
 # ─── 9. Cache keys bumped ─────────────────────────────────────────────
-print("\n9. Cache keys bumped to round1 marker")
-check("shell-v2.css cache bumped",
-      "v=2026-04-30-l-round1" in html and
-      "shell-v2.css?v=2026-04-30-l-round1" in html)
-check("app.js cache bumped",
-      "app.js?v=2026-04-30-l-round1" in html)
+print("\n9. Cache keys bumped (any v=2026-04-30-* marker is fine)")
+import re as _re
+check("shell-v2.css cache key present",
+      bool(_re.search(r"shell-v2\.css\?v=2026-04-30-[a-z0-9-]+", html)))
+check("app.js cache key present",
+      bool(_re.search(r"app\.js\?v=2026-04-30-[a-z0-9-]+", html)))
+
+# ─── 10. Bbox count dropdown (2026-04-30 m-bboxctl) ──────────────────
+print("\n10. Bbox-count dropdown replaces show-bboxes checkbox")
+check("pp-bboxes-count select present", 'id="pp-bboxes-count"' in html)
+check("dropdown has 5 options (Off/1/3/6/8)",
+      all(f'value="{v}"' in html for v in (0, 1, 3, 6, 8)))
+check("default is Top 3 (selected)",
+      'value="3" selected' in html)
+check("legacy pp-show-bboxes still hidden for backend compat",
+      'id="pp-show-bboxes"' in html and 'hidden' in html.split('id="pp-show-bboxes"')[1][:60])
+check("_ppMaxBboxes helper defined", "function _ppMaxBboxes" in js)
+check("CSS has color-graded bbox classes (.pp-bbox-high/mid/low)",
+      ".pp-bbox-high" in css and ".pp-bbox-mid" in css and ".pp-bbox-low" in css)
 
 # ─── Summary ──────────────────────────────────────────────────────────
 print()
