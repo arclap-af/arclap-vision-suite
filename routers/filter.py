@@ -184,6 +184,26 @@ class LabelsImportRequest(BaseModel):
     inline: dict[str, str] | None = None
     path: str | None = None
 
+
+class VideoRenderRequest(FilterRule):
+    """Full filter rule + video settings. Renders matching frames as MP4."""
+    target_name: str | None = None
+    fps: int = Field(30, ge=1, le=240)
+    width: int = Field(0, ge=0, le=8192)
+    height: int = Field(0, ge=0, le=8192)
+    crf: int = Field(20, ge=14, le=32)
+    crop: str = Field("none", pattern="^(none|16x9|9x16|1x1)$")
+    burn_timestamp: bool = False
+    dedupe_threshold: float = 0.0
+
+
+class FilterExportRequest(FilterRule):
+    """Full rule + materialisation options. Inherits every FilterRule field."""
+    mode: str = Field("symlink", pattern="^(symlink|copy|hardlink|list)$")
+    target_name: str | None = None
+    annotated: bool = False
+
+
 @router .post ("/api/filter/scan")
 def filter_scan (req :FilterScanRequest ):
     import app as _app

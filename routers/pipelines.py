@@ -67,4 +67,4 @@ router = APIRouter(tags=["pipelines"])
 @router .get ("/api/pipelines")
 def list_pipelines ():
     import app as _app
-    return pipeline_registry .list_modes ()
+    return _app .pipeline_registry .list_modes ()

@@ -72,7 +72,7 @@ def system_info ():
     "gpu_name":_app .GPU_NAME ,
     "queue_pending":_app .queue .pending (),
     "current_job":_app .runner .is_running (),
-    "pipelines":pipeline_registry .list_modes (),
+    "pipelines":_app .pipeline_registry .list_modes (),
     }
     if _app .GPU_AVAILABLE :
         try :
