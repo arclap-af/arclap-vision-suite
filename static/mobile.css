@@ -1,0 +1,166 @@
+/* Arclap Vision Suite — mobile / tablet polish.
+ *
+ * P2-mobile from the 2026-05-01 max-power swarm run. Field operators on
+ * Hikvision-paired tablets had three pain points the design audit flagged:
+ *   1. touch targets smaller than the WCAG 2.5.5 minimum (44 × 44 px)
+ *   2. wizard panels using horizontal layout that scrolls off-screen
+ *   3. no large-finger affordances on the Curator pick grid
+ *
+ * This file is loaded after style.css and shell-v2.css so its rules win
+ * via cascade. It only fires below 1024 px so desktop is untouched.
+ */
+
+@media (max-width: 1024px) {
+
+  /* ── 1. Touch targets ───────────────────────────────────────────── */
+  /* WCAG 2.5.5 + Apple HIG + Material both want >= 44 × 44 px.       */
+  button,
+  .btn,
+  .pill,
+  .pp-pill,
+  .filter-pill,
+  input[type="checkbox"] + label,
+  input[type="radio"] + label,
+  .tab,
+  .nav-link {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 10px 14px;
+  }
+
+  /* Increase hit-area for thin UI dots / icons without changing visuals */
+  .icon-btn,
+  .close-btn {
+    position: relative;
+  }
+  .icon-btn::before,
+  .close-btn::before {
+    content: "";
+    position: absolute;
+    inset: -8px;   /* expands hit zone 8 px on every side */
+  }
+
+  /* ── 2. Stack the wizard / curator panels vertically ───────────── */
+  .filter-wizard,
+  .picker-shell,
+  .curator-shell,
+  .pp-shell {
+    grid-template-columns: 1fr !important;
+    gap: 12px;
+  }
+
+  /* The two-column "form on left, preview on right" layout collapses */
+  .two-col,
+  .form-and-preview,
+  .playground-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Side panels become full-width drawers stacked top-to-bottom */
+  .side-panel,
+  .pp-side-panel {
+    position: static;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  /* ── 3. Curator grid — bigger thumbnails, larger gaps ───────────── */
+  .pp-grid,
+  .pick-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)) !important;
+    gap: 10px;
+  }
+
+  .pp-card,
+  .pick-card {
+    /* Tap-to-select needs more visible affordance */
+    border-width: 2px;
+  }
+  .pp-card:active,
+  .pick-card:active {
+    transform: scale(0.97);
+    transition: transform 60ms ease-out;
+  }
+
+  /* ── 4. Form controls ───────────────────────────────────────────── */
+  input[type="text"],
+  input[type="number"],
+  input[type="search"],
+  textarea,
+  select {
+    font-size: 16px;        /* prevents iOS zoom on focus */
+    min-height: 44px;
+    padding: 8px 12px;
+  }
+
+  /* Range sliders: thicker track + bigger thumb */
+  input[type="range"] {
+    height: 28px;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    width: 24px;
+    height: 24px;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 24px;
+    height: 24px;
+  }
+
+  /* ── 5. Topbar — collapse logo+title at narrow widths ───────────── */
+  .topbar-title,
+  .app-subtitle {
+    display: none;
+  }
+  .topbar {
+    padding: 8px 12px;
+  }
+
+  /* ── 6. Floating action affordance for primary CTA ──────────────── */
+  .primary-cta-mobile {
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
+    z-index: 50;
+    border-radius: 28px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+  }
+}
+
+/* Phone-only (< 640 px) — stack everything single-column, hide secondary */
+@media (max-width: 640px) {
+  .secondary,
+  .desktop-only,
+  .col-aux {
+    display: none !important;
+  }
+
+  .pp-grid,
+  .pick-grid {
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)) !important;
+  }
+
+  /* Modals/dialogs go fullscreen on phone */
+  .modal,
+  .dialog,
+  .pp-modal {
+    width: 100vw;
+    height: 100vh;
+    max-width: 100vw;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+}
+
+/* Respect prefers-reduced-motion across all responsive transforms */
+@media (prefers-reduced-motion: reduce) {
+  .pp-card,
+  .pick-card,
+  button,
+  .btn {
+    transition: none !important;
+  }
+  .pp-card:active,
+  .pick-card:active {
+    transform: none !important;
+  }
+}
