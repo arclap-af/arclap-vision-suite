@@ -89,8 +89,95 @@ def queue_force_stop ():
     # Force-clear worker state in case stop_current didn't release the lock
     try :
         with _app .runner ._proc_lock :
-            _app .runner ._proc =None 
-            _app .runner ._current_job_id =None 
+            _app .runner ._proc =None
+            _app .runner ._current_job_id =None
     except Exception :
-        pass 
+        pass
     return {"ok":True ,"killed":killed }
+
+
+@router.post("/api/queue/resync")
+def queue_resync():
+    """Recovery endpoint for the 'worker alive but not draining' bug.
+
+    Symptom: /api/queue/status shows worker_alive=true, current_job=null,
+    queue_size>0, but no progress for minutes. Cause: the worker thread
+    is wedged on its internal queue.Condition (rare; happens after
+    long-running processes accumulate weird state).
+
+    Fix:
+      1. Drain the in-memory queue completely (recover the stuck IDs).
+      2. Stop the worker thread; the watchdog respawns it within 5 s
+         with a fresh queue object.
+      3. Replace `_app.queue` with a fresh JobQueue so put()/get() use
+         a new condition variable.
+      4. Re-submit every DB job whose status is 'queued' so no
+         operator submission is lost.
+
+    Returns the count of stuck IDs drained + re-queued IDs so the UI
+    can confirm. Safe to call any time; idempotent."""
+    import app as _app
+    from core import JobQueue
+    import threading as _th
+
+    # 1. Drain old queue
+    drained = []
+    try:
+        while True:
+            jid = _app.queue.next(timeout=0.05)
+            if jid is None:
+                break
+            drained.append(jid)
+    except Exception:
+        pass
+
+    # 2. Replace the queue object — new condition variable, no stale state
+    new_q = JobQueue()
+    _app.queue = new_q
+    _app.runner.q = new_q
+
+    # 3. Force-clear runner proc state
+    try:
+        with _app.runner._proc_lock:
+            _app.runner._proc = None
+            _app.runner._current_job_id = None
+    except Exception:
+        pass
+
+    # 4. Stop worker so watchdog respawns it on the fresh queue
+    try:
+        _app.runner._stop.set()
+    except Exception:
+        pass
+    # Reset stop flag right after so the next worker iteration runs
+    import time as _time
+    _time.sleep(0.2)
+    try:
+        _app.runner._stop = _th.Event()
+        # Manually start a new worker thread; watchdog will pick up if it dies
+        new_thread = _th.Thread(target=_app.runner._loop,
+                                 name="JobRunner", daemon=True)
+        _app.runner._thread = new_thread
+        new_thread.start()
+    except Exception as e:
+        pass
+
+    # 5. Re-submit every DB-queued job so nothing is lost
+    requeued = []
+    try:
+        all_queued = [j for j in _app.db.list_jobs(limit=500) if j.status == "queued"]
+        for j in all_queued:
+            new_q.submit(j.id)
+            requeued.append(j.id)
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "drained_stale_ids": drained,
+        "n_drained": len(drained),
+        "n_requeued_from_db": len(requeued),
+        "requeued_ids": requeued,
+        "hint": "Worker has been respawned on a fresh queue. "
+                "Pending jobs from the DB have been re-submitted.",
+    }

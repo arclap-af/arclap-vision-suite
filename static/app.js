@@ -3544,6 +3544,61 @@ if ($('btn-review-projects')) {
   });
 }
 
+// ─── Stuck-queue auto-recovery ────────────────────────────────────
+// Symptom: a job sits in /api/queue/status with worker_alive=true,
+// current_job=null, queue_size>0 but no progress. This happens rarely
+// after the worker thread's internal condition gets wedged.
+// We poll /api/queue/status every 30 s while a scan is queued; if we
+// detect the wedged state for > 60 s, we offer a one-click recovery.
+let _stuckQueueSeenAt = 0;
+let _stuckQueueRecoveryShown = false;
+async function checkQueueHealth() {
+  try {
+    const r = await fetch('/api/queue/status');
+    if (!r.ok) return;
+    const d = await r.json();
+    const isWedged = d.worker_alive && !d.current_job && d.queue_size > 0;
+    if (isWedged) {
+      if (!_stuckQueueSeenAt) _stuckQueueSeenAt = Date.now();
+      const stuckSec = (Date.now() - _stuckQueueSeenAt) / 1000;
+      if (stuckSec > 60 && !_stuckQueueRecoveryShown) {
+        _stuckQueueRecoveryShown = true;
+        if (confirm(
+          `The job queue appears wedged — ${d.queue_size} job(s) sitting ` +
+          `for over ${Math.round(stuckSec)}s with no progress.\n\n` +
+          `Click OK to auto-recover (drains stale state, respawns worker, ` +
+          `re-queues pending jobs). Cancel to ignore.`
+        )) {
+          try {
+            const rr = await fetch('/api/queue/resync', { method: 'POST' });
+            if (rr.ok) {
+              const d2 = await rr.json();
+              toast(
+                `Queue resynced. Drained ${d2.n_drained}, re-queued ${d2.n_requeued_from_db}.`,
+                'success'
+              );
+              _stuckQueueSeenAt = 0;
+              _stuckQueueRecoveryShown = false;
+            } else if (rr.status === 404) {
+              toast(
+                `Recovery endpoint not in this build. Restart the suite ` +
+                `(POST /api/system/restart) to enable it.`,
+                'warning'
+              );
+            }
+          } catch (e) {
+            toast('Recovery failed: ' + e.message, 'error');
+          }
+        }
+      }
+    } else {
+      _stuckQueueSeenAt = 0;
+      _stuckQueueRecoveryShown = false;
+    }
+  } catch {}
+}
+setInterval(checkQueueHealth, 30000);
+
 // ─── Multi-project: post-scan-select review hint ──────────────────
 // When a scan is freshly selected, surface a one-time toast suggesting
 // the operator review what was detected. Skipped if the scan has no
