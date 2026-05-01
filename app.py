@@ -3622,11 +3622,15 @@ def picker_run_picks(job_id: str, run_id: str, status: str = "pending",
         # alternates "Mobile crane 0.58" + "Excavator 0.51" tells the
         # operator CLIP is unsure → review before approving.
         try:
-            # Pull class names from the picker_taxonomy table for nice labels
+            # Pull class names from the taxonomy table for nice labels.
+            # Audit-fix 2026-04-30: the table is `taxonomy` with columns
+            # `class_id / name_en / name_de` — pre-fix I queried
+            # `picker_taxonomy / id / en / de` which always returned empty,
+            # so chips rendered "class 6" instead of "Tower crane".
             taxonomy_names = {}
             try:
                 for cid, en, de in conn.execute(
-                    "SELECT id, en, de FROM picker_taxonomy"
+                    "SELECT class_id, name_en, name_de FROM taxonomy"
                 ):
                     taxonomy_names[int(cid)] = {
                         "en": en or f"class {cid}",
