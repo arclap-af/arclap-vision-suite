@@ -148,6 +148,13 @@
   }
 
   // ── Sidebar item wiring ──────────────────────────────────────────
+  // Audit-fix 2026-04-30 (P3): the sidebar HTML was deleted in an
+  // earlier shell-v2 redesign but the click delegation stayed. The
+  // event filter `e.target.closest('.shell-sb .sb-item')` already
+  // returns null when no sidebar exists, so the listeners are dormant.
+  // Added explicit `if (sb)` guards on the inner getElementById calls
+  // so this code is restoration-safe (if we ever re-add the sidebar
+  // it picks back up; otherwise it stays dormant without throwing).
   document.addEventListener('click', (e) => {
     const it = e.target.closest('.shell-sb .sb-item');
     if (!it) return;
@@ -156,8 +163,9 @@
     // mark active
     document.querySelectorAll('.shell-sb .sb-item').forEach(b => b.classList.remove('active'));
     it.classList.add('active');
-    // close mobile drawer
-    document.getElementById('shell-sb').classList.remove('open');
+    // close mobile drawer (if sidebar exists)
+    const sb = document.getElementById('shell-sb');
+    if (sb) sb.classList.remove('open');
     // set title
     setTitle(stab ? (TITLES[stab] || PAGE_TITLES[page]) : (PAGE_TITLES[page] || 'Arclap CSI'));
     // navigate
@@ -173,10 +181,11 @@
     }
   });
 
-  // Mobile toggle
+  // Mobile toggle (sidebar may not exist — guard both lookups)
   const mtog = $('sb-mtoggle');
   if (mtog) mtog.addEventListener('click', () => {
-    document.getElementById('shell-sb').classList.toggle('open');
+    const sb = document.getElementById('shell-sb');
+    if (sb) sb.classList.toggle('open');
   });
 
   // Quick-page buttons in home-v2

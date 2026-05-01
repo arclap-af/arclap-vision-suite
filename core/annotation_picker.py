@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS image_clip (
 
 def _open(scan_db_path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(scan_db_path))
+    # Audit-fix 2026-04-30 (P2): the picker schema declares ON DELETE
+    # CASCADE on image_phash/image_clip/detections/conditions FKs, but
+    # SQLite ignores them unless this pragma is set per-connection.
+    # Without it, deleting an `images` row leaves orphan rows — silently.
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA_EXTRA)
     conn.commit()
     return conn
@@ -239,7 +244,13 @@ def ensure_clip_embeddings(scan_db_path: str | Path,
             valid_paths = []
             for p in batch_paths:
                 try:
-                    img = Image.open(p).convert("RGB")
+                    # Audit-fix 2026-04-30 (P2): wrap Image.open in `with`
+                    # to release the file handle as soon as we're done
+                    # decoding. Pre-fix the handle was held until gc,
+                    # which can leak FDs in long Stage 2 runs on Linux
+                    # containers (default ulimit 1024).
+                    with Image.open(p) as _src:
+                        img = _src.convert("RGB")
                     tensors.append(preprocess(img))
                     valid_paths.append(p)
                 except Exception:

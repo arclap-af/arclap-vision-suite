@@ -23,6 +23,10 @@ DEFAULT_EVENT_DAYS = 30
 MAX_DISCOVERY_PER_CAM = 5000
 
 _thread: threading.Thread | None = None
+# Audit-fix 2026-04-30 (P3): serialise concurrent start()/stop() calls.
+# The is_alive() check before spawning has a race window without this.
+_START_LOCK = threading.Lock()
+
 _stop_event = threading.Event()
 
 
@@ -179,14 +183,15 @@ def _disk_loop(suite_root: Path, interval_sec: int = 30 * 60):
 
 def start(suite_root: Path, interval_sec: int = 30 * 60) -> None:
     global _thread
-    if _thread and _thread.is_alive():
-        return
-    _stop_event.clear()
-    _thread = threading.Thread(
-        target=_disk_loop, args=(suite_root, interval_sec),
-        name="ArclapDiskSweep", daemon=True,
-    )
-    _thread.start()
+    with _START_LOCK:
+        if _thread and _thread.is_alive():
+            return
+        _stop_event.clear()
+        _thread = threading.Thread(
+            target=_disk_loop, args=(suite_root, interval_sec),
+            name="ArclapDiskSweep", daemon=True,
+        )
+        _thread.start()
 
 
 def stop() -> None:

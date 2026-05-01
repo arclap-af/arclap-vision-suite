@@ -28,6 +28,10 @@ from . import notify as notify_core
 _LOCK = threading.Lock()
 _HISTORY_MAX = 500
 _thread: threading.Thread | None = None
+# Audit-fix 2026-04-30 (P3): serialise concurrent start()/stop() calls.
+# The is_alive() check before spawning has a race window without this.
+_START_LOCK = threading.Lock()
+
 _stop = threading.Event()
 
 
@@ -302,14 +306,15 @@ def _loop(suite_root: Path, *, interval_s: int = 60):
 
 def start(suite_root: Path, *, interval_s: int = 60) -> None:
     global _thread
-    if _thread and _thread.is_alive():
-        return
-    _stop.clear()
-    _thread = threading.Thread(
-        target=_loop, args=(suite_root,), kwargs={"interval_s": interval_s},
-        name="ArclapMachineAlerts", daemon=True,
-    )
-    _thread.start()
+    with _START_LOCK:
+        if _thread and _thread.is_alive():
+            return
+        _stop.clear()
+        _thread = threading.Thread(
+            target=_loop, args=(suite_root,), kwargs={"interval_s": interval_s},
+            name="ArclapMachineAlerts", daemon=True,
+        )
+        _thread.start()
 
 
 def stop() -> None:

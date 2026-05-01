@@ -35,7 +35,10 @@ def stop(jid):
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             return r.status == 200
-    except: return False
+    # Audit-fix 2026-04-30 (P2): catch network/HTTP exceptions specifically
+    # rather than a bare `except:` that swallows KeyboardInterrupt too.
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+        return False
 
 def queue_health():
     with urllib.request.urlopen('http://127.0.0.1:8782/api/queue/status') as r:

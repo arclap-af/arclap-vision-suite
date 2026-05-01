@@ -61,10 +61,40 @@ def palette_from_preset(preset: dict | None) -> dict[int, tuple[int, int, int]]:
     return out
 
 
+def _validate_pt_file(model_path: str | Path) -> None:
+    """Audit-fix 2026-04-30 (P2): pre-flight checks before handing a .pt
+    file to ultralytics' YOLO() loader, which calls torch.load() under
+    the hood. PyTorch's pickle deserializer can execute arbitrary code
+    if `weights_only=True` is not set — modern ultralytics versions DO
+    use weights_only=True, but the only way to guarantee safety against
+    a hostile uploaded .pt is to check the magic bytes ourselves."""
+    p = Path(model_path)
+    if not p.is_file():
+        raise FileNotFoundError(f"Model file not found: {p}")
+    # Size sanity — a .pt smaller than 1 KB is almost certainly garbage
+    sz = p.stat().st_size
+    if sz < 1024:
+        raise ValueError(f"Model file too small ({sz} bytes); expected > 1 KB")
+    # Magic-byte check: PyTorch .pt files are zip archives starting with
+    # b'PK\x03\x04' (since torch 1.6). Older pickle-based .pt files start
+    # with b'\x80' (pickle proto opcode). Reject anything else.
+    with open(p, "rb") as f:
+        head = f.read(4)
+    is_zip = head.startswith(b"PK\x03\x04")
+    is_pickle = head[:1] in (b"\x80",)
+    if not (is_zip or is_pickle):
+        raise ValueError(
+            f"File header {head!r} doesn't match a PyTorch checkpoint "
+            f"(expected ZIP or pickle protocol). Refusing to load."
+        )
+
+
 def inspect_model(model_path: str | Path) -> dict[str, Any]:
     """Load a .pt and return its metadata without keeping it loaded."""
     from ultralytics import YOLO
 
+    # Pre-flight magic-byte + size validation (audit-fix 2026-04-30, P2).
+    _validate_pt_file(model_path)
     model = YOLO(str(model_path))
     task = getattr(model, "task", "detect") or "detect"
     names = getattr(model, "names", None)

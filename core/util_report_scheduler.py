@@ -23,6 +23,10 @@ from pathlib import Path
 
 _LOCK = threading.Lock()
 _thread: threading.Thread | None = None
+# Audit-fix 2026-04-30 (P3): serialise concurrent start()/stop() calls.
+# The is_alive() check before spawning has a race window without this.
+_START_LOCK = threading.Lock()
+
 _stop = threading.Event()
 
 
@@ -166,14 +170,15 @@ def _loop(suite_root: Path, build_pdf_fn, send_email_fn, *, check_every: int = 3
 def start(suite_root: Path, build_pdf_fn, send_email_fn,
           *, check_every: int = 3600) -> None:
     global _thread
-    if _thread and _thread.is_alive(): return
-    _stop.clear()
-    _thread = threading.Thread(
-        target=_loop, args=(suite_root, build_pdf_fn, send_email_fn),
-        kwargs={"check_every": check_every},
-        name="ArclapUtilReportScheduler", daemon=True,
-    )
-    _thread.start()
+    with _START_LOCK:
+        if _thread and _thread.is_alive(): return
+        _stop.clear()
+        _thread = threading.Thread(
+            target=_loop, args=(suite_root, build_pdf_fn, send_email_fn),
+            kwargs={"check_every": check_every},
+            name="ArclapUtilReportScheduler", daemon=True,
+        )
+        _thread.start()
 
 
 def stop() -> None:

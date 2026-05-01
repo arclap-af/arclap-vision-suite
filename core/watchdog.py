@@ -22,6 +22,10 @@ from pathlib import Path
 _crash_history: dict[str, deque] = {}
 _disabled_until: dict[str, float] = {}   # cam_id -> ts when re-enabled
 _thread: threading.Thread | None = None
+# Audit-fix 2026-04-30 (P3): serialise concurrent start()/stop() calls.
+# The is_alive() check before spawning has a race window without this.
+_START_LOCK = threading.Lock()
+
 _stop_event = threading.Event()
 
 
@@ -144,17 +148,18 @@ def _watchdog_loop(suite_root: Path, db_factory, queue_factory, log_event_fn,
 def start(suite_root: Path, db_factory, queue_factory, log_event_fn,
            start_camera_fn, stop_job_fn, get_camera_session_fn) -> None:
     global _thread
-    if _thread and _thread.is_alive():
-        return
-    _stop_event.clear()
-    _thread = threading.Thread(
-        target=_watchdog_loop,
-        args=(suite_root, db_factory, queue_factory, log_event_fn,
-              start_camera_fn, stop_job_fn, get_camera_session_fn),
-        name="ArclapWatchdog",
-        daemon=True,
-    )
-    _thread.start()
+    with _START_LOCK:
+        if _thread and _thread.is_alive():
+            return
+        _stop_event.clear()
+        _thread = threading.Thread(
+            target=_watchdog_loop,
+            args=(suite_root, db_factory, queue_factory, log_event_fn,
+                  start_camera_fn, stop_job_fn, get_camera_session_fn),
+            name="ArclapWatchdog",
+            daemon=True,
+        )
+        _thread.start()
 
 
 def stop() -> None:

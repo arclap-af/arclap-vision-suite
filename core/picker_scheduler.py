@@ -26,6 +26,10 @@ from pathlib import Path
 
 _LOCK = threading.Lock()
 _THREAD: threading.Thread | None = None
+# Audit-fix 2026-04-30 (P3): serialise concurrent start()/stop() calls.
+# The is_alive() check before spawning has a race window without this.
+_START_LOCK = threading.Lock()
+
 _STOP = threading.Event()
 
 
@@ -152,15 +156,16 @@ def _scheduler_loop(suite_root: Path, run_picker_fn, *, check_every: int = 3600)
 
 def start(suite_root: Path, run_picker_fn, *, check_every: int = 3600) -> None:
     global _THREAD
-    if _THREAD and _THREAD.is_alive():
-        return
-    _STOP.clear()
-    _THREAD = threading.Thread(
-        target=_scheduler_loop, args=(suite_root, run_picker_fn),
-        kwargs={"check_every": check_every},
-        name="ArclapPickerScheduler", daemon=True,
-    )
-    _THREAD.start()
+    with _START_LOCK:
+        if _THREAD and _THREAD.is_alive():
+            return
+        _STOP.clear()
+        _THREAD = threading.Thread(
+            target=_scheduler_loop, args=(suite_root, run_picker_fn),
+            kwargs={"check_every": check_every},
+            name="ArclapPickerScheduler", daemon=True,
+        )
+        _THREAD.start()
 
 
 def stop() -> None:

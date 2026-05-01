@@ -3837,12 +3837,17 @@ def picker_export_run(job_id: str, run_id: str, req: PickerExportReq | None = No
             "config_json", "n_picked", "n_approved", "n_rejected",
             "n_holdout", "dataset_hash", "model_path"]
     run_dict = dict(zip(cols, run_meta)) if run_meta else {}
+    # Audit-fix 2026-04-30 (P2): catch json.JSONDecodeError specifically
+    # so a corrupt cell still surfaces in logs instead of being swallowed
+    # by a bare `except:` that also catches KeyboardInterrupt + SystemExit.
     if run_dict.get("weights_json"):
         try: run_dict["weights"] = json.loads(run_dict.pop("weights_json"))
-        except: pass
+        except (json.JSONDecodeError, TypeError) as _e:
+            run_dict["weights_parse_error"] = str(_e)
     if run_dict.get("config_json"):
         try: run_dict["config"] = json.loads(run_dict.pop("config_json"))
-        except: pass
+        except (json.JSONDecodeError, TypeError) as _e:
+            run_dict["config_parse_error"] = str(_e)
     base_manifest = {
         "manifest_version": 1,
         "exported_at": time.time(),

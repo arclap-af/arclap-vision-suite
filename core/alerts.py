@@ -144,6 +144,10 @@ def dispatch_event(suite_root: Path, ev: dict) -> list[dict]:
 
 
 _watch_thread: threading.Thread | None = None
+# Audit-fix 2026-04-30 (P3): serialise concurrent start()/stop() calls.
+# The is_alive() check before spawning has a race window without this.
+_START_LOCK = threading.Lock()
+
 _watch_stop = threading.Event()
 _last_seen_id: int = 0
 
@@ -191,14 +195,15 @@ def _watch_loop(suite_root: Path, interval_sec: int = 5):
 
 def start_dispatcher(suite_root: Path, interval_sec: int = 5) -> None:
     global _watch_thread
-    if _watch_thread and _watch_thread.is_alive():
-        return
-    _watch_stop.clear()
-    _watch_thread = threading.Thread(
-        target=_watch_loop, args=(suite_root, interval_sec),
-        name="ArclapAlertsDispatcher", daemon=True,
-    )
-    _watch_thread.start()
+    with _START_LOCK:
+        if _watch_thread and _watch_thread.is_alive():
+            return
+        _watch_stop.clear()
+        _watch_thread = threading.Thread(
+            target=_watch_loop, args=(suite_root, interval_sec),
+            name="ArclapAlertsDispatcher", daemon=True,
+        )
+        _watch_thread.start()
 
 
 def stop_dispatcher() -> None:

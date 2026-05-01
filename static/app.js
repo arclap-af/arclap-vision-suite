@@ -2,6 +2,25 @@
    Arclap Timelapse Cleaner — frontend logic
    ========================================================================= */
 
+// Audit-fix 2026-04-30 (P3): global unhandled-rejection handler.
+// We have ~40 .then() chains in this file and a few in shell-v2.js, not
+// all of which have a matching .catch(). Per finding 11 of the audit,
+// this replaces case-by-case .catch() additions with one safety net
+// that surfaces silent rejections to the toast + console instead of
+// disappearing them. Individual hot-path handlers still own their
+// own try/catch where retries / state recovery are needed.
+window.addEventListener('unhandledrejection', (event) => {
+  // Suppress AbortError (debounced fetches cancel themselves on purpose)
+  const msg = (event.reason && (event.reason.message || event.reason)) + '';
+  if (msg.includes('AbortError') || msg.includes('aborted')) return;
+  // Log to console for engineers
+  console.error('[unhandledrejection]', event.reason);
+  // User-visible toast if our toast() is loaded
+  if (typeof toast === 'function') {
+    toast('Background error: ' + msg.slice(0, 100), 'error');
+  }
+});
+
 const state = {
   fileId: null,
   uploadKind: null,   // 'video' or 'folder'
@@ -3462,73 +3481,11 @@ if ($('btn-preview-continue')) {
   $('btn-preview-continue').addEventListener('click', refreshSaveSummary);
 }
 
-if ($('btn-pick-best')) {
-  $('btn-pick-best').addEventListener('click', async () => {
-    if (!activeFilterScanId) { toast('Pick a scan first', 'error'); return; }
-    const body = {
-      n: parseInt($('best-n').value) || 200,
-      min_quality: parseInt($('best-quality').value) / 100,
-      diversify: $('best-diversify').value === 'true',
-      target_name: $('best-target').value.trim() || null,
-      mode: 'symlink',
-    };
-    $('btn-pick-best').classList.add('loading');
-    try {
-      const r = await fetch(`/api/filter/${activeFilterScanId}/pick-best`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!r.ok) {
-        const err = await r.json();
-        throw new Error(err.detail || `HTTP ${r.status}`);
-      }
-      const data = await r.json();
-      $('best-status').textContent =
-        `Picked ${data.picked} → ${data.target}`;
-      toast(`Picked ${data.picked} candidates for annotation`, 'success');
-    } catch (e) {
-      toast('Pick failed: ' + e.message, 'error');
-    } finally {
-      $('btn-pick-best').classList.remove('loading');
-    }
-  });
-}
-
-if ($('btn-filter-export')) {
-  $('btn-filter-export').addEventListener('click', async () => {
-    if (!activeFilterScanId) { toast('Pick a scan first', 'error'); return; }
-    const picked = Array.from(document.querySelectorAll('#filter-class-list input:checked'))
-      .map(el => parseInt(el.dataset.classId));
-    const body = {
-      classes: picked,
-      logic: $('filter-logic').value,
-      min_conf: parseInt($('export-conf').value) / 100,
-      min_count: parseInt($('export-count').value) || 1,
-      mode: $('export-mode').value,
-      target_name: $('export-target').value.trim() || null,
-    };
-    $('btn-filter-export').classList.add('loading');
-    try {
-      const r = await fetch(`/api/filter/${activeFilterScanId}/export`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!r.ok) {
-        const err = await r.json();
-        throw new Error(err.detail || `HTTP ${r.status}`);
-      }
-      const data = await r.json();
-      $('filter-export-status').textContent = `Exporting → ${data.target}`;
-      toast(`Export started: ${data.target}`, 'success');
-    } catch (e) {
-      toast('Export failed: ' + e.message, 'error');
-    } finally {
-      $('btn-filter-export').classList.remove('loading');
-    }
-  });
-}
+// Audit-fix 2026-04-30 (P3): removed dead handlers for #btn-pick-best
+// and #btn-filter-export — those buttons existed in an earlier Filter
+// wizard iteration and were redesigned away. The if($X) guards meant
+// they never fired in the current UI; deleting saves ~70 lines of
+// unreachable JS.
 
 // =============================================================================
 // Dashboard renderer
