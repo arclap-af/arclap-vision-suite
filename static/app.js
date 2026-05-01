@@ -3544,60 +3544,103 @@ if ($('btn-review-projects')) {
   });
 }
 
-// ─── Stuck-queue auto-recovery ────────────────────────────────────
+// ─── Stuck-queue auto-recovery (conservative) ─────────────────────
 // Symptom: a job sits in /api/queue/status with worker_alive=true,
-// current_job=null, queue_size>0 but no progress. This happens rarely
-// after the worker thread's internal condition gets wedged.
-// We poll /api/queue/status every 30 s while a scan is queued; if we
-// detect the wedged state for > 60 s, we offer a one-click recovery.
+// current_job=null, queue_size>0 but no progress for many minutes.
+//
+// IMPORTANT — false-positive guards:
+//   1. Threshold = 5 minutes, not 60 seconds. YOLO model load on cold
+//      start can legitimately take 30-90 seconds.
+//   2. Cross-check: if any job in the DB has status='running', we are
+//      NOT wedged (worker is doing work — polling just missed the
+//      transition).
+//   3. Cross-check: if a job in the DB has started_at set in the last
+//      5 minutes, we are NOT wedged (recent activity = healthy).
+//   4. Non-blocking — uses a toast with a button, not a modal confirm()
+//      that interrupts the operator while they're working.
+const STUCK_QUEUE_THRESHOLD_MS = 5 * 60 * 1000;
 let _stuckQueueSeenAt = 0;
-let _stuckQueueRecoveryShown = false;
-async function checkQueueHealth() {
+let _stuckQueueToastShown = false;
+
+async function _isQueueGenuinelyWedged() {
   try {
-    const r = await fetch('/api/queue/status');
-    if (!r.ok) return;
-    const d = await r.json();
-    const isWedged = d.worker_alive && !d.current_job && d.queue_size > 0;
-    if (isWedged) {
-      if (!_stuckQueueSeenAt) _stuckQueueSeenAt = Date.now();
-      const stuckSec = (Date.now() - _stuckQueueSeenAt) / 1000;
-      if (stuckSec > 60 && !_stuckQueueRecoveryShown) {
-        _stuckQueueRecoveryShown = true;
-        if (confirm(
-          `The job queue appears wedged — ${d.queue_size} job(s) sitting ` +
-          `for over ${Math.round(stuckSec)}s with no progress.\n\n` +
-          `Click OK to auto-recover (drains stale state, respawns worker, ` +
-          `re-queues pending jobs). Cancel to ignore.`
-        )) {
-          try {
-            const rr = await fetch('/api/queue/resync', { method: 'POST' });
-            if (rr.ok) {
-              const d2 = await rr.json();
-              toast(
-                `Queue resynced. Drained ${d2.n_drained}, re-queued ${d2.n_requeued_from_db}.`,
-                'success'
-              );
-              _stuckQueueSeenAt = 0;
-              _stuckQueueRecoveryShown = false;
-            } else if (rr.status === 404) {
-              toast(
-                `Recovery endpoint not in this build. Restart the suite ` +
-                `(POST /api/system/restart) to enable it.`,
-                'warning'
-              );
-            }
-          } catch (e) {
-            toast('Recovery failed: ' + e.message, 'error');
-          }
-        }
-      }
-    } else {
-      _stuckQueueSeenAt = 0;
-      _stuckQueueRecoveryShown = false;
+    const [qr, jr] = await Promise.all([
+      fetch('/api/queue/status'),
+      fetch('/api/jobs?limit=5'),
+    ]);
+    if (!qr.ok || !jr.ok) return { wedged: false };
+    const d = await qr.json();
+    const jobs = await jr.json();
+    const apparentWedge = d.worker_alive && !d.current_job && d.queue_size > 0;
+    if (!apparentWedge) return { wedged: false, data: d };
+    // Cross-check 1: any job actively running?
+    if (jobs.some(j => j.status === 'running')) return { wedged: false, data: d };
+    // Cross-check 2: any job started within the last 5 minutes?
+    const now = Date.now() / 1000;
+    if (jobs.some(j => j.started_at && (now - j.started_at) < 300)) {
+      return { wedged: false, data: d };
     }
-  } catch {}
+    return { wedged: true, data: d };
+  } catch {
+    return { wedged: false };
+  }
 }
-setInterval(checkQueueHealth, 30000);
+
+async function checkQueueHealth() {
+  const { wedged, data } = await _isQueueGenuinelyWedged();
+  if (!wedged) {
+    _stuckQueueSeenAt = 0;
+    _stuckQueueToastShown = false;
+    return;
+  }
+  if (!_stuckQueueSeenAt) _stuckQueueSeenAt = Date.now();
+  const stuckMs = Date.now() - _stuckQueueSeenAt;
+  if (stuckMs > STUCK_QUEUE_THRESHOLD_MS && !_stuckQueueToastShown) {
+    _stuckQueueToastShown = true;
+    // Non-blocking toast with a recover button
+    const t = document.createElement('div');
+    t.id = 'queue-stuck-toast';
+    t.style.cssText =
+      'position:fixed;bottom:20px;right:20px;z-index:9001;' +
+      'background:#fff3cd;border:1px solid #ffeaa7;border-radius:8px;' +
+      'padding:14px 18px;max-width:380px;box-shadow:0 4px 16px rgba(0,0,0,.2);' +
+      'font:13px system-ui';
+    t.innerHTML = `
+      <div style="font-weight:600;margin-bottom:4px">⚠ Queue may be stuck</div>
+      <div style="font-size:12px;margin-bottom:10px">
+        ${data ? data.queue_size : '?'} job(s) waiting for over
+        ${Math.round(stuckMs / 60000)} min with no recent activity.
+        Most likely it's still loading — give it another minute.
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button id="qs-dismiss" style="padding:4px 10px;background:transparent;border:1px solid #999;border-radius:4px;cursor:pointer">Dismiss</button>
+        <button id="qs-recover" style="padding:4px 10px;background:#E5213C;color:#fff;border:0;border-radius:4px;cursor:pointer">Auto-recover</button>
+      </div>`;
+    document.body.appendChild(t);
+    document.getElementById('qs-dismiss').addEventListener('click', () => t.remove());
+    document.getElementById('qs-recover').addEventListener('click', async () => {
+      t.remove();
+      try {
+        const rr = await fetch('/api/queue/resync', { method: 'POST' });
+        if (rr.ok) {
+          const d2 = await rr.json();
+          toast(`Queue resynced — re-queued ${d2.n_requeued_from_db} pending job(s).`, 'success');
+        } else if (rr.status === 404) {
+          toast('Recovery endpoint not in this build. Restart the suite.', 'warning');
+        }
+      } catch (e) {
+        toast('Recovery failed: ' + e.message, 'error');
+      }
+      _stuckQueueSeenAt = 0;
+      _stuckQueueToastShown = false;
+    });
+    // Auto-dismiss after 30 seconds if user ignores
+    setTimeout(() => {
+      if (document.getElementById('queue-stuck-toast')) t.remove();
+    }, 30000);
+  }
+}
+setInterval(checkQueueHealth, 60000);   // poll once a minute, not every 30s
 
 // ─── Multi-project: post-scan-select review hint ──────────────────
 // When a scan is freshly selected, surface a one-time toast suggesting
