@@ -355,6 +355,11 @@ from routers import recordings as _routers_recordings  # noqa: E402
 from routers import queue as _routers_queue  # noqa: E402
 from routers import disk as _routers_disk  # noqa: E402
 from routers import observability as _routers_observability  # noqa: E402
+from routers import filter_presets as _routers_filter_presets  # noqa: E402
+from routers import similar as _routers_similar  # noqa: E402
+from routers import camera_webhook as _routers_camera_webhook  # noqa: E402
+from routers import alerts_correlate as _routers_alerts_correlate  # noqa: E402
+from routers import thresholds as _routers_thresholds  # noqa: E402
 app.include_router(_routers_system.router)
 app.include_router(_routers_presets.router)
 app.include_router(_routers_models.router)
@@ -394,39 +399,104 @@ app.include_router(_routers_recordings.router)
 app.include_router(_routers_queue.router)
 app.include_router(_routers_disk.router)
 app.include_router(_routers_observability.router)
+app.include_router(_routers_filter_presets.router)
+app.include_router(_routers_similar.router)
+app.include_router(_routers_camera_webhook.router)
+app.include_router(_routers_alerts_correlate.router)
+app.include_router(_routers_thresholds.router)
 
 
-# Request-ID + observability middleware (P1 from 2026-05-01 swarm run).
-# Adds an X-Request-ID header (incoming or new uuid), wraps each request in
-# a duration timer, and feeds counters into routers.observability.
+# Request-ID + observability + rate-limit + audit-log middleware
+# (production-hardening pass 2026-05-01).
 import uuid as _uuid_obs
 import time as _time_obs
+
+from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+from core import audit_log as _audit_log_core  # noqa: E402
+from core import rate_limit as _rate_limit_core  # noqa: E402
+from core.logging_config import (  # noqa: E402
+    get_logger as _get_logger,
+    set_request_id as _set_request_id,
+    setup_structured_logging as _setup_logging,
+)
+
+# Initialise structured logging + audit DB once at module load.
+_setup_logging(level="INFO")
+_audit_log_core.init(DATA / "audit.db")
+_obs_log = _get_logger("arclap.request")
+
+# Compress JSON responses larger than 1 KB by 70-90% — one-line win.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
 @app.middleware("http")
 async def _observability_middleware(request, call_next):
     rid = request.headers.get("X-Request-ID") or _uuid_obs.uuid4().hex[:12]
     request.state.request_id = rid
+    _set_request_id(rid)
+
+    # Rate limit — skip for static assets and health probes.
+    path = request.url.path
+    if not path.startswith(("/static", "/files", "/healthz", "/readyz", "/metrics")):
+        client_ip = (request.client.host if request.client else "unknown")
+        ok, rl_headers = _rate_limit_core.check(client_ip, path)
+        if not ok:
+            return JSONResponse(
+                {"detail": "rate limit exceeded"},
+                status_code=429,
+                headers={**rl_headers, "X-Request-ID": rid},
+            )
+    else:
+        rl_headers = {}
+
     start = _time_obs.perf_counter()
     try:
         response = await call_next(request)
         status = response.status_code
     except Exception:
         status = 500
+        duration = _time_obs.perf_counter() - start
         try:
-            _routers_observability.record_request(
-                request.method, status, _time_obs.perf_counter() - start,
-            )
+            _routers_observability.record_request(request.method, status, duration)
+            _obs_log.error("request errored", extra={
+                "method": request.method, "path": path, "status": status,
+                "duration_ms": round(duration * 1000, 1),
+            })
         except Exception:
             pass
         raise
     duration = _time_obs.perf_counter() - start
     response.headers["X-Request-ID"] = rid
+    for k, v in rl_headers.items():
+        response.headers[k] = v
     try:
         _routers_observability.record_request(request.method, status, duration)
     except Exception:
         pass
+    # Structured access log for non-trivial paths
+    if not path.startswith(("/static", "/files", "/metrics", "/healthz")):
+        _obs_log.info("request", extra={
+            "method": request.method, "path": path, "status": status,
+            "duration_ms": round(duration * 1000, 1),
+        })
+    # Audit log for mutating verbs only
+    try:
+        _audit_log_core.record(
+            request_id=rid, method=request.method, path=path,
+            status_code=status, duration_ms=round(duration * 1000, 1),
+            actor=(request.client.host if request.client else "unknown"),
+            user_agent=request.headers.get("user-agent", "")[:200],
+        )
+    except Exception:
+        pass
     return response
+
+
+# Kick off the nightly DB-backup scheduler.
+from core import backup_db as _backup_db_core  # noqa: E402
+_backup_db_core.start_backup_scheduler()
 
 
 

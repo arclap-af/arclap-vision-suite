@@ -49,6 +49,59 @@ def record_request(method: str, status_code: int, duration_seconds: float) -> No
     _metrics_state["request_duration_sum_seconds"] += duration_seconds
 
 
+@router.get("/api/version")
+def version_endpoint():
+    """Build identity. Returns git SHA + build timestamp + python/torch versions.
+
+    Critical for field debugging — answer 'which build is this camera running?'
+    by curl http://camera-host:8000/api/version."""
+    import platform
+    import subprocess
+    import sys
+
+    sha = "unknown"
+    branch = "unknown"
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL, timeout=2,
+        ).decode().strip() or "unknown"
+        branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            stderr=subprocess.DEVNULL, timeout=2,
+        ).decode().strip() or "unknown"
+    except Exception:
+        pass
+
+    out = {
+        "name": "Arclap Vision Suite",
+        "git_sha": sha,
+        "git_branch": branch,
+        "boot_ts": _BOOT_TS,
+        "uptime_seconds": round(time.time() - _BOOT_TS, 1),
+        "python": sys.version.split()[0],
+        "platform": platform.system() + " " + platform.release(),
+    }
+    try:
+        import torch
+        out["torch"] = torch.__version__
+        out["cuda_available"] = torch.cuda.is_available()
+        if out["cuda_available"]:
+            out["cuda_device"] = torch.cuda.get_device_name(0)
+    except Exception:
+        pass
+    return out
+
+
+@router.get("/api/audit-log")
+def audit_log_endpoint(limit: int = 100, path_like: str | None = None,
+                       since_hours: float | None = None):
+    """Recent mutating actions. Use ?path_like=/api/jobs to filter."""
+    from core import audit_log
+    since_ts = (time.time() - since_hours * 3600) if since_hours else None
+    return {"entries": audit_log.query(limit=limit, path_like=path_like, since_ts=since_ts)}
+
+
 @router.get("/healthz")
 def healthz():
     """Liveness probe — returns 200 as long as the process is responding.
