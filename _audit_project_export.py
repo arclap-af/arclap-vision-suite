@@ -126,6 +126,28 @@ try:
 except Exception:
     check("Rejects bogus mode", True)
 
+# ─── 8b. UI wiring presence (HTML + JS) ───────────────────────────────────
+print("\n8b. UI wiring presence")
+html = Path("static/index.html").read_text(encoding="utf-8")
+check("HTML loads project-preview.js",
+      "project-preview.js" in html)
+check("HTML has #save-by-project checkbox",
+      'id="save-by-project"' in html)
+check("HTML has #save-rename-chrono checkbox",
+      'id="save-rename-chrono"' in html)
+check("HTML has #save-batch-subfolder checkbox",
+      'id="save-batch-subfolder"' in html)
+check("HTML has #btn-review-projects button",
+      'id="btn-review-projects"' in html)
+
+js = Path("static/app.js").read_text(encoding="utf-8")
+check("app.js wires #btn-review-projects to openScanReview",
+      "btn-review-projects" in js and "openScanReview" in js)
+check("app.js routes by-project export through openExportPreview",
+      "openExportPreview" in js and "save-by-project" in js)
+check("app.js fires post-select scan-review hint",
+      "maybeOfferProjectReview" in js)
+
 # ─── 9. End-to-end: enrich + scan-review + export-preview + execute ───────
 print("\n9. End-to-end synthetic flow")
 import tempfile

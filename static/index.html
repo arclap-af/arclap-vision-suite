@@ -2227,8 +2227,38 @@
       </div>
     </label>
 
+    <h3 style="margin-top:18px">Group by project (multi-project sources)</h3>
+    <label class="checkbox-row big" style="margin-top:6px">
+      <input type="checkbox" id="save-by-project" />
+      <div>
+        <strong>Group output into ARC-&lt;ProjectName&gt;/ folders</strong>
+        <p class="muted small" style="margin:4px 0 0">
+          When your source folder contains 40-50 project subfolders (each
+          with thousands of pictures), this writes the output as one
+          folder per project. Files are renamed
+          <code>YYYY-MM-DD_HH-MM-SS__&lt;orig&gt;.jpg</code> so they sort
+          chronologically. Timestamps are deep-checked from EXIF, filename,
+          and mtime. A per-project <code>_manifest.csv</code> is included.
+        </p>
+        <div class="muted small" style="margin-top:6px">
+          <label style="margin-right:14px">
+            <input type="checkbox" id="save-rename-chrono" checked />
+            Rename to chronological prefix
+          </label>
+          <label style="margin-right:14px">
+            <input type="checkbox" id="save-batch-subfolder" />
+            Split into batch_NN/ on &gt; 3-day gaps
+          </label>
+        </div>
+      </div>
+    </label>
+
     <div class="actions" style="margin-top:18px">
       <button class="btn btn-primary btn-lg" id="btn-save">Save</button>
+      <button class="btn btn-secondary" id="btn-review-projects" type="button"
+              title="Show what was detected in this scan (projects, dates, warnings)">
+        🔍 Review detected projects
+      </button>
       <span class="muted small" id="filter-export-status"></span>
     </div>
     </div><!-- /folder pane -->

@@ -3431,6 +3431,32 @@ if ($('btn-save')) {
     const target = $('save-target').value.trim() || `filtered_${Date.now()}`;
     let method = $('save-method').value;
     const annotated = !!($('save-annotated') && $('save-annotated').checked);
+    const byProject = !!($('save-by-project') && $('save-by-project').checked);
+
+    // ─── Multi-project export branch ─────────────────────────────────
+    // When the operator ticked "Group by project", route through the
+    // ProjectPreview modal so they confirm the export tree before any
+    // file is written. The modal handles the actual /export call itself
+    // (see static/project-preview.js).
+    if (byProject && mode === 'all') {
+      if (!window.ProjectPreview) {
+        toast('Project preview library not loaded', 'error');
+        return;
+      }
+      const rule = currentRule();
+      const ruleWithOpts = {
+        ...rule,
+        target_name: target,
+        rename_chronological: !!($('save-rename-chrono') && $('save-rename-chrono').checked),
+        include_manifest: true,
+        batch_separator: ($('save-batch-subfolder') && $('save-batch-subfolder').checked)
+                          ? 'by_batch_subfolder' : 'flat',
+        transfer_mode: method === 'symlink' || method === 'hardlink' ? method : 'copy',
+      };
+      window.ProjectPreview.openExportPreview(activeFilterScanId, ruleWithOpts);
+      return;   // modal owns the rest of the flow
+    }
+
     // Annotated mode requires real copies (we draw boxes onto a new file)
     if (annotated && method !== 'copy') {
       method = 'copy';
@@ -3499,6 +3525,54 @@ if ($('btn-preview-continue')) {
 // wizard iteration and were redesigned away. The if($X) guards meant
 // they never fired in the current UI; deleting saves ~70 lines of
 // unreachable JS.
+
+// ─── Multi-project: "Review detected projects" button (Step 7) ─────
+// Calls ProjectPreview.openScanReview() so the operator can audit what
+// the scanner detected (projects, date ranges, warnings) before
+// configuring filters.
+if ($('btn-review-projects')) {
+  $('btn-review-projects').addEventListener('click', () => {
+    if (!activeFilterScanId) {
+      toast('Pick a scan first', 'error');
+      return;
+    }
+    if (!window.ProjectPreview) {
+      toast('Project preview library not loaded', 'error');
+      return;
+    }
+    window.ProjectPreview.openScanReview(activeFilterScanId);
+  });
+}
+
+// ─── Multi-project: post-scan-select review hint ──────────────────
+// When a scan is freshly selected, surface a one-time toast suggesting
+// the operator review what was detected. Skipped if the scan has no
+// detectable projects (single-folder ingest).
+const _postScanReviewSeen = new Set();
+function maybeOfferProjectReview(jobId) {
+  if (!jobId || _postScanReviewSeen.has(jobId)) return;
+  _postScanReviewSeen.add(jobId);
+  // Fire-and-forget probe — if scan-review reports >1 project, suggest review
+  fetch(`/api/filter/${jobId}/scan-review`)
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      if (d && d.n_projects > 1) {
+        toast(
+          `Detected ${d.n_projects} projects with ${d.n_files_total.toLocaleString()} files. ` +
+          `Click "🔍 Review detected projects" in Step 7 to inspect.`,
+          'info'
+        );
+      }
+    })
+    .catch(() => {});
+}
+// Hook into scan-select change so the toast fires on selection
+if ($('filter-scan-select')) {
+  $('filter-scan-select').addEventListener('change', () => {
+    const jid = $('filter-scan-select').value;
+    if (jid) maybeOfferProjectReview(jid);
+  });
+}
 
 // =============================================================================
 // Dashboard renderer
