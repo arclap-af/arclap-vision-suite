@@ -333,6 +333,27 @@ from routers import machine_alerts as _routers_machine_alerts  # noqa: E402
 from routers import picker as _routers_picker  # noqa: E402
 from routers import filter as _routers_filter  # noqa: E402
 from routers import swiss as _routers_swiss  # noqa: E402
+from routers import maintenance as _routers_maintenance  # noqa: E402
+from routers import dashboard as _routers_dashboard  # noqa: E402
+from routers import pipelines as _routers_pipelines  # noqa: E402
+from routers import upload as _routers_upload  # noqa: E402
+from routers import images as _routers_images  # noqa: E402
+from routers import upload_image as _routers_upload_image  # noqa: E402
+from routers import url as _routers_url  # noqa: E402
+from routers import folder as _routers_folder  # noqa: E402
+from routers import browse as _routers_browse  # noqa: E402
+from routers import scan as _routers_scan  # noqa: E402
+from routers import run as _routers_run  # noqa: E402
+from routers import playground as _routers_playground  # noqa: E402
+from routers import datasets as _routers_datasets  # noqa: E402
+from routers import train as _routers_train  # noqa: E402
+from routers import sites as _routers_sites  # noqa: E402
+from routers import reports as _routers_reports  # noqa: E402
+from routers import roboflow as _routers_roboflow  # noqa: E402
+from routers import zones as _routers_zones  # noqa: E402
+from routers import recordings as _routers_recordings  # noqa: E402
+from routers import queue as _routers_queue  # noqa: E402
+from routers import disk as _routers_disk  # noqa: E402
 app.include_router(_routers_system.router)
 app.include_router(_routers_presets.router)
 app.include_router(_routers_models.router)
@@ -350,6 +371,27 @@ app.include_router(_routers_machine_alerts.router)
 app.include_router(_routers_picker.router)
 app.include_router(_routers_filter.router)
 app.include_router(_routers_swiss.router)
+app.include_router(_routers_maintenance.router)
+app.include_router(_routers_dashboard.router)
+app.include_router(_routers_pipelines.router)
+app.include_router(_routers_upload.router)
+app.include_router(_routers_images.router)
+app.include_router(_routers_upload_image.router)
+app.include_router(_routers_url.router)
+app.include_router(_routers_folder.router)
+app.include_router(_routers_browse.router)
+app.include_router(_routers_scan.router)
+app.include_router(_routers_run.router)
+app.include_router(_routers_playground.router)
+app.include_router(_routers_datasets.router)
+app.include_router(_routers_train.router)
+app.include_router(_routers_sites.router)
+app.include_router(_routers_reports.router)
+app.include_router(_routers_roboflow.router)
+app.include_router(_routers_zones.router)
+app.include_router(_routers_recordings.router)
+app.include_router(_routers_queue.router)
+app.include_router(_routers_disk.router)
 
 
 
@@ -532,125 +574,16 @@ class RetentionRequest(BaseModel):
     statuses: list[str] | None = None  # default: clean up done/failed/stopped
 
 
-@app.post("/api/maintenance/cleanup-preview")
-def cleanup_preview(req: RetentionRequest):
-    """Preview which jobs would be deleted. Doesn't actually delete anything."""
-    statuses = req.statuses or ["done", "failed", "stopped"]
-    jobs = db.jobs_older_than(days=req.days, statuses=statuses)
-    total_files_size = 0
-    file_count = 0
-    for j in jobs:
-        for path in (Path(j.output_path),
-                     Path(j.output_path).with_suffix(".audit.html"),
-                     Path(j.output_path).with_suffix(".live_status.json"),
-                     Path(j.output_path).with_suffix(".ppe_report.csv")):
-            if path.is_file():
-                total_files_size += path.stat().st_size
-                file_count += 1
-    return {
-        "jobs_to_delete": len(jobs),
-        "files_on_disk": file_count,
-        "bytes_on_disk": total_files_size,
-        "mb_on_disk": round(total_files_size / (1024 * 1024), 1),
-        "sample": [
-            {"id": j.id, "mode": j.mode,
-             "created_at": j.created_at, "finished_at": j.finished_at,
-             "output": Path(j.output_path).name}
-            for j in jobs[:10]
-        ],
-    }
+# maintenance route moved to routers/maintenance.py on 2026-05-01
 
 
-@app.post("/api/maintenance/cleanup")
-def cleanup(req: RetentionRequest):
-    """Actually delete jobs older than `days` plus their output files."""
-    statuses = req.statuses or ["done", "failed", "stopped"]
-    jobs = db.jobs_older_than(days=req.days, statuses=statuses)
-    deleted_files = 0
-    bytes_freed = 0
-    if req.delete_files:
-        for j in jobs:
-            for path in (Path(j.output_path),
-                         Path(j.output_path).with_suffix(".audit.html"),
-                         Path(j.output_path).with_suffix(".live_status.json"),
-                         Path(j.output_path).with_suffix(".ppe_report.csv")):
-                if path.is_file():
-                    bytes_freed += path.stat().st_size
-                    try:
-                        path.unlink()
-                        deleted_files += 1
-                    except OSError:
-                        pass
-    deleted = db.delete_jobs([j.id for j in jobs])
-    return {
-        "jobs_deleted": deleted,
-        "files_deleted": deleted_files,
-        "bytes_freed": bytes_freed,
-        "mb_freed": round(bytes_freed / (1024 * 1024), 1),
-    }
+
+# maintenance route moved to routers/maintenance.py on 2026-05-01
 
 
-@app.get("/api/dashboard")
-def dashboard():
-    """One-call summary for the Dashboard / Home page."""
-    jobs = db.list_jobs(limit=200)
-    models = db.list_models()
-    projects = db.list_projects()
-    now = time.time()
-    last_24h = [j for j in jobs if (j.created_at or 0) > now - 86400]
-    by_status: dict[str, int] = {}
-    for j in jobs:
-        by_status[j.status] = by_status.get(j.status, 0) + 1
 
-    recent_outputs: list[dict] = []
-    for j in jobs[:12]:
-        if j.status == "done" and j.output_url:
-            recent_outputs.append({
-                "id": j.id, "mode": j.mode,
-                "output_url": j.output_url,
-                "created_at": j.created_at,
-                "name": Path(j.output_path).name,
-                "project_id": j.project_id,
-            })
+# dashboard route moved to routers/dashboard.py on 2026-05-01
 
-    info = {
-        "totals": {
-            "jobs": len(jobs),
-            "models": len(models),
-            "projects": len(projects),
-            "jobs_24h": len(last_24h),
-            "queue_pending": queue.pending(),
-            "running": runner.is_running() is not None,
-        },
-        "by_status": by_status,
-        "recent_outputs": recent_outputs[:6],
-        "gpu": {
-            "available": GPU_AVAILABLE,
-            "name": GPU_NAME,
-        },
-    }
-    if GPU_AVAILABLE:
-        try:
-            free, total = torch.cuda.mem_get_info()
-            info["gpu"]["memory_pct_used"] = round(100 * (total - free) / total, 1)
-            info["gpu"]["memory_used_mb"] = round((total - free) / (1024**2))
-            info["gpu"]["memory_total_mb"] = round(total / (1024**2))
-        except Exception:
-            pass
-
-    # Disk usage of the output dir
-    total_bytes = 0
-    file_count = 0
-    if OUTPUTS.exists():
-        for p in OUTPUTS.iterdir():
-            if p.is_file():
-                total_bytes += p.stat().st_size
-                file_count += 1
-    info["storage"] = {
-        "outputs_files": file_count,
-        "outputs_mb": round(total_bytes / (1024**2), 1),
-    }
-    return info
 
 
 # projects route moved to routers/projects.py on 2026-05-01
@@ -671,9 +604,8 @@ def health():
     }
 
 
-@app.get("/api/pipelines")
-def list_pipelines():
-    return pipeline_registry.list_modes()
+# pipelines route moved to routers/pipelines.py on 2026-05-01
+
 
 
 # ----------------------------------------------------------------------------
@@ -770,244 +702,32 @@ class RtspUpdateRequest(BaseModel):
 # Upload (video) and folder selection
 # ----------------------------------------------------------------------------
 
-@app.post("/api/upload")
-async def upload(file: UploadFile = File(...)):
-    suffix = Path(file.filename or "video.mp4").suffix.lower() or ".mp4"
-    if suffix not in ALLOWED_VIDEO_EXTS:
-        raise HTTPException(
-            415,
-            f"Unsupported file type '{suffix}'. Allowed: {', '.join(sorted(ALLOWED_VIDEO_EXTS))}",
-        )
-
-    file_id = uuid.uuid4().hex[:12]
-    dest = UPLOADS / f"{file_id}{suffix}"
-
-    written = 0
-    with open(dest, "wb") as f:
-        while chunk := await file.read(1 << 20):
-            written += len(chunk)
-            if written > MAX_UPLOAD_BYTES:
-                f.close()
-                dest.unlink(missing_ok=True)
-                raise HTTPException(
-                    413,
-                    f"File exceeds {MAX_UPLOAD_BYTES // (1024**3)} GB upload limit.",
-                )
-            f.write(chunk)
-
-    cap = cv2.VideoCapture(str(dest))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
-    duration = n / fps if fps > 0 else 0
-    UPLOADED[file_id] = {
-        "id": file_id,
-        "kind": "video",
-        "path": str(dest),
-        "name": file.filename,
-        "size": dest.stat().st_size,
-        "fps": fps, "frames": n, "duration": duration,
-        "width": w, "height": h,
-        "url": f"/files/uploads/{dest.name}",
-    }
-    return UPLOADED[file_id]
+# upload route moved to routers/upload.py on 2026-05-01
 
 
-@app.post("/api/images/batch-upload")
-async def upload_image_batch(files: list[UploadFile] = File(...)):
-    """Accept N hand-picked image files and register them as a virtual folder
-    so any pipeline that supports --input-folder can process them.
 
-    Use this when the user wants to pick specific frames rather than point
-    at a whole directory.
-    """
-    if not files:
-        raise HTTPException(400, "No files supplied.")
-
-    file_id = uuid.uuid4().hex[:12]
-    folder = UPLOADS / f"batch_{file_id}"
-    folder.mkdir(parents=True, exist_ok=True)
-
-    saved = 0
-    total_bytes = 0
-    for i, file in enumerate(files):
-        suffix = Path(file.filename or f"img_{i}.jpg").suffix.lower() or ".jpg"
-        if suffix not in ALLOWED_IMAGE_EXTS:
-            continue
-        # zero-pad so the directory sorts in the order the user picked them
-        name = f"{i:06d}_{Path(file.filename or 'img.jpg').name}"
-        dest = folder / name
-        # Audit-fix 2026-04-30: add per-file cap. Total batch cap is
-        # already enforced below, but a single hostile 5 GB upload
-        # would fully consume the budget — bound each file to 50 MB.
-        per_file_bytes = 0
-        with open(dest, "wb") as f:
-            while chunk := await file.read(1 << 20):
-                per_file_bytes += len(chunk)
-                total_bytes += len(chunk)
-                if per_file_bytes > MAX_IMAGE_UPLOAD_BYTES:
-                    f.close()
-                    shutil.rmtree(folder, ignore_errors=True)
-                    raise HTTPException(
-                        413,
-                        f"Image '{file.filename}' exceeds "
-                        f"{MAX_IMAGE_UPLOAD_BYTES // (1024*1024)} MB per-file limit."
-                    )
-                if total_bytes > MAX_BATCH_UPLOAD_BYTES:
-                    f.close()
-                    shutil.rmtree(folder, ignore_errors=True)
-                    raise HTTPException(
-                        413,
-                        f"Batch exceeds {MAX_BATCH_UPLOAD_BYTES // (1024**3)} GB total size."
-                    )
-                f.write(chunk)
-        saved += 1
-
-    if saved == 0:
-        shutil.rmtree(folder, ignore_errors=True)
-        raise HTTPException(400, "None of the uploaded files were valid images.")
-
-    UPLOADED[file_id] = {
-        "id": file_id,
-        "kind": "folder",
-        "path": str(folder),
-        "name": f"{saved} selected images",
-        "size": total_bytes,
-        "frames": saved,
-        "fps": None, "duration": None,
-        "width": None, "height": None,
-    }
-    return UPLOADED[file_id]
+# images route moved to routers/images.py on 2026-05-01
 
 
-@app.post("/api/upload-image")
-async def upload_image(file: UploadFile = File(...)):
-    """Upload a single image (for playground testing)."""
-    suffix = Path(file.filename or "image.jpg").suffix.lower() or ".jpg"
-    if suffix not in ALLOWED_IMAGE_EXTS:
-        raise HTTPException(
-            415, f"Unsupported image type '{suffix}'. Allowed: "
-                 f"{', '.join(sorted(ALLOWED_IMAGE_EXTS))}"
-        )
-    file_id = uuid.uuid4().hex[:12]
-    dest = UPLOADS / f"{file_id}{suffix}"
-    written = 0
-    with open(dest, "wb") as f:
-        while chunk := await file.read(1 << 20):
-            written += len(chunk)
-            if written > 200 * 1024 * 1024:  # 200 MB cap on test images
-                f.close()
-                dest.unlink(missing_ok=True)
-                raise HTTPException(413, "Image exceeds 200 MB upload limit.")
-            f.write(chunk)
-    UPLOADED[file_id] = {
-        "id": file_id, "kind": "image", "path": str(dest),
-        "name": file.filename, "size": dest.stat().st_size,
-        "url": f"/files/uploads/{dest.name}",
-    }
-    return UPLOADED[file_id]
+
+# upload-image route moved to routers/upload-image.py on 2026-05-01
+
 
 
 class UrlRef(BaseModel):
     url: str
 
 
-@app.post("/api/url")
-def register_url(req: UrlRef):
-    """Download a video from any URL (HTTP, YouTube, Vimeo via yt-dlp)
-    and register it as an upload so the wizard can use it.
+# url route moved to routers/url.py on 2026-05-01
 
-    Falls back gracefully if yt-dlp is not installed: only direct HTTP
-    video URLs work in that case.
-    """
-    file_id = uuid.uuid4().hex[:12]
-    dest = UPLOADS / f"{file_id}.mp4"
-
-    # Try yt-dlp first (handles YouTube/Vimeo/etc.)
-    try:
-        import yt_dlp  # type: ignore
-    except ImportError:
-        yt_dlp = None
-
-    used_yt_dlp = False
-    if yt_dlp is not None:
-        try:
-            with yt_dlp.YoutubeDL({
-                "outtmpl": str(dest),
-                "format": "mp4/best",
-                "quiet": True,
-                "no_warnings": True,
-            }) as ydl:
-                ydl.download([req.url])
-            used_yt_dlp = dest.exists()
-        except Exception as e:
-            # Fall through to plain HTTP attempt
-            print(f"[url] yt-dlp failed: {e}; trying plain HTTP")
-
-    if not dest.exists():
-        # Plain HTTP fallback
-        import urllib.request
-        try:
-            urllib.request.urlretrieve(req.url, str(dest))
-        except Exception as e:
-            raise HTTPException(400, f"Could not fetch URL: {e}")
-
-    if not dest.exists() or dest.stat().st_size == 0:
-        raise HTTPException(400, "Download produced no data.")
-
-    cap = cv2.VideoCapture(str(dest))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
-
-    UPLOADED[file_id] = {
-        "id": file_id, "kind": "video", "path": str(dest),
-        "name": req.url.split("/")[-1] or "url_video.mp4",
-        "size": dest.stat().st_size, "fps": fps, "frames": n,
-        "duration": n / fps if fps > 0 else 0,
-        "width": w, "height": h,
-        "url": f"/files/uploads/{dest.name}",
-        "source_url": req.url,
-        "downloader": "yt-dlp" if used_yt_dlp else "http",
-    }
-    return UPLOADED[file_id]
 
 
 class FolderRef(BaseModel):
     path: str
 
 
-@app.post("/api/folder")
-def register_folder(req: FolderRef):
-    """Register a server-local folder of images as an input source.
-    The user is on the same machine as the server, so any folder they can
-    read is accessible. We don't copy or upload the images — we just point
-    the pipeline at the folder.
-    """
-    folder = Path(req.path).expanduser().resolve()
-    if not folder.is_dir():
-        raise HTTPException(400, f"Not a directory: {folder}")
-    images = sorted(p for p in folder.iterdir()
-                    if p.is_file() and p.suffix.lower() in ALLOWED_IMAGE_EXTS)
-    if not images:
-        raise HTTPException(400, f"No images found in {folder}.")
-    file_id = uuid.uuid4().hex[:12]
-    UPLOADED[file_id] = {
-        "id": file_id,
-        "kind": "folder",
-        "path": str(folder),
-        "name": folder.name,
-        "size": sum(p.stat().st_size for p in images[:200]),  # estimate from first 200
-        "frames": len(images),
-        "fps": None, "duration": None,
-        "width": None, "height": None,
-        "first_image_url": None,
-    }
-    return UPLOADED[file_id]
+# folder route moved to routers/folder.py on 2026-05-01
+
 
 
 # ----------------------------------------------------------------------------
@@ -1015,118 +735,12 @@ def register_folder(req: FolderRef):
 # making the user type paths. Returns common roots + folder listings.
 # ----------------------------------------------------------------------------
 
-@app.get("/api/browse/roots")
-def browse_roots():
-    """Common starting points: drives (Windows), home, Desktop, Downloads,
-    Documents, OneDrive folders."""
-    import string, os
-    roots: list[dict] = []
-
-    if sys.platform == "win32":
-        for letter in string.ascii_uppercase:
-            p = Path(f"{letter}:/")
-            try:
-                if not p.exists():
-                    continue
-                next(p.iterdir())
-                roots.append({"label": f"{letter}:\\ (drive)", "path": str(p)})
-            except (PermissionError, StopIteration, OSError):
-                # BitLocker-locked, no media (DVD), inaccessible — skip silently
-                continue
-
-    home = Path.home()
-    if home.is_dir():
-        roots.append({"label": f"🏠 {home.name} (Home)", "path": str(home)})
-        for sub in ("Desktop", "Downloads", "Documents", "Pictures", "Videos"):
-            p = home / sub
-            if p.is_dir():
-                roots.append({"label": f"📁 {sub}", "path": str(p)})
-        # OneDrive (Personal + business) — common Arclap path
-        for entry in home.iterdir():
-            if entry.is_dir() and entry.name.lower().startswith("onedrive"):
-                roots.append({"label": f"☁️ {entry.name}", "path": str(entry)})
-
-    cwd = Path.cwd()
-    roots.append({"label": f"📂 {cwd.name} (Suite working dir)", "path": str(cwd)})
-    return {"roots": roots}
+# browse route moved to routers/browse.py on 2026-05-01
 
 
-@app.get("/api/browse")
-def browse_folder(path: str, file_exts: str = ""):
-    """List immediate subfolders + image count for one folder. When
-    `file_exts` is set (comma-separated, e.g. ".mp4,.mov,.avi"), the
-    response also includes a `files` list so the modal can act as a
-    file picker — each file shows its size and the user clicks to pick.
 
-    Used by:
-      - the Filter wizard's folder-browser (no file_exts) → folders only
-      - the Live RTSP file-source picker (file_exts=".mp4,.mov,...") → folders + matching files
-    """
-    p = Path(path).expanduser()
-    try:
-        p = p.resolve()
-    except OSError as e:
-        raise HTTPException(400, f"Cannot resolve {path}: {e}")
-    if not p.is_dir():
-        raise HTTPException(400, f"Not a directory: {p}")
+# browse route moved to routers/browse.py on 2026-05-01
 
-    file_filter = {e.strip().lower() for e in file_exts.split(",") if e.strip()}
-
-    folders = []
-    files = []
-    image_here = 0
-    try:
-        for entry in p.iterdir():
-            try:
-                if entry.is_dir():
-                    has_sub = False
-                    n_imgs = 0
-                    try:
-                        for sub in entry.iterdir():
-                            if sub.is_dir() and not sub.name.startswith("."):
-                                has_sub = True
-                            elif sub.is_file() and sub.suffix.lower() in ALLOWED_IMAGE_EXTS:
-                                n_imgs += 1
-                                if has_sub and n_imgs >= 1:
-                                    break
-                    except (PermissionError, OSError):
-                        pass
-                    if not entry.name.startswith("$") and not entry.name.startswith("."):
-                        folders.append({
-                            "name": entry.name,
-                            "path": str(entry),
-                            "n_images_shallow": n_imgs,
-                            "has_subfolders": has_sub,
-                        })
-                elif entry.is_file():
-                    suffix = entry.suffix.lower()
-                    if suffix in ALLOWED_IMAGE_EXTS:
-                        image_here += 1
-                    if file_filter and suffix in file_filter:
-                        try:
-                            size = entry.stat().st_size
-                        except OSError:
-                            size = 0
-                        files.append({
-                            "name": entry.name,
-                            "path": str(entry),
-                            "size_mb": round(size / (1024 * 1024), 1),
-                        })
-            except (PermissionError, OSError):
-                continue
-    except (PermissionError, OSError) as e:
-        raise HTTPException(403, f"Permission denied: {e}")
-
-    folders.sort(key=lambda f: f["name"].lower())
-    files.sort(key=lambda f: f["name"].lower())
-    parent = str(p.parent) if p.parent != p else None
-    return {
-        "path": str(p),
-        "parent": parent,
-        "folders": folders,
-        "files": files,
-        "image_count": image_here,
-    }
 
 
 # ----------------------------------------------------------------------------
@@ -1167,46 +781,8 @@ def _scan_folder(folder: str) -> np.ndarray:
     return np.array(means)
 
 
-@app.post("/api/scan/{file_id}")
-def scan(file_id: str):
-    if file_id not in UPLOADED:
-        raise HTTPException(404, "File not found")
-    upload = UPLOADED[file_id]
-    if upload["kind"] == "folder":
-        arr = _scan_folder(upload["path"])
-    else:
-        arr = _scan_video(upload["path"])
-    if arr.size == 0:
-        raise HTTPException(400, "Could not read frames")
+# scan route moved to routers/scan.py on 2026-05-01
 
-    # Recommend threshold via simple bimodal valley
-    hist, edges = np.histogram(arr, bins=30)
-    peaks = np.argsort(hist)[-2:]
-    if peaks[0] > peaks[1]:
-        peaks = peaks[::-1]
-    p1, p2 = peaks
-    if p2 - p1 >= 3:
-        valley_local = p1 + int(np.argmin(hist[p1:p2 + 1]))
-        rec = float(edges[valley_local + 1])
-    else:
-        rec = float(np.percentile(arr, 50))
-
-    chart_hist, chart_edges = np.histogram(arr, bins=40)
-    thresholds = []
-    for t in [80, 100, 110, 115, 120, 125, 130, 135, 140, 150]:
-        kept = int((arr >= t).sum())
-        thresholds.append({"value": t, "kept": kept,
-                           "pct": round(100 * kept / len(arr), 1)})
-    return {
-        "frames": int(len(arr)),
-        "min": float(arr.min()), "max": float(arr.max()),
-        "mean": float(arr.mean()), "median": float(np.median(arr)),
-        "recommended": rec,
-        "kept_at_recommended": int((arr >= rec).sum()),
-        "histogram": {"counts": chart_hist.tolist(), "edges": chart_edges.tolist()},
-        "thresholds": thresholds,
-        "sampled": arr.size != upload.get("frames"),
-    }
 
 
 # ----------------------------------------------------------------------------
@@ -1233,42 +809,8 @@ def scan(file_id: str):
 # Jobs
 # ----------------------------------------------------------------------------
 
-@app.post("/api/run")
-def run(req: RunRequest):
-    upload = UPLOADED.get(req.input_ref)
-    if not upload:
-        raise HTTPException(404, "Input not found (upload first)")
+# run route moved to routers/run.py on 2026-05-01
 
-    if req.test:
-        out_name = f"_preview_{uuid.uuid4().hex[:8]}.mp4"
-    else:
-        out_name = (req.output_name or "cleaned").strip()
-        if not out_name.lower().endswith(".mp4"):
-            out_name += ".mp4"
-    output_path = OUTPUTS / out_name
-
-    # Project namespacing
-    if req.project_id:
-        proj = db.get_project(req.project_id)
-        if not proj:
-            raise HTTPException(404, "Project not found")
-        proj_dir = OUTPUTS / proj.name
-        proj_dir.mkdir(exist_ok=True)
-        output_path = proj_dir / out_name
-
-    settings = dict(req.settings)
-    settings["test"] = req.test
-
-    job = db.create_job(
-        kind=upload["kind"],
-        mode=req.mode,
-        input_ref=upload["path"],
-        output_path=str(output_path),
-        settings=settings,
-        project_id=req.project_id,
-    )
-    queue.submit(job.id)
-    return {"job_id": job.id, "queue_position": queue.pending()}
 
 
 # jobs route moved to routers/jobs.py on 2026-05-01
@@ -1386,61 +928,8 @@ class PlaygroundRequest(BaseModel):
     preset: str | None = None  # if set, recolour boxes + relabel using preset
 
 
-@app.post("/api/playground/test")
-def playground_test(req: PlaygroundRequest):
-    """Run a registered model on an uploaded image (or first frame of an uploaded video).
-    Returns annotated image URL + detection list.
-    """
-    model = db.get_model(req.model_id)
-    if not model:
-        raise HTTPException(404, "Model not found")
-    upload = UPLOADED.get(req.image_id)
-    if not upload:
-        raise HTTPException(404, "Image/video not found (upload first)")
+# playground route moved to routers/playground.py on 2026-05-01
 
-    src_path = Path(upload["path"])
-    if upload.get("kind") == "video" or src_path.suffix.lower() in ALLOWED_VIDEO_EXTS:
-        # Grab first frame
-        cap = cv2.VideoCapture(str(src_path))
-        ok, frame = cap.read()
-        cap.release()
-        if not ok:
-            raise HTTPException(400, "Could not read first frame from video.")
-        sample = OUTPUTS / f"_pg_sample_{uuid.uuid4().hex[:8]}.jpg"
-        cv2.imwrite(str(sample), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
-        image_path = str(sample)
-    else:
-        image_path = str(src_path)
-
-    # Auto-pick a preset when the user explicitly chose one OR when the
-    # registered model's class count matches a preset (e.g. 40 = arclap).
-    chosen_preset = None
-    if req.preset:
-        try:
-            chosen_preset = get_preset(req.preset)
-        except FileNotFoundError:
-            pass
-    elif model.n_classes:
-        for p in list_presets():
-            if p["n_classes"] == model.n_classes:
-                chosen_preset = get_preset(p["name"])
-                break
-
-    annotated, detections = predict_on_image(
-        model.path, image_path,
-        conf=req.conf, iou=req.iou, classes=req.classes,
-        device="cuda" if GPU_AVAILABLE else "cpu",
-        draw_masks=req.draw_masks, draw_keypoints=req.draw_keypoints,
-        preset=chosen_preset,
-    )
-    out_name = f"_pg_result_{uuid.uuid4().hex[:8]}.jpg"
-    out_path = OUTPUTS / out_name
-    cv2.imwrite(str(out_path), annotated, [cv2.IMWRITE_JPEG_QUALITY, 92])
-    return {
-        "annotated_url": f"/files/outputs/{out_name}",
-        "detections": detections,
-        "n_detections": len(detections),
-    }
 
 
 # ----------------------------------------------------------------------------
@@ -1452,82 +941,12 @@ import zipfile
 DATASETS: dict[str, dict] = {}  # in-memory metadata for uploaded datasets
 
 
-@app.post("/api/datasets/upload")
-async def upload_dataset(file: UploadFile = File(...)):
-    """Accept a ZIP of a CVAT (Ultralytics-format) dataset export.
-    Extracts into _datasets/<id>/ and validates that data.yaml exists.
-    """
-    if not (file.filename or "").lower().endswith(".zip"):
-        raise HTTPException(415, "Please upload a .zip of your CVAT export.")
-
-    dataset_id = uuid.uuid4().hex[:12]
-    dataset_dir = DATASETS_DIR / dataset_id
-    dataset_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = dataset_dir / "_upload.zip"
-
-    written = 0
-    with open(zip_path, "wb") as f:
-        while chunk := await file.read(1 << 20):
-            written += len(chunk)
-            if written > 5 * 1024 * 1024 * 1024:  # 5 GB cap on datasets
-                f.close()
-                shutil.rmtree(dataset_dir, ignore_errors=True)
-                raise HTTPException(413, "Dataset exceeds 5 GB limit.")
-            f.write(chunk)
-
-    try:
-        # Audit-fix 2026-04-30: use safe extractor that rejects ../ paths
-        # and absolute / symlink entries.
-        _safe_extract_zip(zip_path, dataset_dir)
-    except HTTPException:
-        shutil.rmtree(dataset_dir, ignore_errors=True)
-        raise
-    except zipfile.BadZipFile:
-        shutil.rmtree(dataset_dir, ignore_errors=True)
-        raise HTTPException(400, "Could not unzip the upload.")
-    finally:
-        zip_path.unlink(missing_ok=True)
-
-    # Find data.yaml — sometimes it sits in a nested folder after unzipping
-    yaml_files = list(dataset_dir.rglob("data.yaml")) + list(dataset_dir.rglob("*.yaml"))
-    yaml_files = [p for p in yaml_files if p.is_file()]
-    if not yaml_files:
-        shutil.rmtree(dataset_dir, ignore_errors=True)
-        raise HTTPException(400,
-            "No data.yaml found in the upload. Make sure the CVAT export "
-            "uses the 'Ultralytics YOLO' format.")
-    yaml_path = yaml_files[0]
-    # Effective dataset root = the dir containing data.yaml
-    effective_root = yaml_path.parent
-
-    # Read class info from the YAML
-    classes: list[str] = []
-    try:
-        import yaml as _yaml  # PyYAML is already a transitive dep via ultralytics
-        with open(yaml_path) as f:
-            d = _yaml.safe_load(f) or {}
-        names = d.get("names")
-        if isinstance(names, dict):
-            classes = [names[k] for k in sorted(names)]
-        elif isinstance(names, list):
-            classes = list(names)
-    except Exception:
-        pass
-
-    DATASETS[dataset_id] = {
-        "id": dataset_id,
-        "name": file.filename or dataset_id,
-        "root": str(effective_root),
-        "yaml": str(yaml_path),
-        "classes": classes,
-        "n_classes": len(classes),
-    }
-    return DATASETS[dataset_id]
+# datasets route moved to routers/datasets.py on 2026-05-01
 
 
-@app.get("/api/datasets")
-def list_datasets():
-    return list(DATASETS.values())
+
+# datasets route moved to routers/datasets.py on 2026-05-01
+
 
 
 class TrainRequest(BaseModel):
@@ -1540,28 +959,8 @@ class TrainRequest(BaseModel):
     patience: int = 20
 
 
-@app.post("/api/train")
-def start_training(req: TrainRequest):
-    ds = DATASETS.get(req.dataset_id)
-    if not ds:
-        raise HTTPException(404, "Dataset not found")
-    out_path = MODELS_DIR / f"{req.output_name}.pt"
-    job = db.create_job(
-        kind="dataset",
-        mode="train",
-        input_ref=ds["root"],
-        output_path=str(out_path),
-        settings={
-            "output_name": req.output_name,
-            "base_model": req.base_model,
-            "epochs": req.epochs,
-            "imgsz": req.imgsz,
-            "batch": req.batch,
-            "patience": req.patience,
-        },
-    )
-    queue.submit(job.id)
-    return {"job_id": job.id}
+# train route moved to routers/train.py on 2026-05-01
+
 
 
 # ----------------------------------------------------------------------------
@@ -2143,16 +1542,12 @@ class WorkhoursReq(BaseModel):
     schedule: list[dict]  # [{weekday, start_hour, end_hour, enabled}, ...]
 
 
-@app.get("/api/sites/{site_id}/workhours")
-def sites_workhours_get(site_id: str):
-    return {"site_id": site_id,
-            "workhours": machines_core.get_workhours(ROOT, site_id)}
+# sites route moved to routers/sites.py on 2026-05-01
 
 
-@app.put("/api/sites/{site_id}/workhours")
-def sites_workhours_set(site_id: str, req: WorkhoursReq):
-    return {"site_id": site_id,
-            "workhours": machines_core.set_workhours(ROOT, site_id, req.schedule)}
+
+# sites route moved to routers/sites.py on 2026-05-01
+
 
 
 # ─── Sessions + observations (read API) ──────────────────────────────
@@ -2258,49 +1653,12 @@ class UtilReportScheduleReq(BaseModel):
 
 
 # ─── Reports (CSV / PDF) ─────────────────────────────────────────────
-@app.get("/api/reports/csv")
-def reports_csv(type: str = "per-machine",
-                machine_id: str | None = None,
-                site_id: str | None = None,
-                since: str | None = None,         # ISO date
-                until: str | None = None,         # ISO date
-                from_: str | None = None,         # alias
-                to: str | None = None):
-    if from_ and not since: since = from_
-    if to and not until: until = to
-    if type == "per-machine":
-        body = machine_reports_core.csv_per_machine(
-            ROOT, machine_id=machine_id, site_id=site_id,
-            since_iso=since, until_iso=until)
-    elif type == "per-site":
-        body = machine_reports_core.csv_per_site(
-            ROOT, site_id=site_id, since_iso=since, until_iso=until)
-    elif type == "sessions":
-        from datetime import datetime as _dt
-        since_ts = _dt.fromisoformat(since).timestamp() if since else None
-        until_ts = _dt.fromisoformat(until + "T23:59:59").timestamp() if until else None
-        body = machine_reports_core.csv_sessions(
-            ROOT, since=since_ts, until=until_ts, machine_id=machine_id)
-    else:
-        raise HTTPException(400, f"Unknown CSV type: {type}")
-    fname = f"util_{type}_{int(time.time())}.csv"
-    return Response(content=body, media_type="text/csv",
-                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+# reports route moved to routers/reports.py on 2026-05-01
 
 
-@app.post("/api/reports/pdf")
-def reports_pdf(site_id: str | None = None,
-                since: str | None = None,
-                until: str | None = None,
-                from_: str | None = None,
-                to: str | None = None):
-    if from_ and not since: since = from_
-    if to and not until: until = to
-    p = machine_reports_core.pdf_weekly_report(
-        ROOT, site_id=site_id, since_iso=since, until_iso=until)
-    return FileResponse(str(p), media_type="application/pdf",
-                        filename=p.name,
-                        headers={"Cache-Control": "no-store"})
+
+# reports route moved to routers/reports.py on 2026-05-01
+
 
 
 # picker route moved to routers/picker.py on 2026-05-01
@@ -2637,61 +1995,8 @@ class RoboflowRunRequest(BaseModel):
     api_url: str = "https://serverless.roboflow.com"
 
 
-@app.post("/api/roboflow/run")
-def roboflow_run(req: RoboflowRunRequest):
-    """Run a Roboflow workflow against an uploaded image. The API key is
-    passed in per-request and never persisted server-side."""
-    from core.roboflow_workflow import (
-        extract_annotated_image_bytes,
-        extract_predictions,
-        run_workflow,
-    )
-    upload = UPLOADED.get(req.image_id)
-    if not upload:
-        raise HTTPException(404, "Image/video not found (upload first)")
+# roboflow route moved to routers/roboflow.py on 2026-05-01
 
-    src_path = Path(upload["path"])
-    if upload.get("kind") == "video" or src_path.suffix.lower() in ALLOWED_VIDEO_EXTS:
-        cap = cv2.VideoCapture(str(src_path))
-        ok, frame = cap.read()
-        cap.release()
-        if not ok:
-            raise HTTPException(400, "Could not read first frame from video.")
-        sample = OUTPUTS / f"_rf_sample_{uuid.uuid4().hex[:8]}.jpg"
-        cv2.imwrite(str(sample), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
-        image_path = str(sample)
-    else:
-        image_path = str(src_path)
-
-    try:
-        result = run_workflow(
-            api_key=req.api_key,
-            workspace=req.workspace,
-            workflow_id=req.workflow_id,
-            image_path=image_path,
-            classes=req.classes,
-            api_url=req.api_url,
-        )
-    except RuntimeError as e:
-        raise HTTPException(500, str(e))
-    except Exception as e:
-        raise HTTPException(502, f"Roboflow call failed: {e}")
-
-    annotated_bytes = extract_annotated_image_bytes(result)
-    annotated_url = None
-    if annotated_bytes:
-        out_name = f"_rf_result_{uuid.uuid4().hex[:8]}.jpg"
-        out_path = OUTPUTS / out_name
-        out_path.write_bytes(annotated_bytes)
-        annotated_url = f"/files/outputs/{out_name}"
-
-    detections = extract_predictions(result)
-    return {
-        "annotated_url": annotated_url,
-        "detections": detections,
-        "n_detections": len(detections),
-        "workflow": f"{req.workspace}/{req.workflow_id}",
-    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -3604,43 +2909,12 @@ class ZonesSaveRequest(BaseModel):
     zones: list[ZoneInRequest]
 
 
-@app.get("/api/zones/{camera_id}")
-def zones_list_endpoint(camera_id: str):
-    zs = zones_core.list_zones(ROOT, camera_id)
-    return {"zones": [
-        {
-            "name": z.name,
-            "polygon": z.polygon,
-            "rule": {
-                "allowed_classes": z.rule.allowed_classes,
-                "forbidden_classes": z.rule.forbidden_classes,
-                "count_min": z.rule.count_min,
-                "count_max": z.rule.count_max,
-                "time_window_hours": z.rule.time_window_hours,
-                "custom_alert_message": z.rule.custom_alert_message,
-            },
-            "color": z.color,
-        } for z in zs
-    ]}
+# zones route moved to routers/zones.py on 2026-05-01
 
 
-@app.post("/api/zones/{camera_id}")
-def zones_save_endpoint(camera_id: str, req: ZonesSaveRequest):
-    out = []
-    for z in req.zones:
-        rule = zones_core.ZoneRule(
-            allowed_classes=list(z.rule.get("allowed_classes", [])),
-            forbidden_classes=list(z.rule.get("forbidden_classes", [])),
-            count_min=z.rule.get("count_min"),
-            count_max=z.rule.get("count_max"),
-            time_window_hours=list(z.rule.get("time_window_hours", [])),
-            custom_alert_message=z.rule.get("custom_alert_message", ""),
-        )
-        out.append(zones_core.Zone(
-            name=z.name, polygon=z.polygon, rule=rule, color=z.color,
-        ))
-    zones_core.save_zones(ROOT, camera_id, out)
-    return {"ok": True, "n_zones": len(out)}
+
+# zones route moved to routers/zones.py on 2026-05-01
+
 
 
 # ============================================================================
@@ -3693,92 +2967,28 @@ class EventsBulkRequest(BaseModel):
 
 
 
-@app.get("/api/recordings")
-def recordings_list_endpoint(camera_id: str | None = None, limit: int = 200):
-    """List MP4 recordings on disk, grouped by camera+date."""
-    out_root = OUTPUTS
-    out: list[dict] = []
-    if not out_root.is_dir():
-        return {"recordings": []}
-    for mp4 in sorted(out_root.rglob("*.mp4"), key=lambda p: -p.stat().st_mtime)[:limit]:
-        try:
-            st = mp4.stat()
-            # Try to parse camera_id from filename pattern cam_<id>_<ts>.mp4
-            cam_id = ""
-            if mp4.name.startswith("cam_"):
-                parts = mp4.stem.split("_")
-                if len(parts) >= 2:
-                    cam_id = parts[1]
-            if camera_id and cam_id != camera_id:
-                continue
-            out.append({
-                "name": mp4.name,
-                "path": str(mp4),
-                "url": f"/files/outputs/{mp4.relative_to(out_root).as_posix()}",
-                "size_mb": round(st.st_size / (1024 * 1024), 2),
-                "created_at": st.st_mtime,
-                "camera_id": cam_id,
-            })
-        except Exception:
-            continue
-    return {"recordings": out}
+# recordings route moved to routers/recordings.py on 2026-05-01
 
 
-@app.delete("/api/recordings")
-def recording_delete_endpoint(path: str):
-    """Delete a specific recording."""
-    p = Path(path)
-    # Safety: must be inside _outputs
-    try:
-        p.resolve().relative_to(OUTPUTS.resolve())
-    except ValueError:
-        raise HTTPException(400, "Path is outside _outputs/")
-    if not p.is_file():
-        raise HTTPException(404)
-    p.unlink()
-    return {"ok": True}
+
+# recordings route moved to routers/recordings.py on 2026-05-01
 
 
-@app.get("/api/queue/status")
-def queue_status():
-    """Diagnostic: is the worker thread alive? what's currently running?
-    how many jobs queued? Use this to debug 'my job is stuck queued'."""
-    import threading as _th
-    threads = {t.name: t.is_alive() for t in _th.enumerate()}
-    return {
-        "worker_alive": "JobRunner" in threads and threads["JobRunner"],
-        "watchdog_alive": "JobRunnerWatchdog" in threads and threads["JobRunnerWatchdog"],
-        "current_job": runner.is_running(),
-        "queue_size": queue.qsize() if hasattr(queue, "qsize") else queue._q.qsize(),
-        "all_threads": threads,
-    }
+
+# queue route moved to routers/queue.py on 2026-05-01
 
 
-@app.post("/api/queue/force-stop-current")
-def queue_force_stop():
-    """If a job is stuck running and stop_current() doesn't move on, this
-    forcibly kills the subprocess + clears the worker's proc state so the
-    next job can be picked up."""
-    killed = runner.stop_current()
-    # Force-clear worker state in case stop_current didn't release the lock
-    try:
-        with runner._proc_lock:
-            runner._proc = None
-            runner._current_job_id = None
-    except Exception:
-        pass
-    return {"ok": True, "killed": killed}
+
+# queue route moved to routers/queue.py on 2026-05-01
+
 
 
 # system route moved to routers/system.py on 2026-05-01
 
 
 
-@app.post("/api/disk/sweep")
-def disk_sweep_now_endpoint():
-    """Trigger an immediate disk-cleanup sweep instead of waiting for the
-    30-min cycle."""
-    return disk_core.run_full_sweep(ROOT)
+# disk route moved to routers/disk.py on 2026-05-01
+
 
 
 # TensorRT INT8 export (already had FP16 — adding INT8 with calibration)
