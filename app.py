@@ -354,6 +354,7 @@ from routers import zones as _routers_zones  # noqa: E402
 from routers import recordings as _routers_recordings  # noqa: E402
 from routers import queue as _routers_queue  # noqa: E402
 from routers import disk as _routers_disk  # noqa: E402
+from routers import observability as _routers_observability  # noqa: E402
 app.include_router(_routers_system.router)
 app.include_router(_routers_presets.router)
 app.include_router(_routers_models.router)
@@ -392,6 +393,40 @@ app.include_router(_routers_zones.router)
 app.include_router(_routers_recordings.router)
 app.include_router(_routers_queue.router)
 app.include_router(_routers_disk.router)
+app.include_router(_routers_observability.router)
+
+
+# Request-ID + observability middleware (P1 from 2026-05-01 swarm run).
+# Adds an X-Request-ID header (incoming or new uuid), wraps each request in
+# a duration timer, and feeds counters into routers.observability.
+import uuid as _uuid_obs
+import time as _time_obs
+
+
+@app.middleware("http")
+async def _observability_middleware(request, call_next):
+    rid = request.headers.get("X-Request-ID") or _uuid_obs.uuid4().hex[:12]
+    request.state.request_id = rid
+    start = _time_obs.perf_counter()
+    try:
+        response = await call_next(request)
+        status = response.status_code
+    except Exception:
+        status = 500
+        try:
+            _routers_observability.record_request(
+                request.method, status, _time_obs.perf_counter() - start,
+            )
+        except Exception:
+            pass
+        raise
+    duration = _time_obs.perf_counter() - start
+    response.headers["X-Request-ID"] = rid
+    try:
+        _routers_observability.record_request(request.method, status, duration)
+    except Exception:
+        pass
+    return response
 
 
 
