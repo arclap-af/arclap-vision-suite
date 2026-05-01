@@ -4,6 +4,18 @@
 (function () {
   const $ = (id) => document.getElementById(id);
 
+  // Audit-fix 2026-04-30: scope picker image fetches to the active scan
+  // so the backend can refuse out-of-scope paths. Falls back to no-arg
+  // query if _ppActiveScan isn't set (backend will then check ALL scans).
+  function _ppImg(path) {
+    const enc = encodeURIComponent(path);
+    if (typeof _ppActiveScan !== 'undefined' && _ppActiveScan) {
+      return `/api/picker/image?path=${enc}&job_id=${encodeURIComponent(_ppActiveScan)}`;
+    }
+    return `/api/picker/image?path=${enc}`;
+  }
+
+
   // ── Lucide-style icon set (lifted verbatim from the Arclap design
   // system; do not add icons outside this map, do not use emoji).
   // Use: arcIcon('camera', 16) → returns an <svg> string.
@@ -788,7 +800,7 @@
       const stride = Math.max(1, Math.floor(withFrame.length / 8));
       const strip = withFrame.filter((_,i) => i % stride === 0).slice(0, 8);
       const stripHtml = strip.length
-        ? strip.map(o => `<img src="/api/picker/image?path=${encodeURIComponent(o.frame_path)}" style="width:64px;height:64px;object-fit:cover;border-radius:4px;background:#222;margin-right:4px" alt=""/>`).join('')
+        ? strip.map(o => `<img src="${_ppImg(o.frame_path)}" style="width:64px;height:64px;object-fit:cover;border-radius:4px;background:#222;margin-right:4px" alt=""/>`).join('')
         : '<span class="muted small">no frame thumbnails</span>';
       body.innerHTML = `
         <div style="background:var(--color-surface-alt);padding:14px;border-radius:8px;margin-bottom:14px">
@@ -1878,7 +1890,7 @@
     const svg = $('pp-lightbox-svg');
     const info = $('pp-lightbox-info');
     if (img) {
-      img.src = `/api/picker/image?path=${encodeURIComponent(p.path)}`;
+      img.src = `${_ppImg(p.path)}`;
       img.style.transform = `scale(${_lbZoom}) translate(${_lbPan.x}px, ${_lbPan.y}px)`;
     }
     if (svg) {
@@ -2070,7 +2082,7 @@
       }
       wrap.innerHTML = list.map(n => `
         <a class="pp-side-thumb" data-path="${encodeURIComponent(n.path)}" title="cos ${n.sim.toFixed(2)}">
-          <img src="/api/picker/image?path=${encodeURIComponent(n.path)}" loading="lazy"/>
+          <img src="${_ppImg(n.path)}" loading="lazy"/>
           <span class="pp-side-thumb-sim mono">${n.sim.toFixed(2)}</span>
         </a>`).join('');
       wrap.querySelectorAll('.pp-side-thumb').forEach(a => {
@@ -2080,7 +2092,7 @@
           // Highlight in grid + open lightbox if present in cache
           const idx = _ppPicksCache.findIndex(x => x.path === p);
           if (idx >= 0) _ppOpenLightbox(idx);
-          else window.open(`/api/picker/image?path=${encodeURIComponent(p)}`, '_blank');
+          else window.open(`${_ppImg(p)}`, '_blank');
         });
       });
     } catch(_e) {
@@ -2129,7 +2141,7 @@
     }
     sec.innerHTML = `
       <div class="pp-side-thumb pp-side-thumb-large">
-        <img src="/api/picker/image?path=${encodeURIComponent(ref.path)}" loading="lazy"/>
+        <img src="${_ppImg(ref.path)}" loading="lazy"/>
         <span class="pp-side-thumb-sim mono">ref</span>
       </div>
       <p class="muted small" style="padding:6px 8px">${escapeText(_ppShortenReason(ref.reason || ''))}</p>`;
@@ -2696,7 +2708,7 @@
       <button class="pp-card-zoom" data-act="zoom" title="Open lightbox (Enter)" type="button">⤢</button>
       ${densityBadge}
       <div class="pp-card-thumb">
-        <img src="/api/picker/image?path=${safePath}" loading="lazy" alt="${escapeAttr(fname)}"/>
+        <img src="${_ppImg(p.path)}" loading="lazy" alt="${escapeAttr(fname)}"/>
       </div>
       <div class="pp-card-meta">
         <b title="Suggested class">${escapeText(clsName)}</b>

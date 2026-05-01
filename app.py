@@ -77,8 +77,79 @@ GPU_NAME = torch.cuda.get_device_name(0) if GPU_AVAILABLE else "CPU only"
 
 # Upload limits
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB
+MAX_IMAGE_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB per image
+MAX_BATCH_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB total per batch
 ALLOWED_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 ALLOWED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+
+
+def _safe_extract_zip(zip_path, target_dir):
+    """Extract a zip while preventing zip-slip (path traversal via ../).
+    Resolves each entry against `target_dir`; rejects anything that
+    would land outside it. Audit-fix 2026-04-30: pre-fix the dataset
+    upload + import-zip endpoints called extractall() directly,
+    allowing a malicious zip with `../../etc/foo` entries to write
+    outside the target dir."""
+    import zipfile as _zf_safe
+    target = Path(target_dir).resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    with _zf_safe.ZipFile(zip_path) as zf:
+        for member in zf.namelist():
+            # 1. Reject absolute paths
+            if Path(member).is_absolute() or member.startswith("/") or member.startswith("\\"):
+                raise HTTPException(400, f"Zip contains absolute path: {member}")
+            # 2. Reject anything that resolves outside target
+            dest = (target / member).resolve()
+            try:
+                dest.relative_to(target)
+            except ValueError:
+                raise HTTPException(400, f"Zip contains unsafe path (zip-slip): {member}")
+            # 3. Reject symlinks (zips can carry them; PyPI zipfile doesn't
+            #    extract them, but be defensive)
+            info = zf.getinfo(member)
+            mode = (info.external_attr >> 16) & 0o777777
+            if (mode & 0o170000) == 0o120000:  # symlink
+                raise HTTPException(400, f"Zip contains symlink: {member}")
+        zf.extractall(target_dir)
+
+
+def _bounded_chunked_write(file_obj, dest_path: Path, max_bytes: int,
+                            label: str = "upload"):
+    """Stream an UploadFile to disk in 1 MB chunks, aborting if the
+    cumulative size would exceed `max_bytes`. Cleans up partial file on
+    failure. Audit-fix 2026-04-30: prevents disk-fill attacks via
+    unbounded uploads on /api/upload, /api/upload/image*, /swiss/import-zip.
+    Caller is responsible for awaiting via:
+        await _bounded_chunked_write_async(...)
+    For sync routes, use the inline pattern from upload_model() instead.
+    """
+    raise NotImplementedError("use _bounded_chunked_write_async for async routes")
+
+
+async def _bounded_chunked_write_async(file_obj, dest_path: Path,
+                                         max_bytes: int, label: str = "upload"):
+    """Async variant for FastAPI UploadFile."""
+    written = 0
+    try:
+        with open(dest_path, "wb") as f:
+            while chunk := await file_obj.read(1 << 20):  # 1 MB
+                written += len(chunk)
+                if written > max_bytes:
+                    f.close()
+                    dest_path.unlink(missing_ok=True)
+                    mb = max_bytes // (1024 * 1024)
+                    raise HTTPException(
+                        413,
+                        f"{label} exceeds {mb} MB limit "
+                        f"(read {written // (1024*1024)} MB so far)"
+                    )
+                f.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        dest_path.unlink(missing_ok=True)
+        raise HTTPException(500, f"{label} write failed: {e}")
+    return written
 
 # ----------------------------------------------------------------------------
 # Persistence + queue
@@ -1038,13 +1109,29 @@ async def upload_image_batch(files: list[UploadFile] = File(...)):
         # zero-pad so the directory sorts in the order the user picked them
         name = f"{i:06d}_{Path(file.filename or 'img.jpg').name}"
         dest = folder / name
+        # Audit-fix 2026-04-30: add per-file cap. Total batch cap is
+        # already enforced below, but a single hostile 5 GB upload
+        # would fully consume the budget — bound each file to 50 MB.
+        per_file_bytes = 0
         with open(dest, "wb") as f:
             while chunk := await file.read(1 << 20):
+                per_file_bytes += len(chunk)
                 total_bytes += len(chunk)
-                if total_bytes > 5 * 1024 * 1024 * 1024:  # 5 GB total batch cap
+                if per_file_bytes > MAX_IMAGE_UPLOAD_BYTES:
                     f.close()
                     shutil.rmtree(folder, ignore_errors=True)
-                    raise HTTPException(413, "Batch exceeds 5 GB total size.")
+                    raise HTTPException(
+                        413,
+                        f"Image '{file.filename}' exceeds "
+                        f"{MAX_IMAGE_UPLOAD_BYTES // (1024*1024)} MB per-file limit."
+                    )
+                if total_bytes > MAX_BATCH_UPLOAD_BYTES:
+                    f.close()
+                    shutil.rmtree(folder, ignore_errors=True)
+                    raise HTTPException(
+                        413,
+                        f"Batch exceeds {MAX_BATCH_UPLOAD_BYTES // (1024**3)} GB total size."
+                    )
                 f.write(chunk)
         saved += 1
 
@@ -1842,8 +1929,12 @@ async def upload_dataset(file: UploadFile = File(...)):
             f.write(chunk)
 
     try:
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(dataset_dir)
+        # Audit-fix 2026-04-30: use safe extractor that rejects ../ paths
+        # and absolute / symlink entries.
+        _safe_extract_zip(zip_path, dataset_dir)
+    except HTTPException:
+        shutil.rmtree(dataset_dir, ignore_errors=True)
+        raise
     except zipfile.BadZipFile:
         shutil.rmtree(dataset_dir, ignore_errors=True)
         raise HTTPException(400, "Could not unzip the upload.")
@@ -3123,15 +3214,66 @@ def picker_face_blur_backend():
     return face_blur_core.backend_info()
 
 
+def _path_in_any_filter_scan(path: str) -> bool:
+    """Look up `path` in every filter_*.db's `images` table. Returns True
+    iff the path is a registered scan image somewhere. Audit-fix
+    2026-04-30: prevents /api/picker/image from serving arbitrary local
+    files (only scan-registered images allowed)."""
+    import glob
+    for db_file in glob.glob(str(_data_dir() / "filter_*.db")):
+        try:
+            c = _sqlite3.connect(db_file)
+            row = c.execute(
+                "SELECT 1 FROM images WHERE path = ? LIMIT 1", (path,)
+            ).fetchone()
+            c.close()
+            if row:
+                return True
+        except _sqlite3.OperationalError:
+            # DB might be locked / corrupt / pre-images-table — skip
+            continue
+    return False
+
+
+def _data_dir():
+    """Resolve the _data dir relative to this app file."""
+    return Path(__file__).parent / "_data"
+
+
 @app.get("/api/picker/image")
-def picker_image(path: str):
-    """Serve a thumbnail of a source image. Path is the absolute filesystem
-    path stored in the scan DB. Restricted to image files for safety."""
+def picker_image(path: str, job_id: str | None = None):
+    """Serve a source image. Path must be registered in a filter scan
+    DB — prevents arbitrary local file disclosure.
+
+    If `job_id` is supplied, validate against THAT scan's images table
+    (fast path — single DB lookup, used by the picker UI which knows
+    its active scan). Without `job_id`, fall back to scanning every
+    filter_*.db (slower but works for callers that don't know which
+    scan a path belongs to).
+
+    Audit-fix 2026-04-30: pre-fix the endpoint accepted any filesystem
+    path with a whitelisted image extension, allowing read of any
+    .jpg/.png/etc on disk.
+    """
     p = Path(path).resolve()
     if not p.is_file():
         raise HTTPException(404, "Image not found")
     if p.suffix.lower() not in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
         raise HTTPException(400, "Not an image")
+
+    # Scope check — must be a path registered in a filter scan
+    if job_id:
+        try:
+            _, db_path = _filter_db(job_id)
+        except HTTPException:
+            raise HTTPException(404, "Scan not found")
+        if not _path_in_scan(db_path, str(p)) and not _path_in_scan(db_path, path):
+            raise HTTPException(403, "Path not in this scan")
+    else:
+        # No scan ID supplied — search all filter scans
+        if not _path_in_any_filter_scan(str(p)) and not _path_in_any_filter_scan(path):
+            raise HTTPException(403, "Path not in any registered scan")
+
     return FileResponse(str(p), media_type="image/jpeg")
 
 
@@ -5863,15 +6005,38 @@ def swiss_import_zip(file: UploadFile = File(...)):
     swiss_core.ensure_initialized(ROOT)
     droot = swiss_core.dataset_root(ROOT)
     tmp_zip = droot / f"_import_{int(time.time())}.zip"
-    with tmp_zip.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+    # Audit-fix 2026-04-30: chunked write with size cap (was copyfileobj
+    # with NO limit — could fill disk on a large upload).
+    written = 0
+    try:
+        with tmp_zip.open("wb") as f:
+            while True:
+                chunk = file.file.read(1 << 20)  # 1 MB
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_UPLOAD_BYTES:
+                    f.close()
+                    tmp_zip.unlink(missing_ok=True)
+                    raise HTTPException(
+                        413,
+                        f"Zip exceeds {MAX_UPLOAD_BYTES // (1024**3)} GB upload limit "
+                        f"(read {written // (1024*1024)} MB so far)."
+                    )
+                f.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        tmp_zip.unlink(missing_ok=True)
+        raise HTTPException(500, f"Upload write failed: {e}")
 
-    import zipfile as _zip
     extract_root = droot / "_extract" / tmp_zip.stem
     extract_root.mkdir(parents=True, exist_ok=True)
     try:
-        with _zip.ZipFile(tmp_zip) as zf:
-            zf.extractall(extract_root)
+        # Audit-fix 2026-04-30: safe extractor (zip-slip protection).
+        _safe_extract_zip(tmp_zip, extract_root)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(400, f"Bad zip: {e}")
 
