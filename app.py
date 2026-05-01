@@ -313,6 +313,39 @@ app.mount("/static", _NoCacheStaticFiles(directory=str(STATIC)), name="static")
 app.mount("/files/uploads", StaticFiles(directory=str(UPLOADS)), name="uploads")
 app.mount("/files/outputs", StaticFiles(directory=str(OUTPUTS)), name="outputs")
 
+# Modular routers (P1 from 2026-05-01 swarm run, hive-mind approved).
+# Each handler accesses app.* globals via a late `import app as _app`
+# inside its function body, so registration here causes no circular import.
+from routers import system as _routers_system  # noqa: E402
+from routers import presets as _routers_presets  # noqa: E402
+from routers import models as _routers_models  # noqa: E402
+from routers import events as _routers_events  # noqa: E402
+from routers import jobs as _routers_jobs  # noqa: E402
+from routers import cameras as _routers_cameras  # noqa: E402
+from routers import machines as _routers_machines  # noqa: E402
+from routers import utilization as _routers_utilization  # noqa: E402
+from routers import discovery as _routers_discovery  # noqa: E402
+from routers import rtsp as _routers_rtsp  # noqa: E402
+from routers import registry as _routers_registry  # noqa: E402
+from routers import projects as _routers_projects  # noqa: E402
+from routers import alerts as _routers_alerts  # noqa: E402
+from routers import machine_alerts as _routers_machine_alerts  # noqa: E402
+app.include_router(_routers_system.router)
+app.include_router(_routers_presets.router)
+app.include_router(_routers_models.router)
+app.include_router(_routers_events.router)
+app.include_router(_routers_jobs.router)
+app.include_router(_routers_cameras.router)
+app.include_router(_routers_machines.router)
+app.include_router(_routers_utilization.router)
+app.include_router(_routers_discovery.router)
+app.include_router(_routers_rtsp.router)
+app.include_router(_routers_registry.router)
+app.include_router(_routers_projects.router)
+app.include_router(_routers_alerts.router)
+app.include_router(_routers_machine_alerts.router)
+
+
 
 @app.on_event("startup")
 def _startup() -> None:
@@ -452,68 +485,12 @@ UPLOADED: dict[str, dict] = {}
 # System / health
 # ----------------------------------------------------------------------------
 
-@app.get("/api/system")
-def system_info():
-    info = {
-        "gpu_available": GPU_AVAILABLE,
-        "gpu_name": GPU_NAME,
-        "queue_pending": queue.pending(),
-        "current_job": runner.is_running(),
-        "pipelines": pipeline_registry.list_modes(),
-    }
-    if GPU_AVAILABLE:
-        try:
-            free, total = torch.cuda.mem_get_info()
-            info["gpu_memory_total_mb"] = round(total / (1024 ** 2))
-            info["gpu_memory_free_mb"] = round(free / (1024 ** 2))
-            info["gpu_memory_used_mb"] = round((total - free) / (1024 ** 2))
-            info["gpu_memory_pct_used"] = round(100 * (total - free) / total, 1)
-        except Exception:
-            pass
-    return info
+# system route moved to routers/system.py on 2026-05-01
 
 
-@app.get("/api/projects/{project_id}/analytics")
-def project_analytics(project_id: str):
-    """Aggregate every completed job in this project into longitudinal stats."""
-    proj = db.get_project(project_id)
-    if not proj:
-        raise HTTPException(404, "Project not found")
-    jobs = db.list_jobs(project_id=project_id, limit=1000)
 
-    total = len(jobs)
-    by_status: dict[str, int] = {}
-    by_mode: dict[str, int] = {}
-    durations: list[float] = []
-    by_day: dict[str, int] = {}
+# projects route moved to routers/projects.py on 2026-05-01
 
-    from datetime import datetime
-    for j in jobs:
-        by_status[j.status] = by_status.get(j.status, 0) + 1
-        by_mode[j.mode] = by_mode.get(j.mode, 0) + 1
-        if j.started_at and j.finished_at:
-            durations.append(j.finished_at - j.started_at)
-        day = datetime.fromtimestamp(j.created_at).strftime("%Y-%m-%d")
-        by_day[day] = by_day.get(day, 0) + 1
-
-    return {
-        "project": {"id": proj.id, "name": proj.name},
-        "totals": {
-            "jobs": total,
-            "succeeded": by_status.get("done", 0),
-            "failed": by_status.get("failed", 0),
-            "stopped": by_status.get("stopped", 0),
-        },
-        "by_mode": by_mode,
-        "by_day": dict(sorted(by_day.items())),
-        "duration_seconds": {
-            "count": len(durations),
-            "total": round(sum(durations), 1),
-            "avg": round(sum(durations) / len(durations), 1) if durations else 0,
-            "min": round(min(durations), 1) if durations else 0,
-            "max": round(max(durations), 1) if durations else 0,
-        },
-    }
 
 
 # Friendlier mapping of common subprocess failures
@@ -539,17 +516,8 @@ _ERROR_HINTS: list[tuple[str, str]] = [
 ]
 
 
-@app.get("/api/jobs/{job_id}/error-hint")
-def job_error_hint(job_id: str):
-    """Translate the most recent error in a job's log into a friendly hint."""
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404, "Job not found")
-    log = j.log_text or ""
-    for needle, hint in _ERROR_HINTS:
-        if needle in log:
-            return {"matched": needle, "hint": hint}
-    return {"matched": None, "hint": None}
+# jobs route moved to routers/jobs.py on 2026-05-01
+
 
 
 class RetentionRequest(BaseModel):
@@ -679,64 +647,12 @@ def dashboard():
     return info
 
 
-@app.get("/api/projects/{project_id}/audit-zip")
-def project_audit_zip(project_id: str):
-    """Bundle every job's audit HTML + per-frame CSV / status JSON
-    for a project into a single zip download."""
-    proj = db.get_project(project_id)
-    if not proj:
-        raise HTTPException(404, "Project not found")
-    jobs = db.list_jobs(project_id=project_id, limit=10000)
-
-    import io
-    import zipfile as _zf
-    buf = io.BytesIO()
-    with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as zf:
-        # Project metadata
-        meta = {
-            "project": {"id": proj.id, "name": proj.name,
-                        "settings": proj.settings,
-                        "created_at": proj.created_at},
-            "exported_at": time.time(),
-            "job_count": len(jobs),
-        }
-        zf.writestr("project.json", json.dumps(meta, indent=2))
-
-        for j in jobs:
-            d = j.output_path
-            siblings = [
-                Path(d),
-                Path(d).with_suffix(".audit.html"),
-                Path(d).with_suffix(".live_status.json"),
-                Path(d).with_suffix(".ppe_report.csv"),
-            ]
-            for path in siblings:
-                if path.is_file():
-                    arc = f"{j.id}/{path.name}"
-                    zf.write(path, arcname=arc)
-            zf.writestr(f"{j.id}/job.json", json.dumps(_job_to_dict(j), indent=2))
-
-    buf.seek(0)
-    headers = {"Content-Disposition": f'attachment; filename="audit_{proj.name}.zip"'}
-    return StreamingResponse(buf, media_type="application/zip", headers=headers)
+# projects route moved to routers/projects.py on 2026-05-01
 
 
-@app.post("/api/jobs/{job_id}/rerun")
-def rerun_job(job_id: str):
-    """Queue a fresh job using the same mode + settings + input as a previous one."""
-    src = db.get_job(job_id)
-    if not src:
-        raise HTTPException(404, "Job not found")
-    out_path = OUTPUTS / (Path(src.output_path).stem + "_rerun.mp4")
-    new_job = db.create_job(
-        kind=src.kind, mode=src.mode,
-        input_ref=src.input_ref,
-        output_path=str(out_path),
-        settings=src.settings,
-        project_id=src.project_id,
-    )
-    queue.submit(new_job.id)
-    return {"job_id": new_job.id}
+
+# jobs route moved to routers/jobs.py on 2026-05-01
+
 
 
 @app.get("/health")
@@ -804,122 +720,12 @@ def _sanitize_rtsp_url(url: str) -> str:
     return f"{scheme}://{user}:{pwd_enc}@{host_and_path}"
 
 
-@app.post("/api/rtsp/start")
-def rtsp_start(req: RtspStartRequest):
-    """Spawn the live processor as a queued job."""
-    # Sanitize: auto-percent-encode special chars in the password. Without
-    # this, passwords containing '@' (very common) make OpenCV silently fail
-    # to open the stream while VLC works fine.
-    req.url = _sanitize_rtsp_url(req.url)
-    out_name = (req.output_name or f"rtsp_{int(time.time())}").strip()
-    if not out_name.lower().endswith(".mp4"):
-        out_name += ".mp4"
-    output_path = OUTPUTS / out_name
-    if req.project_id:
-        proj = db.get_project(req.project_id)
-        if proj:
-            proj_dir = OUTPUTS / proj.name
-            proj_dir.mkdir(exist_ok=True)
-            output_path = proj_dir / out_name
-
-    # Default model = active CSI version when not supplied
-    model_path = req.model
-    if not model_path:
-        try:
-            active = swiss_core.active_version(ROOT)
-            if active:
-                model_path = active["path"]
-        except Exception:
-            model_path = None
-
-    base = output_path.with_suffix("")
-    settings = {
-        "rtsp_mode": req.rtsp_mode,
-        "conf": req.conf,
-        "iou": req.iou,
-        "detect_every": req.detect_every,
-        "max_fps": req.max_fps,
-        "duration": req.duration,
-        "tracker": req.tracker,
-        "class_filter": req.class_filter,
-        "mjpeg_port": req.mjpeg_port,
-        "status_path": str(base) + ".live_status.json",
-        "control_path": str(base) + ".control.json",
-        "events_csv": str(base) + ".events.csv",
-        "snapshot_dir": str(base) + "_snapshots",
-    }
-    if model_path:
-        settings["model"] = model_path
-    if req.camera_id:
-        settings["camera_id"] = req.camera_id
-        # Resolve zones file for this camera
-        zone_file = ROOT / "_data" / "zones" / f"{req.camera_id}.json"
-        if zone_file.is_file():
-            settings["zones_file"] = str(zone_file)
-    job = db.create_job(
-        kind="stream",
-        mode="rtsp",
-        input_ref=req.url,
-        output_path=str(output_path),
-        settings=settings,
-        project_id=req.project_id,
-    )
-    queue.submit(job.id)
-    return {"job_id": job.id, "mjpeg_port": req.mjpeg_port}
+# rtsp route moved to routers/rtsp.py on 2026-05-01
 
 
-@app.get("/api/rtsp/{job_id}/mjpeg")
-def rtsp_mjpeg_proxy(job_id: str):
-    """Proxy the MJPEG stream from the live processor's localhost server.
-    The browser hits this URL (relative to the Suite); we stream from
-    the script's MJPEG server.
 
-    The actual bound port may differ from the requested one (the script
-    auto-walks if the port is busy). We read the bound port from the
-    live status JSON, falling back to the requested port if absent.
-    """
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404, "Job not found")
-    port = (j.settings or {}).get("mjpeg_port", 8765)
-    # Prefer the actual bound port from the live status file
-    status_path_str = (j.settings or {}).get("status_path")
-    if status_path_str:
-        sp = Path(status_path_str)
-        if sp.is_file():
-            try:
-                status = json.loads(sp.read_text(encoding="utf-8"))
-                actual = status.get("mjpeg_port")
-                if actual and int(actual) > 0:
-                    port = int(actual)
-            except Exception:
-                pass
-    upstream_url = f"http://127.0.0.1:{port}/mjpeg"
-    import urllib.request
-    try:
-        upstream = urllib.request.urlopen(upstream_url, timeout=5)
-    except Exception as e:
-        raise HTTPException(503, f"MJPEG upstream unreachable: {e}")
-    boundary = "arclapframe"
+# rtsp route moved to routers/rtsp.py on 2026-05-01
 
-    def _gen():
-        try:
-            while True:
-                chunk = upstream.read(64 * 1024)
-                if not chunk:
-                    break
-                yield chunk
-        except Exception:
-            pass
-        finally:
-            try: upstream.close()
-            except Exception: pass
-
-    return StreamingResponse(
-        _gen(),
-        media_type=f"multipart/x-mixed-replace; boundary={boundary}",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
-    )
 
 
 class RtspUpdateRequest(BaseModel):
@@ -930,110 +736,28 @@ class RtspUpdateRequest(BaseModel):
     snapshot: bool | None = None
 
 
-@app.post("/api/rtsp/{job_id}/update")
-def rtsp_update_settings(job_id: str, req: RtspUpdateRequest):
-    """Live-update the running processor's conf / iou / class filter / pause /
-    request snapshot. Writes the control JSON file the script polls every 500ms."""
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404, "Job not found")
-    ctrl_path = (j.settings or {}).get("control_path")
-    if not ctrl_path:
-        raise HTTPException(400, "Job has no control file (started before live-update support)")
-    p = Path(ctrl_path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    existing = {}
-    if p.is_file():
-        try:
-            existing = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            existing = {}
-    payload = req.model_dump(exclude_none=True)
-    existing.update(payload)
-    p.write_text(json.dumps(existing), encoding="utf-8")
-    return {"ok": True, "applied": payload}
+# rtsp route moved to routers/rtsp.py on 2026-05-01
 
 
-@app.get("/api/rtsp/{job_id}/events.csv")
-def rtsp_events_csv(job_id: str):
-    """Download the per-detection events CSV the script writes."""
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404)
-    p = (j.settings or {}).get("events_csv")
-    if not p or not Path(p).is_file():
-        raise HTTPException(404, "No events CSV yet — start the stream first.")
-    return FileResponse(p, media_type="text/csv",
-                         filename=Path(p).name)
+
+# rtsp route moved to routers/rtsp.py on 2026-05-01
 
 
-@app.get("/api/rtsp/{job_id}/snapshots")
-def rtsp_list_snapshots(job_id: str):
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404)
-    d = (j.settings or {}).get("snapshot_dir")
-    if not d or not Path(d).is_dir():
-        return {"snapshots": []}
-    snaps = sorted(Path(d).glob("snap_*.png"),
-                    key=lambda p: -p.stat().st_mtime)
-    return {"snapshots": [{"name": s.name, "size_kb": round(s.stat().st_size / 1024, 1),
-                            "url": f"/api/rtsp/{job_id}/snapshot-file?name={s.name}"}
-                          for s in snaps[:50]]}
+
+# rtsp route moved to routers/rtsp.py on 2026-05-01
 
 
-@app.get("/api/rtsp/{job_id}/snapshot-file")
-def rtsp_snapshot_file(job_id: str, name: str):
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404)
-    d = (j.settings or {}).get("snapshot_dir")
-    if not d:
-        raise HTTPException(404)
-    safe = Path(name).name
-    p = Path(d) / safe
-    if not p.is_file():
-        raise HTTPException(404)
-    return FileResponse(p)
+
+# rtsp route moved to routers/rtsp.py on 2026-05-01
 
 
-@app.get("/api/cameras/webcams")
-def list_webcams():
-    """Probe the first 5 USB camera indices, return which respond. Cheap
-    test using cv2.VideoCapture — opens, reads one frame, closes."""
-    cams = []
-    for idx in range(5):
-        try:
-            cap = cv2.VideoCapture(
-                idx, cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY)
-            ok = cap.isOpened()
-            w = h = 0
-            if ok:
-                ok, frame = cap.read()
-                if ok and frame is not None:
-                    h, w = frame.shape[:2]
-            cap.release()
-            if ok and w > 0:
-                cams.append({"index": idx, "label": f"Webcam {idx}",
-                              "resolution": [w, h]})
-        except Exception:
-            continue
-    return {"webcams": cams}
+
+# cameras route moved to routers/cameras.py on 2026-05-01
 
 
-@app.get("/api/rtsp/{job_id}/live")
-def rtsp_live_status(job_id: str):
-    """Poll the status JSON the running rtsp_live.py keeps refreshed."""
-    job = db.get_job(job_id)
-    if not job:
-        raise HTTPException(404, "Job not found")
-    status_path = Path(job.output_path).with_suffix(".live_status.json")
-    if not status_path.exists():
-        return {"state": "starting"}
-    try:
-        return json.loads(status_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {"state": "starting"}
+
+# rtsp route moved to routers/rtsp.py on 2026-05-01
+
 
 
 # ----------------------------------------------------------------------------
@@ -1483,36 +1207,20 @@ def scan(file_id: str):
 # Projects
 # ----------------------------------------------------------------------------
 
-@app.get("/api/projects")
-def list_projects():
-    return [
-        {"id": p.id, "name": p.name, "settings": p.settings,
-         "created_at": p.created_at}
-        for p in db.list_projects()
-    ]
+# projects route moved to routers/projects.py on 2026-05-01
 
 
-@app.post("/api/projects")
-def create_project(req: ProjectIn):
-    p = db.create_project(req.name, req.settings)
-    return {"id": p.id, "name": p.name, "settings": p.settings,
-            "created_at": p.created_at}
+
+# projects route moved to routers/projects.py on 2026-05-01
 
 
-@app.put("/api/projects/{project_id}")
-def update_project(project_id: str, req: ProjectIn):
-    if not db.get_project(project_id):
-        raise HTTPException(404, "Project not found")
-    db.update_project_settings(project_id, req.settings)
-    p = db.get_project(project_id)
-    return {"id": p.id, "name": p.name, "settings": p.settings,
-            "created_at": p.created_at}
+
+# projects route moved to routers/projects.py on 2026-05-01
 
 
-@app.delete("/api/projects/{project_id}")
-def delete_project(project_id: str):
-    db.delete_project(project_id)
-    return {"ok": True}
+
+# projects route moved to routers/projects.py on 2026-05-01
+
 
 
 # ----------------------------------------------------------------------------
@@ -1557,56 +1265,20 @@ def run(req: RunRequest):
     return {"job_id": job.id, "queue_position": queue.pending()}
 
 
-@app.get("/api/jobs")
-def list_jobs(project_id: str | None = None, limit: int = 50):
-    return [_job_to_dict(j) for j in db.list_jobs(project_id=project_id, limit=limit)]
+# jobs route moved to routers/jobs.py on 2026-05-01
 
 
-@app.get("/api/jobs/{job_id}")
-def job_status(job_id: str):
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404, "Job not found")
-    return _job_to_dict(j)
+
+# jobs route moved to routers/jobs.py on 2026-05-01
 
 
-@app.get("/api/jobs/{job_id}/scan-thumb")
-def job_scan_thumb(job_id: str):
-    """Return the latest scanned-frame thumbnail for a filter scan job, or 404
-    if none has been written yet (before the first batch completes)."""
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404, "Job not found")
-    db_path = j.output_path
-    if not db_path:
-        raise HTTPException(404, "No scan output yet")
-    thumb = Path(db_path).with_suffix(".thumb.jpg")
-    if not thumb.is_file():
-        raise HTTPException(404, "No thumbnail yet (waiting for first batch)")
-    return FileResponse(str(thumb), media_type="image/jpeg",
-                        headers={"Cache-Control": "no-store"})
+
+# jobs route moved to routers/jobs.py on 2026-05-01
 
 
-@app.get("/api/jobs/{job_id}/status")
-def job_live_status(job_id: str):
-    """Return the live status JSON written by long-running jobs (rtsp_live.py
-    etc.). Falls back to the job record if no status file is present so callers
-    always get a valid object."""
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404, "Job not found")
-    settings = j.settings or {}
-    status_path = settings.get("status_path")
-    if status_path:
-        p = Path(status_path)
-        if p.is_file():
-            try:
-                import json as _json
-                return _json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-    # Fallback: return the job record so charts/UI don't error out
-    return _job_to_dict(j)
+
+# jobs route moved to routers/jobs.py on 2026-05-01
+
 
 
 class VerifyRequest(BaseModel):
@@ -1615,46 +1287,12 @@ class VerifyRequest(BaseModel):
     classes: str | None = None  # comma-separated class IDs
 
 
-@app.post("/api/jobs/{job_id}/verify")
-def verify_job(job_id: str, req: VerifyRequest):
-    """Queue a 'verify' job that runs YOLO over a finished output and
-    produces an annotated copy showing what the detector would have caught."""
-    src = db.get_job(job_id)
-    if not src:
-        raise HTTPException(404, "Source job not found")
-    if src.status != "done":
-        raise HTTPException(400, "Source job did not complete successfully.")
-    if not Path(src.output_path).is_file():
-        raise HTTPException(400, "Source output file is gone.")
-
-    out_path = Path(src.output_path).with_name(
-        Path(src.output_path).stem + ".verified.mp4"
-    )
-    settings = {"model": req.model, "conf": req.conf}
-    if req.classes:
-        settings["classes"] = req.classes
-    new_job = db.create_job(
-        kind="video", mode="verify",
-        input_ref=src.output_path,
-        output_path=str(out_path),
-        settings=settings,
-        project_id=src.project_id,
-    )
-    queue.submit(new_job.id)
-    return {"job_id": new_job.id}
+# jobs route moved to routers/jobs.py on 2026-05-01
 
 
-@app.post("/api/jobs/{job_id}/stop")
-def stop_job(job_id: str):
-    j = db.get_job(job_id)
-    if not j:
-        raise HTTPException(404, "Job not found")
-    if runner.is_running() == job_id:
-        runner.stop_current()
-    elif j.status == "queued":
-        # Best-effort: leave it in queue but mark stopped so worker skips
-        db.update_job(job_id, status="stopped", finished_at=time.time())
-    return {"ok": True}
+
+# jobs route moved to routers/jobs.py on 2026-05-01
+
 
 
 def _job_to_dict(j: JobRow) -> dict:
@@ -1675,36 +1313,8 @@ def _job_to_dict(j: JobRow) -> dict:
     }
 
 
-@app.get("/api/jobs/{job_id}/stream")
-async def stream(job_id: str):
-    if not db.get_job(job_id):
-        raise HTTPException(404, "Job not found")
+# jobs route moved to routers/jobs.py on 2026-05-01
 
-    async def event_gen():
-        sent = 0
-        while True:
-            j = db.get_job(job_id)
-            if not j:
-                break
-            if len(j.log_text) > sent:
-                new_chunk = j.log_text[sent:]
-                sent = len(j.log_text)
-                for line in new_chunk.split("\n"):
-                    if line:
-                        yield f"data: {json.dumps({'type': 'log', 'line': line})}\n\n"
-            if j.status in {"done", "failed", "stopped"}:
-                final = {
-                    "type": "end",
-                    "status": j.status,
-                    "returncode": j.returncode,
-                    "output_url": j.output_url,
-                    "compare_url": j.compare_url,
-                }
-                yield f"data: {json.dumps(final)}\n\n"
-                return
-            await asyncio.sleep(0.5)
-
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 # ----------------------------------------------------------------------------
@@ -1718,97 +1328,28 @@ async def stream(job_id: str):
 ALLOWED_MODEL_EXTS = {".pt", ".pth"}
 
 
-@app.post("/api/models/upload")
-async def upload_model(file: UploadFile = File(...), notes: str = Form("")):
-    """Upload a YOLO .pt file. Auto-detects task + class names + parameters."""
-    suffix = Path(file.filename or "model.pt").suffix.lower() or ".pt"
-    if suffix not in ALLOWED_MODEL_EXTS:
-        raise HTTPException(
-            415, f"Unsupported model file '{suffix}'. Use .pt or .pth"
-        )
-    name_base = Path(file.filename or "model.pt").stem
-    candidate = MODELS_DIR / f"{name_base}{suffix}"
-    i = 1
-    while candidate.exists():
-        candidate = MODELS_DIR / f"{name_base}_{i}{suffix}"
-        i += 1
-    written = 0
-    with open(candidate, "wb") as f:
-        while chunk := await file.read(1 << 20):
-            written += len(chunk)
-            if written > 2 * 1024 * 1024 * 1024:  # 2 GB cap on model size
-                f.close()
-                candidate.unlink(missing_ok=True)
-                raise HTTPException(413, "Model exceeds 2 GB upload limit.")
-            f.write(chunk)
-
-    try:
-        meta = inspect_model(str(candidate))
-    except Exception as e:
-        candidate.unlink(missing_ok=True)
-        raise HTTPException(400, f"Could not load model: {e}")
-
-    row = db.create_model(
-        name=candidate.stem,
-        path=str(candidate),
-        task=meta["task"],
-        classes=meta["classes"],
-        size_bytes=candidate.stat().st_size,
-        notes=notes or "",
-    )
-    return _model_to_dict(row, n_params=meta.get("n_parameters", 0))
+# models route moved to routers/models.py on 2026-05-01
 
 
-@app.get("/api/models")
-def list_models():
-    return [_model_to_dict(m) for m in db.list_models()]
+
+# models route moved to routers/models.py on 2026-05-01
 
 
-@app.delete("/api/models/{model_id}")
-def delete_model(model_id: str):
-    m = db.get_model(model_id)
-    if not m:
-        raise HTTPException(404, "Model not found")
-    db.delete_model(model_id)
-    try:
-        Path(m.path).unlink(missing_ok=True)
-    except Exception:
-        pass
-    return {"ok": True}
+
+# models route moved to routers/models.py on 2026-05-01
 
 
-@app.get("/api/models/suggested")
-def list_suggested():
-    """Curated set of standard YOLO weights the user can one-click install."""
-    registered_paths = {Path(m.path).name for m in db.list_models()}
-    out = []
-    for s in SUGGESTED:
-        out.append({
-            "name": s.name,
-            "task": s.task,
-            "family": s.family,
-            "size_label": s.size_label,
-            "approx_mb": s.approx_mb,
-            "description": s.description,
-            "installed": s.name in registered_paths,
-        })
-    return out
+
+# models route moved to routers/models.py on 2026-05-01
+
 
 
 class InstallRequest(BaseModel):
     name: str  # e.g. "yolov8n.pt"
 
 
-@app.post("/api/models/install")
-def install_model(req: InstallRequest):
-    """Download (via Ultralytics) and register a suggested model."""
-    try:
-        info = install_suggested(db, req.name, MODELS_DIR)
-    except ValueError as e:
-        raise HTTPException(404, str(e))
-    except Exception as e:
-        raise HTTPException(500, f"Install failed: {e}")
-    return info
+# models route moved to routers/models.py on 2026-05-01
+
 
 
 def _model_to_dict(m: ModelRow, n_params: int = 0) -> dict:
@@ -2802,87 +2343,36 @@ class MachineUpdateReq(BaseModel):
     notes: str | None = None
 
 
-@app.get("/api/machines")
-def machines_list(site_id: str | None = None,
-                  class_id: int | None = None,
-                  status: str = "active"):
-    return {"machines": machines_core.list_machines(
-        ROOT, site_id=site_id, class_id=class_id, status=status)}
+# machines route moved to routers/machines.py on 2026-05-01
 
 
-@app.get("/api/machines/auto-suggest")
-def _machines_auto_suggest_alias(camera_id: str):
-    """Suggest machines based on recent detections on this camera.
-    Defined here (before /{machine_id}) to win FastAPI's path-routing order."""
-    edb = ROOT / "_data" / "events.db"
-    if not edb.is_file():
-        return {"suggestions": []}
-    import sqlite3 as _sql
-    conn = _sql.connect(str(edb))
-    rows = conn.execute(
-        "SELECT class_id, class_name, COUNT(*) AS n FROM events "
-        "WHERE camera_id = ? AND timestamp > strftime('%s','now') - 86400 "
-        "GROUP BY class_id, class_name ORDER BY n DESC", (camera_id,),
-    ).fetchall()
-    conn.close()
-    suggestions = []
-    for cid, cname, n in rows:
-        prefix = (cname or "M")[:2].upper().replace(" ", "")
-        suggestions.append({
-            "class_id": int(cid),
-            "class_name": cname or f"class_{cid}",
-            "n_detections_24h": int(n),
-            "suggested_machine_id": f"{prefix}-{camera_id.replace('CAM-','').replace('cam-','')[:6].upper()}",
-        })
-    return {"suggestions": suggestions}
+
+# machines route moved to routers/machines.py on 2026-05-01
 
 
-@app.post("/api/machines")
-def machines_create(req: MachineCreateReq):
-    m = machines_core.register_machine(
-        ROOT,
-        machine_id=req.machine_id, display_name=req.display_name,
-        class_id=req.class_id, class_name=req.class_name,
-        site_id=req.site_id, camera_id=req.camera_id, zone_name=req.zone_name,
-        serial_no=req.serial_no, rental_rate=req.rental_rate,
-        rental_currency=req.rental_currency, notes=req.notes,
-    )
-    return m
+
+# machines route moved to routers/machines.py on 2026-05-01
 
 
-@app.get("/api/machines/{machine_id}")
-def machines_get(machine_id: str):
-    m = machines_core.get_machine(ROOT, machine_id)
-    if not m:
-        raise HTTPException(404, "Machine not found")
-    return m
+
+# machines route moved to routers/machines.py on 2026-05-01
 
 
-@app.patch("/api/machines/{machine_id}")
-def machines_update(machine_id: str, req: MachineUpdateReq):
-    fields = {k: v for k, v in req.dict().items() if v is not None}
-    m = machines_core.update_machine(ROOT, machine_id, **fields)
-    if not m:
-        raise HTTPException(404, "Machine not found")
-    return m
+
+# machines route moved to routers/machines.py on 2026-05-01
 
 
-@app.delete("/api/machines/{machine_id}")
-def machines_archive(machine_id: str):
-    ok = machines_core.archive_machine(ROOT, machine_id)
-    return {"ok": ok}
+
+# machines route moved to routers/machines.py on 2026-05-01
 
 
-@app.post("/api/machines/{machine_id}/restore")
-def machines_restore(machine_id: str):
-    ok = machines_core.restore_machine(ROOT, machine_id)
-    return {"ok": ok}
+
+# machines route moved to routers/machines.py on 2026-05-01
 
 
-@app.delete("/api/machines/{machine_id}/hard")
-def machines_hard_delete(machine_id: str):
-    ok = machines_core.delete_machine(ROOT, machine_id)
-    return {"ok": ok, "warning": "Use ?status=archived first if there are sessions."}
+
+# machines route moved to routers/machines.py on 2026-05-01
+
 
 
 # ─── Camera ↔ machine link map ───────────────────────────────────────
@@ -2893,50 +2383,20 @@ class CameraLinkReq(BaseModel):
     zone_name: str | None = None
 
 
-@app.get("/api/cameras/{camera_id}/machine-links")
-def cam_links_get(camera_id: str):
-    return {"links": machines_core.list_camera_links(ROOT, camera_id=camera_id)}
+# cameras route moved to routers/cameras.py on 2026-05-01
 
 
-@app.post("/api/cameras/{camera_id}/machine-links")
-def cam_links_add(camera_id: str, req: CameraLinkReq):
-    return machines_core.link_camera_to_machine(
-        ROOT, camera_id=req.camera_id, class_id=req.class_id,
-        machine_id=req.machine_id, zone_name=req.zone_name)
+
+# cameras route moved to routers/cameras.py on 2026-05-01
 
 
-@app.delete("/api/cameras/{camera_id}/machine-links/{link_id}")
-def cam_links_del(camera_id: str, link_id: int):
-    ok = machines_core.unlink_camera_from_machine(ROOT, link_id=link_id)
-    return {"ok": ok}
+
+# cameras route moved to routers/cameras.py on 2026-05-01
 
 
-@app.get("/api/machines/auto-suggest")
-def machines_auto_suggest(camera_id: str):
-    """Suggest machines based on recent detections on this camera.
-    Returns: [{class_id, class_name, n_detections, suggested_machine_id}, ...]"""
-    edb = ROOT / "_data" / "events.db"
-    if not edb.is_file():
-        return {"suggestions": []}
-    import sqlite3 as _sql
-    conn = _sql.connect(str(edb))
-    rows = conn.execute(
-        "SELECT class_id, class_name, COUNT(*) AS n FROM events "
-        "WHERE camera_id = ? AND timestamp > strftime('%s','now') - 86400 "
-        "GROUP BY class_id, class_name ORDER BY n DESC",
-        (camera_id,),
-    ).fetchall()
-    conn.close()
-    suggestions = []
-    for cid, cname, n in rows:
-        prefix = (cname or "M")[:2].upper().replace(" ", "")
-        suggestions.append({
-            "class_id": int(cid),
-            "class_name": cname or f"class_{cid}",
-            "n_detections_24h": int(n),
-            "suggested_machine_id": f"{prefix}-{camera_id.replace('CAM-','').replace('cam-','')[:6].upper()}",
-        })
-    return {"suggestions": suggestions}
+
+# machines route moved to routers/machines.py on 2026-05-01
+
 
 
 # ─── Workhours per site ──────────────────────────────────────────────
@@ -2957,134 +2417,45 @@ def sites_workhours_set(site_id: str, req: WorkhoursReq):
 
 
 # ─── Sessions + observations (read API) ──────────────────────────────
-@app.get("/api/machines/{machine_id}/sessions")
-def machine_sessions_list(machine_id: str,
-                          since: float | None = None,
-                          until: float | None = None,
-                          state: str | None = None,
-                          limit: int = 1000):
-    return {"sessions": machines_core.list_sessions(
-        ROOT, machine_id=machine_id, since=since, until=until,
-        state=state, limit=limit)}
+# machines route moved to routers/machines.py on 2026-05-01
 
 
-@app.get("/api/machines/{machine_id}/observations")
-def machine_obs_list(machine_id: str,
-                     since: float | None = None,
-                     until: float | None = None,
-                     limit: int = 5000):
-    conn = machines_core.open_db(ROOT)
-    sql = "SELECT * FROM machine_observations WHERE machine_id = ?"
-    args = [machine_id]
-    if since is not None: sql += " AND ts >= ?"; args.append(since)
-    if until is not None: sql += " AND ts <= ?"; args.append(until)
-    sql += " ORDER BY ts ASC LIMIT ?"; args.append(int(limit))
-    rows = conn.execute(sql, args).fetchall()
-    conn.close()
-    return {"observations": [dict(r) for r in rows]}
+
+# machines route moved to routers/machines.py on 2026-05-01
 
 
-@app.get("/api/machines/{machine_id}/sessions/{session_id}")
-def machine_session_detail(machine_id: str, session_id: int):
-    s = machines_core.get_session(ROOT, session_id)
-    if not s or s["machine_id"] != machine_id:
-        raise HTTPException(404, "Session not found")
-    obs = machines_core.session_observations(ROOT, session_id)
-    return {"session": s, "observations": obs}
+
+# machines route moved to routers/machines.py on 2026-05-01
 
 
-@app.get("/api/machines/{machine_id}/sessions/{session_id}/thumbnail")
-def machine_session_thumb(machine_id: str, session_id: int):
-    s = machines_core.get_session(ROOT, session_id)
-    if not s or s["machine_id"] != machine_id:
-        raise HTTPException(404, "Session not found")
-    if s.get("thumbnail_path") and Path(s["thumbnail_path"]).is_file():
-        return FileResponse(s["thumbnail_path"], media_type="image/jpeg",
-                            headers={"Cache-Control": "no-store"})
-    # Fallback: pick highest-confidence observation in session
-    obs = machines_core.session_observations(ROOT, session_id)
-    candidates = [o for o in obs if o.get("frame_path") and Path(o["frame_path"]).is_file()]
-    if not candidates:
-        raise HTTPException(404, "No frame available")
-    best = max(candidates, key=lambda o: float(o.get("confidence") or 0))
-    return FileResponse(best["frame_path"], media_type="image/jpeg",
-                        headers={"Cache-Control": "no-store"})
+
+# machines route moved to routers/machines.py on 2026-05-01
+
 
 
 # ─── Utilization rollups ─────────────────────────────────────────────
-@app.get("/api/utilization/today")
-def util_today():
-    today = time.strftime("%Y-%m-%d")
-    return {"date": today,
-            "rows": machines_core.daily_totals(
-                ROOT, since_iso=today, until_iso=today)}
+# utilization route moved to routers/utilization.py on 2026-05-01
 
 
-@app.get("/api/utilization/range")
-def util_range(since: str | None = None,   # ISO date
-               until: str | None = None,
-               machine_id: str | None = None,
-               site_id: str | None = None):
-    return {"rows": machines_core.daily_totals(
-        ROOT, machine_id=machine_id, site_id=site_id,
-        since_iso=since, until_iso=until)}
+
+# utilization route moved to routers/utilization.py on 2026-05-01
 
 
-@app.get("/api/utilization/site/{site_id}")
-def util_site(site_id: str, since: str | None = None, until: str | None = None):
-    return {"rows": machines_core.daily_totals(
-        ROOT, site_id=site_id, since_iso=since, until_iso=until)}
+
+# utilization route moved to routers/utilization.py on 2026-05-01
 
 
-@app.get("/api/utilization/concurrent/{site_id}")
-def util_concurrent(site_id: str, date_iso: str | None = None):
-    """Approximate concurrent-machine count over a day, in 15-min buckets."""
-    if not date_iso:
-        date_iso = time.strftime("%Y-%m-%d")
-    conn = machines_core.open_db(ROOT)
-    # All sessions for site on date
-    rows = conn.execute(
-        "SELECT machine_id, start_ts, end_ts FROM machine_sessions "
-        "WHERE site_id = ? AND date(start_ts, 'unixepoch', 'localtime') = ?",
-        (site_id, date_iso),
-    ).fetchall()
-    conn.close()
-    # Bucket by 15 minutes
-    buckets = [0] * (24 * 4)
-    import datetime as _dt
-    midnight = _dt.datetime.fromisoformat(date_iso).timestamp()
-    for r in rows:
-        st = max(midnight, float(r["start_ts"]))
-        en = min(midnight + 86400, float(r["end_ts"]))
-        i_start = max(0, int((st - midnight) // 900))
-        i_end = min(95, int((en - midnight) // 900))
-        for i in range(i_start, i_end + 1):
-            buckets[i] += 1
-    peak = max(buckets) if buckets else 0
-    peak_at = midnight + buckets.index(peak) * 900 if peak > 0 else None
-    return {"site_id": site_id, "date_iso": date_iso,
-            "buckets_15min": buckets, "peak": peak, "peak_at": peak_at}
+
+# utilization route moved to routers/utilization.py on 2026-05-01
 
 
-@app.get("/api/utilization/fleet-snapshot")
-def util_fleet_snapshot():
-    return machines_core.fleet_snapshot(ROOT)
+
+# utilization route moved to routers/utilization.py on 2026-05-01
 
 
-@app.get("/api/utilization/live-now")
-def util_live_now():
-    """Machines that had a detection in the last 60 s."""
-    conn = machines_core.open_db(ROOT)
-    now = time.time()
-    rows = conn.execute(
-        "SELECT o.machine_id, m.display_name, m.class_name, m.site_id, "
-        "MAX(o.ts) AS last_ts, MAX(o.is_moving) AS any_moving "
-        "FROM machine_observations o "
-        "LEFT JOIN machines m ON o.machine_id = m.machine_id "
-        "WHERE o.ts > ? GROUP BY o.machine_id", (now - 60,),
-    ).fetchall()
-    conn.close()
-    return {"as_of": now, "machines": [dict(r) for r in rows]}
+
+# utilization route moved to routers/utilization.py on 2026-05-01
+
 
 
 # ─── Machine alert rules ─────────────────────────────────────────────
@@ -3102,31 +2473,24 @@ class MachineAlertRuleReq(BaseModel):
     deliver: dict = {}
 
 
-@app.get("/api/machine-alerts/rules")
-def malert_rules_list():
-    return {"rules": machine_alerts_core.list_rules(ROOT)}
+# machine-alerts route moved to routers/machine-alerts.py on 2026-05-01
 
 
-@app.post("/api/machine-alerts/rules")
-def malert_rules_upsert(req: MachineAlertRuleReq):
-    rule_dict = req.dict(exclude_none=True)
-    return machine_alerts_core.upsert_rule(ROOT, rule_dict)
+
+# machine-alerts route moved to routers/machine-alerts.py on 2026-05-01
 
 
-@app.delete("/api/machine-alerts/rules/{rule_id}")
-def malert_rules_delete(rule_id: str):
-    return {"ok": machine_alerts_core.delete_rule(ROOT, rule_id)}
+
+# machine-alerts route moved to routers/machine-alerts.py on 2026-05-01
 
 
-@app.get("/api/machine-alerts/history")
-def malert_history(limit: int = 50):
-    return {"history": machine_alerts_core.history(ROOT, limit=limit)}
+
+# machine-alerts route moved to routers/machine-alerts.py on 2026-05-01
 
 
-@app.post("/api/machine-alerts/evaluate")
-def malert_evaluate_now():
-    """Force immediate evaluation of all rules (skips cooldown bypass — still respected)."""
-    return {"fires": machine_alerts_core.evaluate(ROOT)}
+
+# machine-alerts route moved to routers/machine-alerts.py on 2026-05-01
+
 
 
 # ─── Utilization-report scheduler ────────────────────────────────────
@@ -3142,23 +2506,16 @@ class UtilReportScheduleReq(BaseModel):
     label: str | None = None
 
 
-@app.get("/api/utilization/report-schedules")
-def util_report_sched_list():
-    return {"schedules": util_report_sched.list_schedules(ROOT)}
+# utilization route moved to routers/utilization.py on 2026-05-01
 
 
-@app.post("/api/utilization/report-schedules")
-def util_report_sched_add(req: UtilReportScheduleReq):
-    return util_report_sched.add_schedule(
-        ROOT, kind=req.kind, site_id=req.site_id,
-        recipients=req.recipients, day_of_week=req.day_of_week,
-        time_of_day=req.time_of_day, include_machines=req.include_machines,
-        enabled=req.enabled, label=req.label)
+
+# utilization route moved to routers/utilization.py on 2026-05-01
 
 
-@app.delete("/api/utilization/report-schedules/{schedule_id}")
-def util_report_sched_del(schedule_id: str):
-    return {"ok": util_report_sched.remove_schedule(ROOT, schedule_id)}
+
+# utilization route moved to routers/utilization.py on 2026-05-01
+
 
 
 # ─── Reports (CSV / PDF) ─────────────────────────────────────────────
@@ -5157,43 +4514,16 @@ def filter_export(job_id: str, req: FilterExportRequest):
 # Class-taxonomy presets (Arclap construction sites etc.)
 # ----------------------------------------------------------------------------
 
-@app.get("/api/presets")
-def api_list_presets():
-    return list_presets()
+# presets route moved to routers/presets.py on 2026-05-01
 
 
-@app.get("/api/presets/{name}")
-def api_get_preset(name: str):
-    try:
-        return get_preset(name)
-    except FileNotFoundError:
-        raise HTTPException(404, f"Preset not found: {name}")
+
+# presets route moved to routers/presets.py on 2026-05-01
 
 
-@app.get("/api/presets/{name}/data-yaml")
-def api_preset_data_yaml(name: str):
-    """Generate a starter Ultralytics-format `data.yaml` for this preset's
-    taxonomy. The user puts it next to their CVAT-exported train/ and val/
-    folders, then trains via the Train tab."""
-    try:
-        preset = get_preset(name)
-    except FileNotFoundError:
-        raise HTTPException(404)
-    classes = preset.get("classes", [])
-    lines = [
-        "# Generated by Arclap Vision Suite — drop next to your CVAT export's train/ and val/",
-        f"# Preset: {preset.get('title', name)}",
-        "",
-        "path: .",
-        "train: train/images",
-        "val: val/images",
-        "",
-        f"nc: {len(classes)}",
-        "names:",
-    ]
-    for c in classes:
-        lines.append(f"  {c['id']}: {c['en']}  # {c.get('de', '')}")
-    return Response(content="\n".join(lines) + "\n", media_type="text/yaml")
+
+# presets route moved to routers/presets.py on 2026-05-01
+
 
 
 @app.get("/api/filter/{job_id}/preset-summary")
@@ -7668,28 +6998,12 @@ class CameraCreateRequest(BaseModel):
     notes: str = ""
 
 
-@app.get("/api/cameras")
-def list_cameras_endpoint():
-    cams = camera_registry.list_cameras(ROOT)
-    out = []
-    for c in cams:
-        agg = camera_registry.aggregate_uptime(ROOT, c.id)
-        out.append({**asdict_safe(c), **{"uptime": agg}})
-    return {"cameras": out}
+# cameras route moved to routers/cameras.py on 2026-05-01
 
 
-@app.post("/api/cameras")
-def create_camera_endpoint(req: CameraCreateRequest):
-    # Auto-percent-encode passwords that contain '@' or other special chars
-    # so OpenCV/ffmpeg can parse the URL.
-    if req.url:
-        req.url = _sanitize_rtsp_url(req.url)
-    cam = camera_registry.create_camera(
-        ROOT, name=req.name, url=req.url, site=req.site,
-        location=req.location, enabled=req.enabled,
-        settings=req.settings, notes=req.notes,
-    )
-    return asdict_safe(cam)
+
+# cameras route moved to routers/cameras.py on 2026-05-01
+
 
 
 class CameraUpdateRequest(BaseModel):
@@ -7702,107 +7016,40 @@ class CameraUpdateRequest(BaseModel):
     notes: str | None = None
 
 
-@app.put("/api/cameras/{cam_id}")
-def update_camera_endpoint(cam_id: str, req: CameraUpdateRequest):
-    fields = {k: v for k, v in req.model_dump().items() if v is not None}
-    cam = camera_registry.update_camera(ROOT, cam_id, **fields)
-    if not cam:
-        raise HTTPException(404)
-    return asdict_safe(cam)
+# cameras route moved to routers/cameras.py on 2026-05-01
 
 
-@app.delete("/api/cameras/{cam_id}")
-def delete_camera_endpoint(cam_id: str):
-    camera_registry.delete_camera(ROOT, cam_id)
-    return {"ok": True}
+
+# cameras route moved to routers/cameras.py on 2026-05-01
 
 
-@app.get("/api/cameras/{cam_id}/sessions")
-def camera_sessions_endpoint(cam_id: str):
-    return {"sessions": camera_registry.list_sessions(ROOT, camera_id=cam_id)}
+
+# cameras route moved to routers/cameras.py on 2026-05-01
 
 
-@app.post("/api/cameras/{cam_id}/start")
-def camera_start_endpoint(cam_id: str):
-    """Start the live processor for one specific registered camera. Uses
-    the camera's saved settings."""
-    cam = camera_registry.get_camera(ROOT, cam_id)
-    if not cam:
-        raise HTTPException(404, "Camera not found")
-    s = cam.settings or {}
-    # Reuse the existing rtsp_start by constructing the request
-    req = RtspStartRequest(
-        url=cam.url,
-        output_name=f"cam_{cam.id}_{int(time.time())}.mp4",
-        rtsp_mode=s.get("mode", "detect"),
-        conf=float(s.get("conf", 0.30)),
-        iou=float(s.get("iou", 0.45)),
-        detect_every=int(s.get("detect_every", 2)),
-        max_fps=float(s.get("max_fps", 15.0)),
-        duration=int(s.get("duration", 0)),
-        model=s.get("model"),
-        tracker=s.get("tracker", "bytetrack"),
-        class_filter=s.get("class_filter", ""),
-        mjpeg_port=int(s.get("mjpeg_port", 8765)),
-    )
-    result = rtsp_start(req)
-    # Log session start
-    camera_registry.session_start(ROOT, cam_id, job_id=result["job_id"])
-    return {**result, "camera_id": cam_id}
+
+# cameras route moved to routers/cameras.py on 2026-05-01
+
 
 
 # ============================================================================
 # Discovery queue — open-set object review
 # ============================================================================
 
-@app.get("/api/discovery/stats")
-def discovery_stats_endpoint():
-    return discovery_core.stats(ROOT)
+# discovery route moved to routers/discovery.py on 2026-05-01
 
 
-@app.get("/api/discovery/queue")
-def discovery_queue_endpoint(status: str = "pending", limit: int = 100,
-                              offset: int = 0, source: str | None = None):
-    rows = discovery_core.list_crops(
-        ROOT, status=status, limit=limit, offset=offset, source=source,
-    )
-    # Augment with served URLs
-    for r in rows:
-        r["crop_url"] = f"/api/discovery/{r['id']}/crop"
-        r["context_url"] = f"/api/discovery/{r['id']}/context" if r.get("context_path") else None
-    return {"crops": rows, "total": len(rows)}
+
+# discovery route moved to routers/discovery.py on 2026-05-01
 
 
-@app.get("/api/discovery/{crop_id}/crop")
-def discovery_crop_image(crop_id: int):
-    conn = discovery_core.open_db(ROOT)
-    try:
-        row = conn.execute("SELECT crop_path FROM crops WHERE id = ?",
-                            (crop_id,)).fetchone()
-    finally:
-        conn.close()
-    if not row or not row[0]:
-        raise HTTPException(404)
-    p = Path(row[0])
-    if not p.is_file():
-        raise HTTPException(404)
-    return FileResponse(p)
+
+# discovery route moved to routers/discovery.py on 2026-05-01
 
 
-@app.get("/api/discovery/{crop_id}/context")
-def discovery_context_image(crop_id: int):
-    conn = discovery_core.open_db(ROOT)
-    try:
-        row = conn.execute("SELECT context_path FROM crops WHERE id = ?",
-                            (crop_id,)).fetchone()
-    finally:
-        conn.close()
-    if not row or not row[0]:
-        raise HTTPException(404)
-    p = Path(row[0])
-    if not p.is_file():
-        raise HTTPException(404)
-    return FileResponse(p)
+
+# discovery route moved to routers/discovery.py on 2026-05-01
+
 
 
 class DiscoveryAssignRequest(BaseModel):
@@ -7810,22 +7057,16 @@ class DiscoveryAssignRequest(BaseModel):
     class_id: int
 
 
-@app.post("/api/discovery/assign")
-def discovery_assign_endpoint(req: DiscoveryAssignRequest):
-    classes = swiss_core.load_classes(ROOT)
-    cls = next((c for c in classes if c.id == req.class_id), None)
-    if cls is None:
-        raise HTTPException(404, f"No class with id {req.class_id}")
-    return discovery_core.bulk_assign(ROOT, req.crop_ids, cls.id, cls.de)
+# discovery route moved to routers/discovery.py on 2026-05-01
+
 
 
 class DiscoveryDiscardRequest(BaseModel):
     crop_ids: list[int]
 
 
-@app.post("/api/discovery/discard")
-def discovery_discard_endpoint(req: DiscoveryDiscardRequest):
-    return discovery_core.bulk_discard(ROOT, req.crop_ids)
+# discovery route moved to routers/discovery.py on 2026-05-01
+
 
 
 class DiscoveryPromoteRequest(BaseModel):
@@ -7837,23 +7078,8 @@ class DiscoveryPromoteRequest(BaseModel):
     description: str = ""
 
 
-@app.post("/api/discovery/promote-to-new-class")
-def discovery_promote_endpoint(req: DiscoveryPromoteRequest):
-    """Create a new class in the registry AND assign all the listed crops
-    to it in one shot — the killer move for discovery → training."""
-    if not req.en or not req.de:
-        raise HTTPException(400, "Both EN and DE names are required.")
-    new_cls = swiss_core.add_class(
-        ROOT, en=req.en, de=req.de, color=req.color,
-        category=req.category, description=req.description,
-    )
-    swiss_core.append_ingestion(ROOT, {
-        "kind": "class_added_via_discovery",
-        "class_id": new_cls.id, "en": new_cls.en,
-        "promoted_from_n_crops": len(req.crop_ids),
-    })
-    res = discovery_core.bulk_assign(ROOT, req.crop_ids, new_cls.id, new_cls.de)
-    return {"ok": True, "new_class": asdict_safe(new_cls), **res}
+# discovery route moved to routers/discovery.py on 2026-05-01
+
 
 
 # ============================================================================
@@ -7914,85 +7140,24 @@ def zones_save_endpoint(camera_id: str, req: ZonesSaveRequest):
 # Detection events — Pinterest-grid viewer with rich filters + bulk actions
 # ============================================================================
 
-@app.get("/api/events/stats")
-def events_stats_endpoint(since_hours: float | None = None):
-    since_ts = (time.time() - since_hours * 3600) if since_hours else None
-    return events_core.stats(ROOT, since_ts=since_ts)
+# events route moved to routers/events.py on 2026-05-01
 
 
-@app.get("/api/events/list")
-def events_list_endpoint(
-    camera_id: str | None = None,
-    site: str | None = None,
-    class_id: int | None = None,
-    min_conf: float = 0.0, max_conf: float = 1.0,
-    min_ts: float | None = None, max_ts: float | None = None,
-    zone_name: str | None = None,
-    track_id: int | None = None,
-    status: str = "new",
-    limit: int = 100, offset: int = 0,
-):
-    rows = events_core.query_events(
-        ROOT, camera_id=camera_id, site=site, class_id=class_id,
-        min_conf=min_conf, max_conf=max_conf,
-        min_ts=min_ts, max_ts=max_ts,
-        zone_name=zone_name, track_id=track_id,
-        status=status, limit=limit, offset=offset,
-    )
-    # Augment with served URLs
-    for r in rows:
-        r["crop_url"] = f"/api/events/{r['id']}/crop"
-        r["frame_url"] = f"/api/events/{r['id']}/frame" if r.get("frame_path") else None
-    return {"events": rows, "n": len(rows)}
+
+# events route moved to routers/events.py on 2026-05-01
 
 
-@app.get("/api/events/{event_id}/crop")
-def events_crop(event_id: int):
-    conn = events_core.open_db(ROOT)
-    try:
-        row = conn.execute("SELECT crop_path FROM events WHERE id = ?",
-                            (event_id,)).fetchone()
-    finally:
-        conn.close()
-    if not row or not row[0] or not Path(row[0]).is_file():
-        raise HTTPException(404)
-    return FileResponse(row[0])
+
+# events route moved to routers/events.py on 2026-05-01
 
 
-@app.get("/api/events/{event_id}/frame")
-def events_frame(event_id: int):
-    conn = events_core.open_db(ROOT)
-    try:
-        row = conn.execute("SELECT frame_path FROM events WHERE id = ?",
-                            (event_id,)).fetchone()
-    finally:
-        conn.close()
-    if not row or not row[0] or not Path(row[0]).is_file():
-        raise HTTPException(404)
-    return FileResponse(row[0])
+
+# events route moved to routers/events.py on 2026-05-01
 
 
-@app.get("/api/events/{event_id}")
-def events_detail_endpoint(event_id: int):
-    rows = events_core.query_events(ROOT, status="all", limit=1)
-    # The query above doesn't filter by id — replace with direct lookup:
-    conn = events_core.open_db(ROOT)
-    try:
-        conn.row_factory = _sqlite3.Row
-        ev = conn.execute("SELECT * FROM events WHERE id = ?",
-                            (event_id,)).fetchone()
-    finally:
-        conn.close()
-    if not ev:
-        raise HTTPException(404)
-    e = dict(ev)
-    e["crop_url"] = f"/api/events/{e['id']}/crop"
-    e["frame_url"] = f"/api/events/{e['id']}/frame" if e.get("frame_path") else None
-    e["neighbors"] = [
-        {**n, "crop_url": f"/api/events/{n['id']}/crop"}
-        for n in events_core.get_neighbors(ROOT, event_id, count=12)
-    ]
-    return e
+
+# events route moved to routers/events.py on 2026-05-01
+
 
 
 class EventsBulkRequest(BaseModel):
@@ -8001,104 +7166,24 @@ class EventsBulkRequest(BaseModel):
     class_id: int | None = None      # for promote_training, the target class
 
 
-@app.post("/api/events/bulk")
-def events_bulk_endpoint(req: EventsBulkRequest):
-    n_updated = 0
-    if req.action == "promote_training":
-        if req.class_id is None:
-            raise HTTPException(400, "class_id required for promote_training")
-        # Copy crops into staging/<class.de>/, mark as promoted
-        classes = swiss_core.load_classes(ROOT)
-        cls = next((c for c in classes if c.id == req.class_id), None)
-        if cls is None:
-            raise HTTPException(404, f"No class with id {req.class_id}")
-        staging = ROOT / "_datasets" / "swiss_construction" / "staging" / cls.de
-        staging.mkdir(parents=True, exist_ok=True)
-        existing = sum(1 for _ in staging.iterdir()) if staging.is_dir() else 0
-        conn = events_core.open_db(ROOT)
-        try:
-            placeholders = ",".join("?" * len(req.event_ids))
-            rows = conn.execute(
-                f"SELECT id, crop_path FROM events WHERE id IN ({placeholders})",
-                req.event_ids,
-            ).fetchall()
-            for ev_id, crop_path in rows:
-                if crop_path and Path(crop_path).is_file():
-                    dst = staging / f"{cls.de}_event_{existing:05d}.jpg"
-                    existing += 1
-                    try:
-                        shutil.copy2(crop_path, dst)
-                    except Exception:
-                        continue
-        finally:
-            conn.close()
-        n_updated = events_core.update_status(ROOT, req.event_ids, "promoted_training")
-    elif req.action == "discard":
-        n_updated = events_core.update_status(ROOT, req.event_ids, "discarded")
-    elif req.action == "new":
-        n_updated = events_core.update_status(ROOT, req.event_ids, "new")
-    return {"ok": True, "updated": n_updated}
+# events route moved to routers/events.py on 2026-05-01
+
 
 
 # ============================================================================
 # Operations: system stats, camera health, recordings library, INT8 export
 # ============================================================================
 
-@app.get("/api/system/stats")
-def system_stats_endpoint():
-    """Live snapshot for the Operations card / Mission Control hero."""
-    out = {
-        "gpu": {"name": GPU_NAME, "available": GPU_AVAILABLE},
-        "disks": {},
-        "running_cameras": 0,
-        "total_cameras": 0,
-        "events_today": 0,
-        "ts": time.time(),
-    }
-    # Disk usage on each drive that hosts our data
-    for label, p in [("suite_root", ROOT), ("outputs", OUTPUTS), ("data", DATA)]:
-        try:
-            out["disks"][label] = disk_core.disk_usage(p)
-        except Exception:
-            pass
-    # Camera counts
-    try:
-        cams = camera_registry.list_cameras(ROOT)
-        out["total_cameras"] = len(cams)
-        # Count cameras with an open session (no stopped_at)
-        for c in cams:
-            sess = camera_registry.list_sessions(ROOT, camera_id=c.id, limit=1)
-            if sess and not sess[0].get("stopped_at"):
-                out["running_cameras"] += 1
-    except Exception:
-        pass
-    # Events today
-    try:
-        st = events_core.stats(ROOT, since_ts=time.time() - 86400)
-        out["events_today"] = st.get("total", 0)
-    except Exception:
-        pass
-    # GPU live stats (utilization + memory) via torch
-    if GPU_AVAILABLE:
-        try:
-            out["gpu"]["mem_used_mb"] = round(torch.cuda.memory_allocated() / (1024 * 1024), 1)
-            out["gpu"]["mem_total_mb"] = round(torch.cuda.get_device_properties(0).total_memory / (1024 * 1024), 1)
-        except Exception:
-            pass
-    return out
+# system route moved to routers/system.py on 2026-05-01
 
 
-@app.get("/api/cameras/{cam_id}/health")
-def camera_health_endpoint(cam_id: str):
-    """Watchdog-tracked health (green/orange/red + recent crash count)."""
-    return watchdog_core.camera_health_status(cam_id)
+
+# cameras route moved to routers/cameras.py on 2026-05-01
 
 
-@app.post("/api/cameras/{cam_id}/reset-health")
-def camera_reset_health_endpoint(cam_id: str):
-    """Re-enable a camera disabled by watchdog after 5 crashes."""
-    watchdog_core.reset_camera_health(cam_id)
-    return {"ok": True}
+
+# cameras route moved to routers/cameras.py on 2026-05-01
+
 
 
 @app.get("/api/recordings")
@@ -8178,44 +7263,8 @@ def queue_force_stop():
     return {"ok": True, "killed": killed}
 
 
-@app.post("/api/system/restart")
-def system_restart():
-    """Exit with code 42; the run.bat / run.sh restart-loop catches that
-    and relaunches the server in the same console window.
+# system route moved to routers/system.py on 2026-05-01
 
-    Windows-specific: os._exit doesn't always propagate the exit code through
-    uvicorn's signal handlers, so we use os.kill(os.getpid(), SIGTERM) on
-    POSIX and Windows-API TerminateProcess on Windows for predictability."""
-    import os as _os, threading as _th, sys as _sys
-    def _do_restart():
-        time.sleep(0.4)   # let the HTTP response flush first
-        try:
-            queue.stop_current()
-        except Exception:
-            pass
-        print("[restart] exit 42 — run.bat loop will relaunch", flush=True)
-        # Best-effort: try uvicorn graceful shutdown first by signalling.
-        # If anything blocks we hard-exit after a short timeout.
-        def _hard_exit():
-            time.sleep(2.0)
-            print("[restart] hard exit", flush=True)
-            _os._exit(42)
-        _th.Thread(target=_hard_exit, daemon=True).start()
-        try:
-            # Tell the main thread to shut down. On Windows this lets uvicorn
-            # close listeners cleanly so the next process can re-bind port 8000.
-            if _sys.platform == "win32":
-                _os._exit(42)
-            else:
-                import signal as _sig
-                _os.kill(_os.getpid(), _sig.SIGTERM)
-                # Fall back to _exit if SIGTERM doesn't take effect
-                time.sleep(1.0)
-                _os._exit(42)
-        except Exception:
-            _os._exit(42)
-    _th.Thread(target=_do_restart, daemon=True).start()
-    return {"ok": True, "message": "restarting"}
 
 
 @app.post("/api/disk/sweep")
@@ -8294,51 +7343,28 @@ class AlertRuleRequest(BaseModel):
     cooldown_sec: int = 60
 
 
-@app.get("/api/alerts/rules")
-def alerts_list():
-    return {"rules": alerts_core.list_rules(ROOT)}
+# alerts route moved to routers/alerts.py on 2026-05-01
 
 
-@app.post("/api/alerts/rules")
-def alerts_upsert(req: AlertRuleRequest):
-    return alerts_core.upsert_rule(ROOT, req.dict(exclude_none=True))
+
+# alerts route moved to routers/alerts.py on 2026-05-01
 
 
-@app.delete("/api/alerts/rules/{rule_id}")
-def alerts_delete(rule_id: str):
-    alerts_core.delete_rule(ROOT, rule_id)
-    return {"ok": True}
+
+# alerts route moved to routers/alerts.py on 2026-05-01
 
 
-@app.post("/api/alerts/test/{rule_id}")
-def alerts_test(rule_id: str):
-    return alerts_core.test_rule(ROOT, rule_id)
+
+# alerts route moved to routers/alerts.py on 2026-05-01
 
 
-@app.get("/api/alerts/history")
-def alerts_history(limit: int = 50):
-    return {"history": alerts_core.history(ROOT, limit=limit)}
+
+# alerts route moved to routers/alerts.py on 2026-05-01
 
 
-@app.post("/api/alerts/test-channels")
-def alerts_test_channels(payload: dict):
-    """Smoke-test SMTP and/or webhook independently of any rule."""
-    from core import notify
-    out = {}
-    if payload.get("email"):
-        ok, msg = notify.send_email(
-            to=payload["email"],
-            subject="[Arclap CSI] Test alert",
-            body="This is a test message from Arclap Vision Suite.",
-        )
-        out["email"] = {"ok": ok, "msg": msg}
-    if payload.get("webhook"):
-        ok, msg = notify.send_webhook(
-            payload["webhook"],
-            {"test": True, "ts": time.time(), "src": "arclap-csi"},
-        )
-        out["webhook"] = {"ok": ok, "msg": msg}
-    return out
+
+# alerts route moved to routers/alerts.py on 2026-05-01
+
 
 
 # ───────── Tier A: Reproducibility registry ───────────────────────────
@@ -8346,17 +7372,8 @@ class SnapshotDatasetReq(BaseModel):
     dataset_root: str
 
 
-@app.post("/api/registry/snapshot")
-def registry_snapshot(req: SnapshotDatasetReq):
-    """Compute the dataset.lock.json for a folder so future training runs
-    pin to a hash-addressable corpus."""
-    p = Path(req.dataset_root)
-    if not p.is_dir():
-        raise HTTPException(404, f"Not a directory: {p}")
-    try:
-        return registry_core.snapshot_dataset(ROOT, p)
-    except Exception as e:
-        raise HTTPException(500, f"{type(e).__name__}: {e}")
+# registry route moved to routers/registry.py on 2026-05-01
+
 
 
 class StartRunReq(BaseModel):
@@ -8366,17 +7383,8 @@ class StartRunReq(BaseModel):
     seed: int | None = None
 
 
-@app.post("/api/registry/runs/start")
-def registry_start_run(req: StartRunReq):
-    """Create a run record. Caller passes a dataset_hash from a previous
-    /snapshot; we look the lock up and seed the run.json with it."""
-    locks = ROOT / "_data" / "dataset_locks" / f"{req.dataset_hash}.json"
-    if not locks.is_file():
-        raise HTTPException(404, f"No such dataset_hash: {req.dataset_hash}")
-    lock = json.loads(locks.read_text(encoding="utf-8"))
-    rid = registry_core.start_run(ROOT, req.version_name, lock,
-                                   req.hparams, seed=req.seed)
-    return {"run_id": rid}
+# registry route moved to routers/registry.py on 2026-05-01
+
 
 
 class FinalizeRunReq(BaseModel):
@@ -8388,39 +7396,20 @@ class FinalizeRunReq(BaseModel):
     extra_metrics: dict | None = None
 
 
-@app.post("/api/registry/runs/finalize")
-def registry_finalize_run(req: FinalizeRunReq):
-    return registry_core.finalize_run(
-        ROOT, req.run_id,
-        mAP50=req.mAP50, mAP5095=req.mAP5095,
-        weights_path=req.weights_path, status=req.status,
-        extra_metrics=req.extra_metrics,
-    )
+# registry route moved to routers/registry.py on 2026-05-01
 
 
-@app.get("/api/registry/runs")
-def registry_list_runs():
-    return {"runs": registry_core.list_runs(ROOT)}
+
+# registry route moved to routers/registry.py on 2026-05-01
 
 
-@app.get("/api/registry/runs/{run_id}")
-def registry_get_run(run_id: str):
-    r = registry_core.get_run(ROOT, run_id)
-    if not r:
-        raise HTTPException(404, "Run not found")
-    return r
+
+# registry route moved to routers/registry.py on 2026-05-01
 
 
-@app.get("/api/registry/runs/{run_id}/model-card")
-def registry_get_model_card(run_id: str):
-    p = ROOT / "_data" / "runs" / run_id / "MODEL_CARD.md"
-    if not p.is_file():
-        # Try to generate now if the run exists
-        try:
-            registry_core.generate_model_card(ROOT, run_id)
-        except Exception as e:
-            raise HTTPException(404, f"No model card: {e}")
-    return PlainTextResponse(p.read_text(encoding="utf-8"))
+
+# registry route moved to routers/registry.py on 2026-05-01
+
 
 
 if __name__ == "__main__":
