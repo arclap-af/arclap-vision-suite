@@ -199,9 +199,14 @@ class VideoRenderRequest(FilterRule):
 
 class FilterExportRequest(FilterRule):
     """Full rule + materialisation options. Inherits every FilterRule field."""
-    mode: str = Field("symlink", pattern="^(symlink|copy|hardlink|list)$")
+    mode: str = Field("symlink", pattern="^(symlink|copy|hardlink|list|by_project)$")
     target_name: str | None = None
     annotated: bool = False
+    # by_project mode options
+    rename_chronological: bool = True
+    include_manifest: bool = True
+    batch_separator: str = Field("flat", pattern="^(flat|by_batch_subfolder)$")
+    transfer_mode: str = Field("copy", pattern="^(copy|symlink|hardlink)$")
 
 
 @router .post ("/api/filter/scan")
@@ -341,7 +346,53 @@ def filter_summary (job_id :str ):
     finally :
         conn .close ()
 
-@router .get ("/api/filter/{job_id}/thumb")
+@router.get("/api/filter/{job_id}/scan-review")
+def filter_scan_review(job_id: str):
+    """Post-scan detection review — runs as soon as a scan finishes (or
+    on-demand) and returns the comprehensive snapshot of what the
+    scanner detected: per-project counts, timestamp source breakdown,
+    date ranges, sub-batch detection, file-extension distribution,
+    duplicate-basename detection, warnings.
+
+    Lazily enriches the per-scan DB with project_id + taken_at_source
+    if it hasn't been done already. Idempotent.
+    """
+    import app as _app
+    from core.project_export import build_scan_review, enrich_projects
+    j, db_path = _app._filter_db(job_id)
+    source_root = j.input_ref if j else None
+    enrich_projects(db_path, source_root=source_root)
+    return build_scan_review(db_path)
+
+
+@router.post("/api/filter/{job_id}/export-preview")
+def filter_export_preview(job_id: str, rule: FilterRule):
+    """Pre-export tree preview scoped to the post-filter survivor set.
+
+    Same shape as /scan-review but only counts frames the rule keeps,
+    and shows proposed chronologically-renamed filenames.
+    """
+    import app as _app
+    from core.project_export import build_export_preview, enrich_projects
+    j, db_path = _app._filter_db(job_id)
+    enrich_projects(db_path, source_root=(j.input_ref if j else None))
+
+    sql, params = _app._build_match_sql(rule)
+    conn = _sqlite3.connect(db_path)
+    try:
+        paths = [r[0] for r in conn.execute(sql, params)]
+    finally:
+        conn.close()
+    if not paths:
+        return {
+            "n_projects": 0, "n_files_total": 0, "n_with_no_timestamp": 0,
+            "extensions": {}, "duplicate_basenames": [],
+            "n_duplicate_basenames": 0, "projects": [], "warnings": [],
+        }
+    return build_export_preview(db_path, paths)
+
+
+@router.get ("/api/filter/{job_id}/thumb")
 def filter_thumb (job_id :str ,path :str ,size :int =320 ):
     """Serve a small JPEG thumbnail of one image from a scan.
     The path must be in the scan DB — prevents reading arbitrary files."""
@@ -1550,7 +1601,9 @@ def filter_export (job_id :str ,req :FilterExportRequest ):
     # Resolve match paths in-process so the rule (incl. hours / dow / quality
     # / brightness / date) is honoured exactly. Then write to a tiny list
     # file that filter_index.py reads via --from-list.
-    rule_for_sql =FilterRule (**req .model_dump (exclude ={"mode","target_name","annotated"}))
+    rule_for_sql =FilterRule (**req .model_dump (exclude ={"mode","target_name","annotated",
+                                                          "rename_chronological","include_manifest",
+                                                          "batch_separator","transfer_mode"}))
     sql_from ,params =_app ._build_match_sql (rule_for_sql )
     _ ,db_path =_app ._filter_db (job_id )
     conn =_sqlite3 .connect (db_path )
@@ -1559,6 +1612,28 @@ def filter_export (job_id :str ,req :FilterExportRequest ):
     finally :
         conn .close ()
     paths =_app ._hour_dow_filter (rule_for_sql ,paths )
+
+    # ─── by_project mode: per-project export with chronological rename ──
+    if req.mode == "by_project":
+        from core.project_export import enrich_projects, execute_export
+        enrich_projects(db_path, source_root=j.input_ref)
+        target.mkdir(parents=True, exist_ok=True)
+        result = execute_export(
+            db_path, paths, target,
+            mode=req.transfer_mode,
+            rename_chronological=req.rename_chronological,
+            include_manifest=req.include_manifest,
+            batch_separator=req.batch_separator,
+        )
+        return {
+            "ok": True,
+            "mode": "by_project",
+            "target": str(target),
+            "n_projects": result["n_projects"],
+            "n_files_exported": result["n_files_exported"],
+            "n_errors": result["n_errors"],
+            "summaries": result["summaries"],
+        }
 
     target .mkdir (parents =True ,exist_ok =True )
     list_file =target /"_filter_match_paths.txt"
