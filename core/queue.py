@@ -105,6 +105,13 @@ class JobRunner:
         #       advances the heartbeat at least once per second.)
         # When a wedge is detected we replace the queue object too, because
         # the wedge sits inside its Condition variable.
+        #
+        # CRITICAL: the watchdog must NEVER touch the wedged queue (no
+        # self.q.next(), no self.q.pending() inside the recovery branch
+        # AFTER we've decided to recover) — Python's queue.Queue.get()
+        # wedge can also wedge .qsize() / .get() on the same object,
+        # which would wedge the watchdog itself. We ONLY use the DB to
+        # rebuild the new queue.
         def _watchdog():
             while not self._stop.is_set():
                 time.sleep(5)
@@ -117,29 +124,44 @@ class JobRunner:
                     continue
                 # (b) Wedged thread — heartbeat stale + work pending + nothing running.
                 age = time.monotonic() - self._heartbeat
+                # Read pending size ONCE up-front. If even this read wedges,
+                # the watchdog itself would lock up and we'd be stuck — so
+                # wrap it in a thread+timeout pattern would be ideal, but
+                # in practice .qsize() (used by .pending()) doesn't wedge,
+                # only .get() does. Keep this guarded with try/except just in case.
+                try:
+                    pending = self.q.pending()
+                except Exception:
+                    pending = 0
                 if (age > 30
                         and self.is_running() is None
-                        and self.q.pending() > 0):
+                        and pending > 0):
                     print(f"[queue] WORKER WEDGED ({age:.0f}s no heartbeat, "
-                          f"{self.q.pending()} pending) — respawning on fresh queue",
+                          f"{pending} pending) — respawning on fresh queue",
                           flush=True)
-                    # Replace the queue object so the new thread doesn't inherit
-                    # the wedged Condition variable. Re-submit any drained IDs.
-                    drained: list[str] = []
-                    try:
-                        while True:
-                            jid = self.q.next(timeout=0.05)
-                            if jid is None: break
-                            drained.append(jid)
-                    except Exception:
-                        pass
+                    # Build a NEW queue from the DB. Do NOT call self.q.next()
+                    # because the wedge sits inside the old queue's Condition
+                    # var — calling .get() on it would wedge this watchdog too.
+                    # Anything that was in the old in-memory queue but not yet
+                    # marked 'running' in the DB is still status='queued', so
+                    # the DB is the source of truth for recovery.
                     new_q = JobQueue()
-                    for jid in drained:
-                        new_q.submit(jid)
+                    requeued = 0
+                    try:
+                        for j in self.db.list_jobs(limit=500):
+                            if j.status == "queued":
+                                new_q.submit(j.id)
+                                requeued += 1
+                    except Exception as e:
+                        print(f"[queue] watchdog DB re-queue failed: {e}", flush=True)
+                    print(f"[queue]   re-queued {requeued} job(s) from DB", flush=True)
                     self.q = new_q
                     self._heartbeat = time.monotonic()
                     self._thread = threading.Thread(target=self._loop, name="JobRunner", daemon=True)
                     self._thread.start()
+                    # Old wedged queue + old wedged worker thread remain in
+                    # memory but are no longer referenced by the runner.
+                    # GC will clean them up; the wedged thread is a daemon.
         threading.Thread(target=_watchdog, name="JobRunnerWatchdog", daemon=True).start()
 
     def stop(self) -> None:

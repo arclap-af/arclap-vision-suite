@@ -53,12 +53,14 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
     time.sleep(0.2)
 
 # ─── 3. Watchdog respawns wedged worker ────────────────────────────────
-# To simulate a real wedge we monkey-patch _loop so the worker never
+# Simulate a real wedge by monkey-patching _loop so the worker never
 # bumps the heartbeat. The watchdog should detect the stale heartbeat
 # (>30s old) + pending job + nothing running, and:
 #   1. Replace the queue object (so the new worker doesn't inherit a
 #      possibly-wedged Condition var).
-#   2. Spawn a fresh _thread.
+#   2. Re-queue from DB (NOT by calling .next() on the wedged queue,
+#      which would wedge the watchdog itself).
+#   3. Spawn a fresh _thread.
 print("\n3. Watchdog respawns wedged-but-alive worker")
 with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
     td = Path(td)
@@ -71,33 +73,21 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
 
     runner = JobRunner(db, q_orig, root=td, build_cmd=builder)
 
-    # Wedge simulation: replace _loop with a fake that just sleeps without
-    # bumping heartbeat or draining the queue. This is what a real wedged
-    # Condition.wait() looks like from the outside.
     _stop = runner._stop
     def _fake_wedged_loop():
         while not _stop.is_set():
-            time.sleep(0.5)  # never updates _heartbeat, never drains queue
+            time.sleep(0.5)
     runner._loop = _fake_wedged_loop  # type: ignore[assignment]
     runner._thread = threading.Thread(target=runner._loop, name="JobRunner", daemon=True)
 
-    # Manually pre-stale the heartbeat (the fake loop won't bump it).
     runner._heartbeat = time.monotonic() - 60.0
-    runner.start()  # starts wedged worker + healthy watchdog
+    runner.start()
 
-    # Submit a job that the wedged worker can't pick up.
+    # Job goes into BOTH the queue AND the DB (real submit path).
     job = db.create_job(kind="video", mode="test",
                         input_ref="/in", output_path=str(target))
     q_orig.submit(job.id)
 
-    # Watchdog ticks every 5s, threshold 30s. Heartbeat is already 60s stale,
-    # so the very first tick should detect the wedge and respawn.
-    # However, the respawned thread runs the original _loop (since _loop
-    # is bound to the runner instance and the monkey-patch persists), so
-    # we need to restore it before respawn happens. The watchdog calls
-    #   self._thread = threading.Thread(target=self._loop, ...)
-    # so by the time it spawns, self._loop is whatever we set it to.
-    # For this test we instead verify that q is replaced (the wedge fix).
     deadline = time.monotonic() + 15
     queue_replaced = False
     while time.monotonic() < deadline:
@@ -108,15 +98,66 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
     check("Watchdog replaced wedged queue object",
           queue_replaced,
           f"runner.q is_orig={runner.q is q_orig}")
+    # NEW: verify the DB-pending job was re-queued onto the new queue.
+    if queue_replaced:
+        check("Watchdog re-queued DB-pending job onto fresh queue",
+              runner.q.pending() >= 1,
+              f"new_q.pending()={runner.q.pending()}")
 
-    # Restore real _loop on runner so the new thread (which the watchdog
-    # may continue spawning) drains correctly. The original _loop method
-    # lives on the class, so just delete the instance override.
     try:
         del runner._loop  # type: ignore[attr-defined]
     except Exception:
         pass
 
+    runner.stop()
+    time.sleep(0.5)
+
+# ─── 3b. Watchdog itself does NOT wedge when q.next() would wedge ──────
+# This is the regression that bit us in production: the watchdog called
+# self.q.next() on the wedged queue, which wedged the watchdog too.
+# Verify the watchdog stays responsive (i.e. its thread keeps progressing)
+# even when the underlying queue's Condition is broken.
+print("\n3b. Watchdog stays responsive when queue.get() would wedge")
+with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+    td = Path(td)
+    db = DB(td / "test.db")
+
+    # Build a queue whose .next() blocks forever (simulating Condition wedge).
+    class WedgedQueue(JobQueue):
+        def next(self, timeout=1.0):
+            # The whole point of the wedge: get() never returns, even on timeout.
+            time.sleep(3600)
+            return None
+    q_wedged = WedgedQueue()
+    q_wedged.submit("phantom-job-id-not-in-db")  # tickle pending() > 0
+
+    runner = JobRunner(db, q_wedged, root=td, build_cmd=lambda j: ["python", "-c", "pass"])
+    _stop = runner._stop
+    def _fake_wedged_loop():
+        while not _stop.is_set():
+            time.sleep(0.5)
+    runner._loop = _fake_wedged_loop  # type: ignore[assignment]
+    runner._thread = threading.Thread(target=runner._loop, name="JobRunner", daemon=True)
+    runner._heartbeat = time.monotonic() - 60.0
+    runner.start()
+
+    # Even with a wedged queue, the watchdog should detect the stale heartbeat
+    # and replace the queue. It must NOT call q.next() (which would wedge).
+    deadline = time.monotonic() + 15
+    queue_replaced = False
+    while time.monotonic() < deadline:
+        if runner.q is not q_wedged:
+            queue_replaced = True
+            break
+        time.sleep(0.2)
+    check("Watchdog recovered without calling .next() on wedged queue",
+          queue_replaced,
+          f"replaced={queue_replaced} (would FAIL if watchdog wedged on q.next())")
+
+    try:
+        del runner._loop  # type: ignore[attr-defined]
+    except Exception:
+        pass
     runner.stop()
     time.sleep(0.5)
 
