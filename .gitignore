@@ -77,6 +77,11 @@ _compare*.jpg
 .idea/
 *.swp
 .DS_Store
+
+# Local diagnostic logs (soak harness, ad-hoc benchmarks)
+_soak_log.csv
+_bench_*.csv
+_profile_*.txt
 Thumbs.db
 
 # Logs
